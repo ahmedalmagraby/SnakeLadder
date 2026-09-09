@@ -1,0 +1,204 @@
+@import "tailwindcss";
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+  overscroll-behavior: none;
+}
+
+body {
+  background: #06120d;
+  touch-action: manipulation;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.font-display {
+  font-family: "Lilita One", "Nunito", system-ui, sans-serif;
+  letter-spacing: 0.02em;
+}
+
+.font-ui {
+  font-family: "Nunito", system-ui, sans-serif;
+}
+
+.drop-title {
+  text-shadow:
+    0 3px 0 rgba(0, 0, 0, 0.35),
+    0 10px 30px rgba(0, 0, 0, 0.55);
+}
+
+.panel {
+  background: linear-gradient(180deg, rgba(17, 46, 35, 0.94), rgba(8, 24, 18, 0.94));
+  border: 1px solid rgba(251, 191, 36, 0.16);
+  border-radius: 14px;
+  box-shadow:
+    0 10px 30px rgba(0, 0, 0, 0.35),
+    inset 0 1px 0 rgba(255, 255, 255, 0.05);
+}
+
+/* ---------- 3D dice ---------- */
+.die-stage {
+  width: 88px;
+  height: 88px;
+  perspective: 460px;
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.die-cube {
+  width: 62px;
+  height: 62px;
+  position: relative;
+  transform-style: preserve-3d;
+  will-change: transform;
+}
+.die-face {
+  position: absolute;
+  inset: 0;
+  border-radius: 12px;
+  background: linear-gradient(145deg, #fffef7, #ede2c8);
+  border: 1.5px solid #d4c49b;
+  box-shadow:
+    inset 0 0 16px rgba(160, 120, 50, 0.32),
+    0 2px 6px rgba(0, 0, 0, 0.3);
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  grid-template-rows: repeat(3, 1fr);
+  padding: 8.5px;
+  gap: 3px;
+  backface-visibility: hidden;
+}
+.die-pip {
+  width: 10.5px;
+  height: 10.5px;
+  border-radius: 50%;
+  margin: auto;
+  background: radial-gradient(circle at 35% 30%, #ef4444, #991b1b 75%, #7f1d1d);
+  box-shadow:
+    inset 0 -1.5px 2px rgba(0, 0, 0, 0.6),
+    0 1px 1.5px rgba(255, 255, 255, 0.5);
+}
+.die-shadow {
+  position: absolute;
+  bottom: 0px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 60px;
+  height: 14px;
+  border-radius: 50%;
+  background: radial-gradient(ellipse, rgba(0, 0, 0, 0.65), transparent 75%);
+  transition: transform 0.3s ease, opacity 0.3s ease;
+}
+@keyframes dieShake {
+  0%,
+  100% {
+    transform: translateY(0) rotate(0deg);
+  }
+  25% {
+    transform: translateY(-8px) rotate(-6deg);
+  }
+  75% {
+    transform: translateY(-3px) rotate(5deg);
+  }
+}
+.die-stage.rolling {
+  animation: dieShake 0.22s linear infinite;
+}
+
+/* Custom dark scrollbar for sidebar */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: rgba(6, 18, 13, 0.6);
+  border-radius: 4px;
+}
+::-webkit-scrollbar-thumb {
+  background: rgba(251, 191, 36, 0.25);
+  border-radius: 4px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(251, 191, 36, 0.5);
+}
+
+/* ---------- animations ---------- */
+@keyframes toastPop {
+  0% {
+    transform: scale(0.4) rotate(-4deg);
+    opacity: 0;
+  }
+  12% {
+    transform: scale(1.1) rotate(1deg);
+    opacity: 1;
+  }
+  22% {
+    transform: scale(1) rotate(0deg);
+  }
+  78% {
+    transform: scale(1);
+    opacity: 1;
+  }
+  100% {
+    transform: scale(1.06);
+    opacity: 0;
+  }
+}
+.toast-pop {
+  animation: toastPop 1.5s cubic-bezier(0.2, 0.8, 0.3, 1) forwards;
+}
+
+@keyframes popIn {
+  from {
+    transform: scale(0.7) translateY(16px);
+    opacity: 0;
+  }
+  to {
+    transform: scale(1) translateY(0);
+    opacity: 1;
+  }
+}
+.pop-in {
+  animation: popIn 0.5s cubic-bezier(0.2, 1.4, 0.4, 1) both;
+}
+
+@keyframes fadeIn {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+.fade-in {
+  animation: fadeIn 0.45s ease both;
+}
+
+@keyframes floaty {
+  0%,
+  100% {
+    transform: translateY(0) rotate(var(--fr, 0deg));
+  }
+  50% {
+    transform: translateY(-16px) rotate(var(--fr, 0deg));
+  }
+}
+.floaty {
+  animation: floaty 5.5s ease-in-out infinite;
+}
+
+@keyframes pulseGlow {
+  0%,
+  100% {
+    box-shadow: 0 0 0 0 rgba(251, 191, 36, 0.45);
+  }
+  50% {
+    box-shadow: 0 0 22px 4px rgba(251, 191, 36, 0.28);
+  }
+}
+.pulse-glow {
+  animation: pulseGlow 1.6s ease-in-out infinite;
+}
