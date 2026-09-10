@@ -35,6 +35,7 @@ export default function Die({
   canRoll,
   rollMs = 950,
   activeColor = '#06b6d4',
+  compact = false,
 }: {
   value: number;
   rolling: boolean;
@@ -42,6 +43,7 @@ export default function Die({
   canRoll: boolean;
   rollMs?: number;
   activeColor?: string;
+  compact?: boolean;
 }) {
   const currentRot = useRef({ x: 0, y: 0 });
   const prevFace = useRef<[number, number]>([0, 0]);
@@ -74,15 +76,15 @@ export default function Die({
   }, [rolling, value, rollMs]);
 
   return (
-    <div className="flex flex-col items-center gap-1.5">
+    <div className={`flex flex-col items-center shrink-0 ${compact ? 'gap-0' : 'gap-1.5'}`}>
       <button
         type="button"
         aria-label="Roll the dice"
         onClick={onRoll}
         disabled={!canRoll}
         className={`die-stage select-none outline-none relative group ${
-          rolling ? 'rolling' : ''
-        } ${canRoll ? 'cursor-pointer hover:scale-105 active:scale-95' : 'cursor-default'}`}
+          compact ? 'scale-[0.72] origin-center -my-2' : ''
+        } ${rolling ? 'rolling' : ''} ${canRoll ? 'cursor-pointer hover:scale-105 active:scale-95' : 'cursor-default'}`}
         style={{
           filter: canRoll ? `drop-shadow(0 0 12px ${activeColor}55)` : 'none',
         }}
@@ -116,15 +118,15 @@ export default function Die({
       </button>
 
       {/* Pop badge showing rolled number on settle */}
-      <div className="h-5 flex items-center justify-center">
+      <div className={`flex items-center justify-center ${compact ? 'h-4' : 'h-5'}`}>
         {value > 0 && isLanded && !rolling ? (
-          <div className="pop-in flex items-center gap-1 px-2 py-0.5 rounded-full bg-emerald-950/90 border border-amber-400/40 text-[11px] font-black text-amber-300">
+          <div className="pop-in flex items-center gap-1 px-1.5 py-0.5 rounded-full bg-emerald-950/90 border border-amber-400/40 text-[10px] font-black text-amber-300 leading-none">
             <span>ROLLED {value}</span>
-            {value === 6 && <span className="text-cyan-300">★ +1 ROLL</span>}
+            {value === 6 && <span className="text-cyan-300">★ +1</span>}
           </div>
         ) : (
-          <span className="text-[10px] font-bold text-emerald-300/40 tracking-wider">
-            {rolling ? 'ROLLING...' : canRoll ? 'TAP TO ROLL' : 'WAIT'}
+          <span className={`font-bold text-emerald-300/40 tracking-wider leading-none ${compact ? 'text-[9px]' : 'text-[10px]'}`}>
+            {rolling ? 'ROLLING' : canRoll ? 'TAP TO ROLL' : 'WAIT'}
           </span>
         )}
       </div>

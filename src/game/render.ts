@@ -11,9 +11,9 @@ import {
   clamp,
   hexLerp,
   mulberry32,
-  snakeColor,
   squareCenter,
 } from './constants';
+import { THEMES, type BoardTheme } from './themes';
 
 /* ---------------- particles ---------------- */
 
@@ -175,7 +175,12 @@ function drawStar(ctx: CanvasRenderingContext2D, x: number, y: number, r: number
   ctx.fill();
 }
 
-function drawLadder(ctx: CanvasRenderingContext2D, b: number, t: number) {
+function drawLadder(
+  ctx: CanvasRenderingContext2D,
+  b: number,
+  t: number,
+  theme: BoardTheme = THEMES.jungle,
+) {
   const a = squareCenter(b);
   const c = squareCenter(t);
   const dx = c.x - a.x;
@@ -192,28 +197,71 @@ function drawLadder(ctx: CanvasRenderingContext2D, b: number, t: number) {
     ctx.stroke();
   };
 
+  const tb = theme.board;
+
   // Outer dark shadow
-  ctx.strokeStyle = 'rgba(25, 12, 4, 0.75)';
+  ctx.strokeStyle = tb.ladderRailShadow;
   ctx.lineWidth = 12;
   rail(px + 2, py + 3);
   rail(-px + 2, -py + 3);
 
-  // Wooden rail core
-  ctx.strokeStyle = '#4a2508';
+  // Rail core
+  ctx.strokeStyle = tb.ladderRailCore;
   ctx.lineWidth = 10;
   rail(px, py);
   rail(-px, -py);
 
-  // Golden polish highlight
-  ctx.strokeStyle = '#d97706';
+  // Polish highlight
+  ctx.strokeStyle = tb.ladderRailPolish;
   ctx.lineWidth = 6;
   rail(px, py);
   rail(-px, -py);
 
-  ctx.strokeStyle = 'rgba(254, 240, 138, 0.7)';
+  ctx.strokeStyle = tb.ladderRailHighlight;
   ctx.lineWidth = 2;
   rail(px - 1.2, py - 1.2);
   rail(-px - 1.2, -py - 1.2);
+
+  // Theme-specific rail glows
+  if (tb.ladderStyle === 'neon') {
+    ctx.save();
+    ctx.shadowColor = tb.ladderRailPolish;
+    ctx.shadowBlur = 10;
+    ctx.strokeStyle = tb.ladderRailPolish;
+    ctx.lineWidth = 3;
+    rail(px, py);
+    rail(-px, -py);
+    ctx.restore();
+  } else if (tb.ladderStyle === 'starlight') {
+    ctx.save();
+    ctx.shadowColor = '#818cf8';
+    ctx.shadowBlur = 9;
+    ctx.strokeStyle = '#c7d2fe';
+    ctx.lineWidth = 2.5;
+    rail(px, py);
+    rail(-px, -py);
+    ctx.restore();
+  }
+
+  // Candy cane spiral stripes for sweet kingdom
+  if (tb.ladderStyle === 'candycane') {
+    ctx.save();
+    ctx.strokeStyle = 'rgba(255, 255, 255, 0.85)';
+    ctx.lineWidth = 3;
+    const stripeCount = Math.floor(len / 16);
+    for (let i = 0; i <= stripeCount; i++) {
+      const f = i / stripeCount;
+      const rx = a.x + dx * f;
+      const ry = a.y + dy * f;
+      ctx.beginPath();
+      ctx.moveTo(rx + px - 3, ry + py - 3);
+      ctx.lineTo(rx + px + 3, ry + py + 3);
+      ctx.moveTo(rx - px - 3, ry - py - 3);
+      ctx.lineTo(rx - px + 3, ry - py + 3);
+      ctx.stroke();
+    }
+    ctx.restore();
+  }
 
   // Rungs
   const count = Math.max(3, Math.floor(len / 38));
@@ -223,31 +271,39 @@ function drawLadder(ctx: CanvasRenderingContext2D, b: number, t: number) {
     const y = a.y + dy * f;
 
     // Rung shadow
-    ctx.strokeStyle = 'rgba(25, 12, 4, 0.75)';
+    ctx.strokeStyle = tb.ladderRungShadow;
     ctx.lineWidth = 9;
     ctx.beginPath();
     ctx.moveTo(x + px + 1, y + py + 2);
     ctx.lineTo(x - px + 1, y - py + 2);
     ctx.stroke();
 
-    // Rung wood
-    ctx.strokeStyle = '#4a2508';
+    // Rung body
+    ctx.strokeStyle = tb.ladderRailCore;
     ctx.lineWidth = 8;
     ctx.beginPath();
     ctx.moveTo(x + px, y + py);
     ctx.lineTo(x - px, y - py);
     ctx.stroke();
 
-    // Rung gold/brass
-    ctx.strokeStyle = '#f59e0b';
+    // Rung gold/brass/neon
+    ctx.strokeStyle = tb.ladderRungColor;
     ctx.lineWidth = 4.5;
     ctx.beginPath();
     ctx.moveTo(x + px, y + py);
     ctx.lineTo(x - px, y - py);
     ctx.stroke();
 
-    // Rung rivet dots at rail connection
-    ctx.fillStyle = '#fef08a';
+    // Rung highlight
+    ctx.strokeStyle = tb.ladderRungHighlight;
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    ctx.moveTo(x + px, y + py - 1);
+    ctx.lineTo(x - px, y - py - 1);
+    ctx.stroke();
+
+    // Rung rivet dots / gemstone caps
+    ctx.fillStyle = tb.ladderRivetColor;
     ctx.beginPath();
     ctx.arc(x + px, y + py, 2.5, 0, Math.PI * 2);
     ctx.arc(x - px, y - py, 2.5, 0, Math.PI * 2);
@@ -262,8 +318,11 @@ export function drawAnimatedSnake(
   idx: number,
   time: number,
   isActive: boolean,
+  theme: BoardTheme = THEMES.jungle,
 ) {
-  const [main, dark] = snakeColor(idx);
+  const tb = theme.board;
+  const palette = tb.snakePalette;
+  const [main, dark] = palette[idx % palette.length];
   const a = squareCenter(headNum);
   const b = squareCenter(tailNum);
   const dx = b.x - a.x;
@@ -329,7 +388,7 @@ export function drawAnimatedSnake(
 
   // 1. Drop shadow under snake body
   for (let i = 0; i < n; i++) {
-    ctx.strokeStyle = 'rgba(2, 12, 8, 0.62)';
+    ctx.strokeStyle = tb.snakeDropShadow;
     ctx.lineWidth = wAt(i / n) + 5;
     ctx.beginPath();
     ctx.moveTo(pts[i].x + 2.5, pts[i].y + 3.5);
@@ -339,7 +398,7 @@ export function drawAnimatedSnake(
 
   // 2. Dark outer outline
   for (let i = 0; i < n; i++) {
-    seg(i, wAt(i / n) + 4.5, 'rgba(5, 25, 18, 0.95)');
+    seg(i, wAt(i / n) + 4.5, tb.snakeOutline);
   }
 
   // 3. Colored body gradient
@@ -347,12 +406,99 @@ export function drawAnimatedSnake(
     seg(i, wAt(i / n), hexLerp(main, dark, i / n));
   }
 
-  // 4. Traveling specular scale diamond shimmer along spine
-  for (let i = 1; i < n; i++) {
-    const f = i / n;
-    const shimmer = Math.sin(f * 14 - time * 3.8 + phase) * 0.5 + 0.5;
-    const alpha = 0.12 + shimmer * 0.42;
-    seg(i, wAt(f) * 0.45, `rgba(255, 255, 255, ${alpha})`);
+  // 4. Style-specific spine patterns
+  if (tb.snakeStyle === 'cyber') {
+    // Cyber digital energy segments and neon pulses
+    for (let i = 1; i < n; i += 3) {
+      const f = i / n;
+      const pulse = Math.sin(f * 18 - time * 6 + phase) * 0.5 + 0.5;
+      const pt = pts[i];
+      const next = pts[i + 1] || pt;
+      const tdx = next.x - pt.x;
+      const tdy = next.y - pt.y;
+      const tlen = Math.hypot(tdx, tdy) || 1;
+      const npx = (-tdy / tlen) * (wAt(f) * 0.46);
+      const npy = (tdx / tlen) * (wAt(f) * 0.46);
+      ctx.save();
+      ctx.strokeStyle = pulse > 0.6 ? '#67e8f9' : '#ec4899';
+      ctx.lineWidth = 2.4;
+      ctx.shadowColor = '#06b6d4';
+      ctx.shadowBlur = 6;
+      ctx.beginPath();
+      ctx.moveTo(pt.x - npx, pt.y - npy);
+      ctx.lineTo(pt.x + npx, pt.y + npy);
+      ctx.stroke();
+      ctx.restore();
+    }
+  } else if (tb.snakeStyle === 'cosmic') {
+    // Celestial stardust particles & glowing astral nodes
+    for (let i = 1; i < n; i += 2) {
+      const f = i / n;
+      const starTwinkle = Math.sin(f * 20 + time * 4.5 + phase) * 0.5 + 0.5;
+      if (starTwinkle > 0.35) {
+        ctx.save();
+        ctx.fillStyle = starTwinkle > 0.75 ? '#ffffff' : '#c084fc';
+        ctx.shadowColor = '#8b5cf6';
+        ctx.shadowBlur = 5;
+        const pt = pts[i];
+        ctx.beginPath();
+        ctx.arc(pt.x, pt.y, 2 * starTwinkle, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.restore();
+      }
+    }
+  } else if (tb.snakeStyle === 'gummy') {
+    // Translucent gummy candy stripes & sweet sugar shine
+    for (let i = 1; i < n; i += 3) {
+      const f = i / n;
+      const pt = pts[i];
+      const next = pts[i + 1] || pt;
+      const tdx = next.x - pt.x;
+      const tdy = next.y - pt.y;
+      const tlen = Math.hypot(tdx, tdy) || 1;
+      const npx = (-tdy / tlen) * (wAt(f) * 0.42);
+      const npy = (tdx / tlen) * (wAt(f) * 0.42);
+      ctx.save();
+      ctx.strokeStyle = i % 2 === 0 ? 'rgba(255, 255, 255, 0.7)' : 'rgba(251, 191, 36, 0.7)';
+      ctx.lineWidth = 2.5;
+      ctx.lineCap = 'round';
+      ctx.beginPath();
+      ctx.moveTo(pt.x - npx, pt.y - npy);
+      ctx.lineTo(pt.x + npx, pt.y + npy);
+      ctx.stroke();
+      ctx.restore();
+    }
+  } else if (tb.snakeStyle === 'pharaoh') {
+    // Royal golden cobra collar and lapis lazuli rings
+    for (let i = 1; i < n; i += 4) {
+      const f = i / n;
+      const pt = pts[i];
+      const next = pts[i + 1] || pt;
+      const tdx = next.x - pt.x;
+      const tdy = next.y - pt.y;
+      const tlen = Math.hypot(tdx, tdy) || 1;
+      const npx = (-tdy / tlen) * (wAt(f) * 0.48);
+      const npy = (tdx / tlen) * (wAt(f) * 0.48);
+      ctx.save();
+      ctx.strokeStyle = i % 2 === 0 ? '#fbbf24' : '#2563eb';
+      ctx.lineWidth = 2.4;
+      ctx.beginPath();
+      ctx.moveTo(pt.x - npx, pt.y - npy);
+      ctx.lineTo(pt.x + npx, pt.y + npy);
+      ctx.stroke();
+      ctx.restore();
+    }
+  } else {
+    // Natural diamond specular scale shimmer
+    for (let i = 1; i < n; i++) {
+      const f = i / n;
+      const shimmer = Math.sin(f * 14 - time * 3.8 + phase) * 0.5 + 0.5;
+      const alpha = 0.12 + shimmer * 0.42;
+      ctx.save();
+      ctx.globalAlpha = alpha;
+      seg(i, wAt(f) * 0.45, tb.snakeSpecular);
+      ctx.restore();
+    }
   }
 
   // 5. Head calculation
@@ -383,7 +529,7 @@ export function drawAnimatedSnake(
       const ty = h.y + d.y * (10 + tongueReach) + d.x * wag;
 
       ctx.save();
-      ctx.strokeStyle = isActive ? '#ef4444' : '#f43f5e';
+      ctx.strokeStyle = isActive ? tb.activeTongueColor : tb.tongueColor;
       ctx.lineWidth = 2.8;
       ctx.lineCap = 'round';
       ctx.beginPath();
@@ -409,17 +555,19 @@ export function drawAnimatedSnake(
   // Active strike / venom aura
   if (isActive) {
     const auraPulse = 0.4 + 0.3 * Math.sin(time * 12);
-    ctx.shadowColor = '#ef4444';
+    ctx.shadowColor = tb.activeAuraColor;
     ctx.shadowBlur = 18;
-    ctx.fillStyle = `rgba(239, 68, 68, ${auraPulse})`;
+    ctx.fillStyle = tb.activeAuraColor;
+    ctx.globalAlpha = auraPulse;
     ctx.beginPath();
     ctx.ellipse(8, 0, 28, 22, 0, 0, Math.PI * 2);
     ctx.fill();
+    ctx.globalAlpha = 1;
     ctx.shadowBlur = 0;
   }
 
   // Head shadow
-  ctx.fillStyle = 'rgba(2, 12, 8, 0.65)';
+  ctx.fillStyle = tb.snakeDropShadow;
   ctx.beginPath();
   ctx.ellipse(8, 3.5, 24, 18, 0, 0, Math.PI * 2);
   ctx.fill();
@@ -433,7 +581,7 @@ export function drawAnimatedSnake(
   ctx.ellipse(6, 0, 23, 17, 0, 0, Math.PI * 2);
   ctx.fill();
 
-  ctx.strokeStyle = 'rgba(5, 25, 18, 0.95)';
+  ctx.strokeStyle = tb.snakeOutline;
   ctx.lineWidth = 3;
   ctx.stroke();
 
@@ -476,8 +624,8 @@ export function drawAnimatedSnake(
     ctx.translate(11, eyeY);
     ctx.scale(1, eyeScaleY);
 
-    // Sclera (predatory golden amber or angry red when active)
-    ctx.fillStyle = isActive ? '#fee2e2' : '#fef08a';
+    // Sclera
+    ctx.fillStyle = isActive ? tb.eyeScleraActive : tb.eyeSclera;
     ctx.beginPath();
     ctx.ellipse(0, 0, 6, 4.5, (s * Math.PI) / 8, 0, Math.PI * 2);
     ctx.fill();
@@ -487,8 +635,8 @@ export function drawAnimatedSnake(
     ctx.lineWidth = 1;
     ctx.stroke();
 
-    // Pupil (vertical slit; dilates when striking/active)
-    ctx.fillStyle = isActive ? '#ef4444' : '#111827';
+    // Pupil
+    ctx.fillStyle = isActive ? tb.eyePupilActive : tb.eyePupil;
     ctx.beginPath();
     const pw = isActive ? 2.8 : 1.7;
     const ph = isActive ? 4.2 : 3.8;
@@ -521,12 +669,13 @@ export function drawAnimatedSnakes(
   ctx: CanvasRenderingContext2D,
   time: number,
   activeSnakeHead?: number,
+  theme: BoardTheme = THEMES.jungle,
 ) {
   const snakeHeads = Object.keys(SNAKES).map(Number);
   snakeHeads.forEach((head, idx) => {
     const tail = SNAKES[head];
     const isActive = activeSnakeHead === head;
-    drawAnimatedSnake(ctx, head, tail, idx, time, isActive);
+    drawAnimatedSnake(ctx, head, tail, idx, time, isActive, theme);
   });
 }
 
@@ -535,15 +684,17 @@ export function drawSquare100Podium(
   c: Pt,
   x: number,
   y: number,
+  theme: BoardTheme = THEMES.jungle,
 ) {
+  const tb = theme.board;
   ctx.save();
 
-  // 1. Radiant Sunburst Golden Base
+  // 1. Radiant Base
   const bg = ctx.createRadialGradient(c.x, c.y, 4, c.x, c.y, 72);
-  bg.addColorStop(0, '#fffbeb');
-  bg.addColorStop(0.25, '#fde047');
-  bg.addColorStop(0.65, '#d97706');
-  bg.addColorStop(1, '#78350f');
+  bg.addColorStop(0, tb.podiumBgGrad[0]);
+  bg.addColorStop(0.25, tb.podiumBgGrad[1]);
+  bg.addColorStop(0.65, tb.podiumBgGrad[2]);
+  bg.addColorStop(1, tb.podiumBgGrad[3]);
   ctx.fillStyle = bg;
   ctx.fillRect(x, y, CELL, CELL);
 
@@ -562,44 +713,44 @@ export function drawSquare100Podium(
   }
   ctx.restore();
 
-  // 3. Ornate Double Golden Inlay Border
-  ctx.strokeStyle = 'rgba(254, 240, 138, 0.75)';
+  // 3. Ornate Double Inlay Border
+  ctx.strokeStyle = tb.cornerColors[0];
   ctx.lineWidth = 2;
   ctx.strokeRect(x + 3, y + 3, CELL - 6, CELL - 6);
 
-  ctx.strokeStyle = 'rgba(120, 53, 15, 0.6)';
+  ctx.strokeStyle = tb.cornerColors[1];
   ctx.lineWidth = 1;
   ctx.strokeRect(x + 5.5, y + 5.5, CELL - 11, CELL - 11);
 
-  // 4. Corner Golden Screws / Rivets
+  // 4. Corner Screws / Rivets
   for (const [rx, ry] of [
     [x + 8, y + 8],
     [x + CELL - 8, y + 8],
     [x + 8, y + CELL - 8],
     [x + CELL - 8, y + CELL - 8],
   ]) {
-    ctx.fillStyle = '#fef08a';
+    ctx.fillStyle = tb.cornerColors[0];
     ctx.beginPath();
     ctx.arc(rx, ry, 2, 0, Math.PI * 2);
     ctx.fill();
   }
 
-  // 5. 3D Golden Victory Trophy in Center
+  // 5. 3D Golden/Holographic Victory Trophy in Center
   const tx = c.x;
   const ty = c.y - 7;
 
-  // Trophy outer golden aura
+  // Trophy outer aura
   const aura = ctx.createRadialGradient(tx, ty, 2, tx, ty, 30);
   aura.addColorStop(0, 'rgba(255, 255, 255, 0.45)');
-  aura.addColorStop(0.5, 'rgba(253, 224, 71, 0.3)');
-  aura.addColorStop(1, 'rgba(253, 224, 71, 0)');
+  aura.addColorStop(0.5, `${tb.cornerColors[1]}44`);
+  aura.addColorStop(1, 'rgba(0, 0, 0, 0)');
   ctx.fillStyle = aura;
   ctx.beginPath();
   ctx.arc(tx, ty, 28, 0, Math.PI * 2);
   ctx.fill();
 
   // Trophy handles
-  ctx.strokeStyle = '#d97706';
+  ctx.strokeStyle = tb.podiumCupColors[0];
   ctx.lineWidth = 3.5;
   ctx.beginPath();
   ctx.arc(tx - 16, ty - 2, 8, Math.PI * 0.4, Math.PI * 1.6);
@@ -608,7 +759,7 @@ export function drawSquare100Podium(
   ctx.arc(tx + 16, ty - 2, 8, -Math.PI * 0.6, Math.PI * 0.6);
   ctx.stroke();
 
-  ctx.strokeStyle = '#fef08a';
+  ctx.strokeStyle = tb.podiumCupColors[1];
   ctx.lineWidth = 1.5;
   ctx.beginPath();
   ctx.arc(tx - 16, ty - 2, 8, Math.PI * 0.4, Math.PI * 1.6);
@@ -618,11 +769,11 @@ export function drawSquare100Podium(
   ctx.stroke();
 
   // Trophy pedestal base
-  ctx.fillStyle = '#78350f';
+  ctx.fillStyle = tb.podiumCupColors[3];
   ctx.fillRect(tx - 13, ty + 15, 26, 4.5);
-  ctx.fillStyle = '#f59e0b';
+  ctx.fillStyle = tb.podiumCupColors[2];
   ctx.fillRect(tx - 11, ty + 12, 22, 3);
-  ctx.fillStyle = '#fde047';
+  ctx.fillStyle = tb.podiumCupColors[1];
   ctx.fillRect(tx - 4, ty + 7, 8, 5);
 
   // Trophy Cup Body
@@ -635,13 +786,13 @@ export function drawSquare100Podium(
   ctx.closePath();
 
   const cupGrad = ctx.createLinearGradient(tx - 15, 0, tx + 15, 0);
-  cupGrad.addColorStop(0, '#d97706');
-  cupGrad.addColorStop(0.3, '#fef08a');
-  cupGrad.addColorStop(0.65, '#f59e0b');
-  cupGrad.addColorStop(1, '#92400e');
+  cupGrad.addColorStop(0, tb.podiumCupColors[0]);
+  cupGrad.addColorStop(0.3, tb.podiumCupColors[1]);
+  cupGrad.addColorStop(0.65, tb.podiumCupColors[2]);
+  cupGrad.addColorStop(1, tb.podiumCupColors[3]);
   ctx.fillStyle = cupGrad;
   ctx.fill();
-  ctx.strokeStyle = '#451a03';
+  ctx.strokeStyle = 'rgba(0, 0, 0, 0.6)';
   ctx.lineWidth = 1.5;
   ctx.stroke();
 
@@ -649,11 +800,11 @@ export function drawSquare100Podium(
   drawStar(ctx, tx, ty - 2, 6, '#ffffff');
 
   // Specular cup lip highlight
-  ctx.fillStyle = '#fffbeb';
+  ctx.fillStyle = tb.podiumCupColors[1];
   ctx.beginPath();
   ctx.ellipse(tx, ty - 12, 15, 3.5, 0, 0, Math.PI * 2);
   ctx.fill();
-  ctx.strokeStyle = '#d97706';
+  ctx.strokeStyle = tb.podiumCupColors[0];
   ctx.lineWidth = 1;
   ctx.stroke();
 
@@ -667,22 +818,22 @@ export function drawSquare100Podium(
   ctx.shadowBlur = 4;
   ctx.shadowOffsetY = 1.2;
 
-  ctx.fillStyle = 'rgba(45, 18, 4, 0.94)';
+  ctx.fillStyle = tb.numberBgNormal;
   roundRectPath(ctx, bx, by, bw, bh, 5);
   ctx.fill();
 
   ctx.shadowColor = 'transparent';
-  ctx.strokeStyle = '#fef08a';
+  ctx.strokeStyle = tb.numberBorderNormal;
   ctx.lineWidth = 1.2;
   ctx.stroke();
 
-  ctx.fillStyle = '#fef08a';
+  ctx.fillStyle = tb.numberTextNormal;
   ctx.font = '800 12px "Lilita One", sans-serif';
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
   ctx.fillText('100', bx + bw / 2, by + bh / 2 + 0.5);
 
-  // 7. Royal "★ FINISH ★" Ribbon Across Bottom
+  // 7. Royal Ribbon Across Bottom
   const rw = CELL - 14;
   const rh = 18;
   const rx = x + 7;
@@ -693,87 +844,218 @@ export function drawSquare100Podium(
   ctx.shadowOffsetY = 1.5;
 
   const ribbonGrad = ctx.createLinearGradient(0, ry, 0, ry + rh);
-  ribbonGrad.addColorStop(0, '#b91c1c');
-  ribbonGrad.addColorStop(0.5, '#dc2626');
-  ribbonGrad.addColorStop(1, '#991b1b');
+  ribbonGrad.addColorStop(0, tb.podiumRibbonGrad[0]);
+  ribbonGrad.addColorStop(0.5, tb.podiumRibbonGrad[1]);
+  ribbonGrad.addColorStop(1, tb.podiumRibbonGrad[2]);
   ctx.fillStyle = ribbonGrad;
   roundRectPath(ctx, rx, ry, rw, rh, 5);
   ctx.fill();
 
   ctx.shadowColor = 'transparent';
-  ctx.strokeStyle = '#fef08a';
+  ctx.strokeStyle = tb.numberBorderNormal;
   ctx.lineWidth = 1.2;
   ctx.stroke();
 
-  ctx.fillStyle = '#fffbeb';
+  ctx.fillStyle = '#ffffff';
   ctx.font = '900 11px "Lilita One", sans-serif';
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
-  ctx.fillText('★ FINISH ★', rx + rw / 2, ry + rh / 2 + 0.5);
+  ctx.fillText(tb.podiumRibbonText, rx + rw / 2, ry + rh / 2 + 0.5);
 
   ctx.restore();
 }
 
-export function drawStaticBoard(ctx: CanvasRenderingContext2D) {
+export function drawStaticBoard(
+  ctx: CanvasRenderingContext2D,
+  theme: BoardTheme = THEMES.jungle,
+) {
   const rnd = mulberry32(20240601);
+  const tb = theme.board;
 
-  /* wooden frame with rich mahogany tone */
+  /* outer frame gradient */
   const wg = ctx.createLinearGradient(0, 0, LOGICAL, LOGICAL);
-  wg.addColorStop(0, '#78350f');
-  wg.addColorStop(0.3, '#92400e');
-  wg.addColorStop(0.7, '#713f12');
-  wg.addColorStop(1, '#451a03');
+  wg.addColorStop(0, tb.frameGrad[0]);
+  wg.addColorStop(0.3, tb.frameGrad[1]);
+  wg.addColorStop(0.7, tb.frameGrad[2]);
+  wg.addColorStop(1, tb.frameGrad[3]);
   ctx.fillStyle = wg;
   ctx.fillRect(0, 0, LOGICAL, LOGICAL);
 
-  // Subtle wood grain
-  ctx.strokeStyle = 'rgba(40, 20, 5, 0.22)';
-  for (let i = 0; i < 48; i++) {
-    const y = rnd() * LOGICAL;
-    ctx.lineWidth = 0.8 + rnd() * 1.6;
-    ctx.beginPath();
-    ctx.moveTo(0, y);
-    for (let x = 0; x <= LOGICAL; x += 40) {
-      ctx.lineTo(x, y + Math.sin(x * 0.01 + i) * 4 + (rnd() - 0.5) * 3);
+  // Decorative frame pattern
+  if (tb.framePattern === 'wood') {
+    ctx.strokeStyle = 'rgba(40, 20, 5, 0.22)';
+    for (let i = 0; i < 48; i++) {
+      const y = rnd() * LOGICAL;
+      ctx.lineWidth = 0.8 + rnd() * 1.6;
+      ctx.beginPath();
+      ctx.moveTo(0, y);
+      for (let x = 0; x <= LOGICAL; x += 40) {
+        ctx.lineTo(x, y + Math.sin(x * 0.01 + i) * 4 + (rnd() - 0.5) * 3);
+      }
+      ctx.stroke();
     }
-    ctx.stroke();
+  } else if (tb.framePattern === 'circuits') {
+    ctx.strokeStyle = 'rgba(6, 182, 212, 0.28)';
+    ctx.fillStyle = 'rgba(236, 72, 153, 0.5)';
+    for (let i = 0; i < 32; i++) {
+      const y = (i / 32) * LOGICAL;
+      ctx.lineWidth = 1.2;
+      ctx.beginPath();
+      ctx.moveTo(0, y);
+      ctx.lineTo(ORIGIN - 10, y);
+      ctx.stroke();
+      ctx.beginPath();
+      ctx.moveTo(LOGICAL - (ORIGIN - 10), y);
+      ctx.lineTo(LOGICAL, y);
+      ctx.stroke();
+      if (i % 3 === 0) {
+        ctx.fillRect(ORIGIN - 15, y - 2, 4, 4);
+        ctx.fillRect(LOGICAL - ORIGIN + 11, y - 2, 4, 4);
+      }
+    }
+  } else if (tb.framePattern === 'sandstone') {
+    ctx.strokeStyle = 'rgba(245, 158, 11, 0.18)';
+    for (let i = 0; i < 40; i++) {
+      const y = rnd() * LOGICAL;
+      ctx.lineWidth = 1 + rnd() * 1.5;
+      ctx.beginPath();
+      ctx.moveTo(0, y);
+      for (let x = 0; x <= LOGICAL; x += 60) {
+        ctx.lineTo(x, y + (rnd() - 0.5) * 2.5);
+      }
+      ctx.stroke();
+    }
+  } else if (tb.framePattern === 'stars') {
+    for (let i = 0; i < 60; i++) {
+      const sx = rnd() * LOGICAL;
+      const sy = rnd() * LOGICAL;
+      const sr = 0.8 + rnd() * 1.8;
+      ctx.fillStyle = i % 4 === 0 ? '#38bdf8' : i % 3 === 0 ? '#c084fc' : '#ffffff';
+      ctx.globalAlpha = 0.3 + rnd() * 0.5;
+      ctx.beginPath();
+      ctx.arc(sx, sy, sr, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    ctx.globalAlpha = 1;
+  } else if (tb.framePattern === 'frosting') {
+    const sprinkleColors = ['#f43f5e', '#34d399', '#38bdf8', '#fbbf24', '#ffffff'];
+    for (let i = 0; i < 45; i++) {
+      const sx = rnd() * LOGICAL;
+      const sy = rnd() * LOGICAL;
+      ctx.fillStyle = sprinkleColors[i % sprinkleColors.length];
+      ctx.save();
+      ctx.translate(sx, sy);
+      ctx.rotate(rnd() * Math.PI);
+      ctx.fillRect(-4, -1.5, 8, 3);
+      ctx.restore();
+    }
   }
 
   /* inner bezel border */
-  ctx.strokeStyle = 'rgba(0, 0, 0, 0.65)';
+  ctx.strokeStyle = tb.bezelOuter;
   ctx.lineWidth = 10;
   ctx.strokeRect(ORIGIN - 6, ORIGIN - 6, LOGICAL - (ORIGIN - 6) * 2, LOGICAL - (ORIGIN - 6) * 2);
 
-  ctx.strokeStyle = 'rgba(251, 191, 36, 0.45)';
+  ctx.strokeStyle = tb.bezelInner;
   ctx.lineWidth = 2.5;
   ctx.strokeRect(ORIGIN - 13, ORIGIN - 13, LOGICAL - (ORIGIN - 13) * 2, LOGICAL - (ORIGIN - 13) * 2);
 
-  /* ornate corner brass brackets */
-  for (const [cx, cy] of [
+  /* ornate corner brackets */
+  const corners = [
     [24, 24],
     [LOGICAL - 24, 24],
     [24, LOGICAL - 24],
     [LOGICAL - 24, LOGICAL - 24],
-  ]) {
-    const g = ctx.createRadialGradient(cx - 3, cy - 3, 1, cx, cy, 12);
-    g.addColorStop(0, '#fef08a');
-    g.addColorStop(0.6, '#eab308');
-    g.addColorStop(1, '#713f12');
-    ctx.fillStyle = g;
-    ctx.beginPath();
-    ctx.arc(cx, cy, 11, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.strokeStyle = 'rgba(0, 0, 0, 0.55)';
-    ctx.lineWidth = 1.6;
-    ctx.stroke();
+  ];
 
-    // Screw center slot
-    ctx.strokeStyle = '#451a03';
-    ctx.lineWidth = 2;
-    ctx.beginPath();
-    ctx.moveTo(cx - 5, cy);
-    ctx.lineTo(cx + 5, cy);
-    ctx.stroke();
+  for (const [cx, cy] of corners) {
+    if (tb.cornerType === 'cyber') {
+      ctx.save();
+      ctx.translate(cx, cy);
+      ctx.beginPath();
+      for (let s = 0; s < 6; s++) {
+        const a = (s * Math.PI) / 3;
+        const hx = Math.cos(a) * 13;
+        const hy = Math.sin(a) * 13;
+        if (s === 0) ctx.moveTo(hx, hy);
+        else ctx.lineTo(hx, hy);
+      }
+      ctx.closePath();
+      ctx.fillStyle = tb.cornerColors[2];
+      ctx.fill();
+      ctx.strokeStyle = tb.cornerColors[1];
+      ctx.lineWidth = 1.8;
+      ctx.stroke();
+      ctx.fillStyle = tb.cornerColors[0];
+      ctx.beginPath();
+      ctx.arc(0, 0, 4, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.restore();
+    } else if (tb.cornerType === 'peppermint') {
+      ctx.save();
+      ctx.translate(cx, cy);
+      for (let w = 0; w < 8; w++) {
+        ctx.fillStyle = w % 2 === 0 ? tb.cornerColors[0] : tb.cornerColors[1];
+        ctx.beginPath();
+        ctx.moveTo(0, 0);
+        ctx.arc(0, 0, 12, (w * Math.PI) / 4, ((w + 1) * Math.PI) / 4);
+        ctx.closePath();
+        ctx.fill();
+      }
+      ctx.strokeStyle = tb.cornerColors[2];
+      ctx.lineWidth = 1.2;
+      ctx.beginPath();
+      ctx.arc(0, 0, 12, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.restore();
+    } else if (tb.cornerType === 'pharaoh') {
+      const g = ctx.createRadialGradient(cx - 3, cy - 3, 1, cx, cy, 13);
+      g.addColorStop(0, tb.cornerColors[0]);
+      g.addColorStop(0.6, tb.cornerColors[1]);
+      g.addColorStop(1, '#451a03');
+      ctx.fillStyle = g;
+      ctx.beginPath();
+      ctx.arc(cx, cy, 12, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.strokeStyle = tb.cornerColors[2];
+      ctx.lineWidth = 2;
+      ctx.stroke();
+      ctx.fillStyle = tb.cornerColors[2];
+      ctx.beginPath();
+      ctx.arc(cx, cy, 4, 0, Math.PI * 2);
+      ctx.fill();
+    } else if (tb.cornerType === 'astral') {
+      ctx.save();
+      ctx.translate(cx, cy);
+      ctx.fillStyle = tb.cornerColors[2];
+      ctx.beginPath();
+      ctx.arc(0, 0, 12, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.strokeStyle = tb.cornerColors[1];
+      ctx.lineWidth = 1.5;
+      ctx.stroke();
+      drawStar(ctx, 0, 0, 8, tb.cornerColors[0]);
+      ctx.restore();
+    } else {
+      const g = ctx.createRadialGradient(cx - 3, cy - 3, 1, cx, cy, 12);
+      g.addColorStop(0, tb.cornerColors[0]);
+      g.addColorStop(0.6, tb.cornerColors[1]);
+      g.addColorStop(1, tb.cornerColors[2]);
+      ctx.fillStyle = g;
+      ctx.beginPath();
+      ctx.arc(cx, cy, 11, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.strokeStyle = 'rgba(0, 0, 0, 0.55)';
+      ctx.lineWidth = 1.6;
+      ctx.stroke();
+
+      ctx.strokeStyle = '#451a03';
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.moveTo(cx - 5, cy);
+      ctx.lineTo(cx + 5, cy);
+      ctx.stroke();
+    }
   }
 
   /* 1. Square Backgrounds & Borders */
@@ -787,22 +1069,20 @@ export function drawStaticBoard(ctx: CanvasRenderingContext2D) {
     const dark = (r + col) % 2 === 0;
 
     if (n === 100) {
-      // Golden victory square podium background
       const g = ctx.createRadialGradient(c.x, c.y, 6, c.x, c.y, 76);
-      g.addColorStop(0, '#fde047');
-      g.addColorStop(0.45, '#eab308');
-      g.addColorStop(1, '#a16207');
+      g.addColorStop(0, tb.podiumBgGrad[0]);
+      g.addColorStop(0.45, tb.podiumBgGrad[1]);
+      g.addColorStop(1, tb.podiumBgGrad[2]);
       ctx.fillStyle = g;
     } else {
-      // Rich emerald / jungle tiles
-      ctx.fillStyle = dark ? '#0a3d31' : '#062d24';
+      ctx.fillStyle = dark ? tb.tileDark : tb.tileLight;
     }
     ctx.fillRect(x, y, CELL, CELL);
 
     // Inner tile sheen
     if (n !== 100) {
       const g = ctx.createLinearGradient(0, y, 0, y + CELL);
-      g.addColorStop(0, 'rgba(255, 255, 255, 0.08)');
+      g.addColorStop(0, tb.tileSheen);
       g.addColorStop(0.4, 'rgba(255, 255, 255, 0)');
       g.addColorStop(1, 'rgba(0, 0, 0, 0.22)');
       ctx.fillStyle = g;
@@ -810,7 +1090,7 @@ export function drawStaticBoard(ctx: CanvasRenderingContext2D) {
     }
 
     // Tile border
-    ctx.strokeStyle = 'rgba(0, 0, 0, 0.45)';
+    ctx.strokeStyle = tb.tileBorder;
     ctx.lineWidth = 1.5;
     ctx.strokeRect(x + 0.75, y + 0.75, CELL - 1.5, CELL - 1.5);
   }
@@ -818,87 +1098,80 @@ export function drawStaticBoard(ctx: CanvasRenderingContext2D) {
   /* 2. Ladders */
   for (const b of Object.keys(LADDERS)) {
     const bn = Number(b);
-    drawLadder(ctx, bn, LADDERS[bn]);
+    drawLadder(ctx, bn, LADDERS[bn], theme);
   }
 
-  /* 3. START Bay on bottom border (Square 0) - Title separated from docks */
+  /* 3. START Bay on bottom border (Square 0) */
   ctx.save();
   const bayX = 46;
   const bayY = 998;
   const bayW = 340;
   const bayH = 38;
 
-  // Plaque outer shadow & rich mahogany base
   ctx.shadowColor = 'rgba(0, 0, 0, 0.7)';
   ctx.shadowBlur = 6;
   ctx.shadowOffsetY = 2;
 
   const bayGrad = ctx.createLinearGradient(0, bayY, 0, bayY + bayH);
-  bayGrad.addColorStop(0, '#2d1307');
-  bayGrad.addColorStop(0.5, '#451a03');
-  bayGrad.addColorStop(1, '#1e0b04');
+  bayGrad.addColorStop(0, tb.startBayBgGrad[0]);
+  bayGrad.addColorStop(0.5, tb.startBayBgGrad[1]);
+  bayGrad.addColorStop(1, tb.startBayBgGrad[2]);
   ctx.fillStyle = bayGrad;
   roundRectPath(ctx, bayX, bayY, bayW, bayH, 8);
   ctx.fill();
 
-  // Brass rim
   ctx.shadowColor = 'transparent';
-  ctx.strokeStyle = 'rgba(251, 191, 36, 0.85)';
+  ctx.strokeStyle = tb.startBayBorder;
   ctx.lineWidth = 1.8;
   ctx.stroke();
 
-  // Left Section: Dedicated Title Plaque (Separated from token docks!)
+  // Left Section: Dedicated Title Plaque
   const titleX = bayX + 4;
   const titleY = bayY + 4;
   const titleW = 104;
   const titleH = 30;
 
-  ctx.fillStyle = 'rgba(6, 26, 18, 0.94)';
+  ctx.fillStyle = tb.startBayTitleBg;
   roundRectPath(ctx, titleX, titleY, titleW, titleH, 6);
   ctx.fill();
-  ctx.strokeStyle = 'rgba(251, 191, 36, 0.5)';
+  ctx.strokeStyle = tb.startBayBorder;
   ctx.lineWidth = 1;
   ctx.stroke();
 
-  // Title: ★ START ★ and SQ 0 ➔
-  ctx.fillStyle = '#fde047';
+  ctx.fillStyle = tb.startBayTitleText;
   ctx.font = '900 12.5px "Lilita One", sans-serif';
   ctx.textAlign = 'center';
   ctx.textBaseline = 'alphabetic';
-  ctx.fillText('★ START ★', titleX + titleW / 2, titleY + 15);
+  ctx.fillText(tb.startBayTitle, titleX + titleW / 2, titleY + 15);
 
-  ctx.fillStyle = '#86efac';
+  ctx.fillStyle = tb.startBaySubText;
   ctx.font = '800 9px "Nunito", sans-serif';
-  ctx.fillText('BAY • SQ 0 ➔', titleX + titleW / 2, titleY + 26);
+  ctx.fillText(tb.startBaySub, titleX + titleW / 2, titleY + 26);
 
-  // Brass divider groove
-  ctx.strokeStyle = 'rgba(251, 191, 36, 0.4)';
+  // Divider groove
+  ctx.strokeStyle = tb.startBayBorder;
   ctx.lineWidth = 1.2;
   ctx.beginPath();
   ctx.moveTo(bayX + 116, bayY + 6);
   ctx.lineTo(bayX + 116, bayY + bayH - 6);
   ctx.stroke();
 
-  // 4 Distinct Recessed Docking Dishes (spaced comfortably for tokens)
+  // 4 Recessed Docking Dishes
   START_POS.forEach((pt, idx) => {
     const col = PLAYER_COLORS[idx];
-
-    // Recessed socket dish
     const sockGrad = ctx.createRadialGradient(pt.x, pt.y - 1, 2, pt.x, pt.y, 16);
-    sockGrad.addColorStop(0, '#040d08');
-    sockGrad.addColorStop(0.7, '#0a1d14');
-    sockGrad.addColorStop(1, '#1b3527');
+    sockGrad.addColorStop(0, tb.startBayDockGrad[0]);
+    sockGrad.addColorStop(0.7, tb.startBayDockGrad[1]);
+    sockGrad.addColorStop(1, tb.startBayDockGrad[2]);
     ctx.fillStyle = sockGrad;
     ctx.beginPath();
     ctx.arc(pt.x, pt.y, 15, 0, Math.PI * 2);
     ctx.fill();
 
-    // Colored player identification rim
     ctx.strokeStyle = col.base;
     ctx.lineWidth = 2;
     ctx.stroke();
 
-    // Soft watermark player label inside empty dock dish
     ctx.fillStyle = 'rgba(255, 255, 255, 0.28)';
     ctx.font = '900 10px "Lilita One", sans-serif';
     ctx.textAlign = 'center';
@@ -906,8 +1179,8 @@ export function drawStaticBoard(ctx: CanvasRenderingContext2D) {
     ctx.fillText(`P${idx + 1}`, pt.x, pt.y + 0.5);
   });
 
-  // Golden navigation arrow on far right of plaque
-  ctx.fillStyle = 'rgba(251, 191, 36, 0.75)';
+  // Navigation arrow
+  ctx.fillStyle = tb.startBayTitleText;
   ctx.font = '900 13px "Lilita One", sans-serif';
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
@@ -916,8 +1189,13 @@ export function drawStaticBoard(ctx: CanvasRenderingContext2D) {
   ctx.restore();
 }
 
-export function drawBoardBadgesAndNumbers(ctx: CanvasRenderingContext2D) {
-  /* 1. Badges on Snake heads & Ladder bottoms for strategic clarity */
+export function drawBoardBadgesAndNumbers(
+  ctx: CanvasRenderingContext2D,
+  theme: BoardTheme = THEMES.jungle,
+) {
+  const tb = theme.board;
+
+  /* 1. Badges on Snake heads & Ladder bottoms */
   for (const [fromStr, portal] of Object.entries(PORTALS)) {
     const from = Number(fromStr);
     const c = squareCenter(from);
@@ -926,33 +1204,31 @@ export function drawBoardBadgesAndNumbers(ctx: CanvasRenderingContext2D) {
 
     ctx.save();
     if (portal.type === 'ladder') {
-      // Golden climb badge at bottom of cell
       const bx = x + CELL - 34;
       const by = y + CELL - 22;
-      ctx.fillStyle = 'rgba(15, 23, 42, 0.85)';
+      ctx.fillStyle = tb.badgeLadderBg;
       roundRectPath(ctx, bx, by, 30, 18, 6);
       ctx.fill();
-      ctx.strokeStyle = '#f59e0b';
+      ctx.strokeStyle = tb.badgeLadderBorder;
       ctx.lineWidth = 1.2;
       ctx.stroke();
 
-      ctx.fillStyle = '#fde047';
+      ctx.fillStyle = tb.badgeLadderText;
       ctx.font = '900 11px "Nunito", sans-serif';
       ctx.textAlign = 'center';
       ctx.textBaseline = 'middle';
       ctx.fillText(`▲${portal.to}`, bx + 15, by + 9);
     } else {
-      // Danger drop badge on snake head
       const bx = x + CELL - 34;
       const by = y + CELL - 22;
-      ctx.fillStyle = 'rgba(15, 23, 42, 0.88)';
+      ctx.fillStyle = tb.badgeSnakeBg;
       roundRectPath(ctx, bx, by, 30, 18, 6);
       ctx.fill();
-      ctx.strokeStyle = '#ef4444';
+      ctx.strokeStyle = tb.badgeSnakeBorder;
       ctx.lineWidth = 1.2;
       ctx.stroke();
 
-      ctx.fillStyle = '#f87171';
+      ctx.fillStyle = tb.badgeSnakeText;
       ctx.font = '900 11px "Nunito", sans-serif';
       ctx.textAlign = 'center';
       ctx.textBaseline = 'middle';
@@ -961,14 +1237,14 @@ export function drawBoardBadgesAndNumbers(ctx: CanvasRenderingContext2D) {
     ctx.restore();
   }
 
-  /* 2. Cell Numbers (1 to 100) — Always on top of ladders & snakes! */
+  /* 2. Cell Numbers (1 to 100) */
   for (let n = 1; n <= 100; n++) {
     const c = squareCenter(n);
     const x = c.x - CELL / 2;
     const y = c.y - CELL / 2;
 
     if (n === 100) {
-      drawSquare100Podium(ctx, c, x, y);
+      drawSquare100Podium(ctx, c, x, y, theme);
       continue;
     }
 
@@ -983,41 +1259,36 @@ export function drawBoardBadgesAndNumbers(ctx: CanvasRenderingContext2D) {
     const by = y + 5;
 
     ctx.save();
-
-    // Soft drop shadow to float clearly above snakes, scales, and rungs
     ctx.shadowColor = 'rgba(0, 0, 0, 0.75)';
     ctx.shadowBlur = 4;
     ctx.shadowOffsetX = 0;
     ctx.shadowOffsetY = 1.2;
 
-    // Dedicated pill badge background
     if (hasSnake) {
-      ctx.fillStyle = 'rgba(40, 10, 14, 0.92)';
+      ctx.fillStyle = tb.numberBgSnake;
     } else if (hasLadder) {
-      ctx.fillStyle = 'rgba(14, 36, 18, 0.92)';
+      ctx.fillStyle = tb.numberBgLadder;
     } else {
-      ctx.fillStyle = 'rgba(6, 22, 16, 0.86)';
+      ctx.fillStyle = tb.numberBgNormal;
     }
 
     roundRectPath(ctx, bx, by, bw, bh, 5);
     ctx.fill();
 
-    // Inlaid metallic border
     ctx.shadowColor = 'transparent';
     ctx.strokeStyle = hasSnake
-      ? 'rgba(239, 68, 68, 0.65)'
+      ? tb.numberBorderSnake
       : hasLadder
-        ? 'rgba(245, 158, 11, 0.65)'
-        : 'rgba(251, 191, 36, 0.35)';
+        ? tb.numberBorderLadder
+        : tb.numberBorderNormal;
     ctx.lineWidth = 1;
     ctx.stroke();
 
-    // High-contrast crisp number text
     ctx.fillStyle = hasSnake
-      ? '#fee2e2'
+      ? tb.numberTextSnake
       : hasLadder
-        ? '#fef08a'
-        : '#fef9c3';
+        ? tb.numberTextLadder
+        : tb.numberTextNormal;
     ctx.font = '800 12.5px "Lilita One", sans-serif';
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
@@ -1027,10 +1298,13 @@ export function drawBoardBadgesAndNumbers(ctx: CanvasRenderingContext2D) {
   }
 }
 
-export function drawBoardArt(ctx: CanvasRenderingContext2D) {
-  drawStaticBoard(ctx);
-  drawAnimatedSnakes(ctx, 0);
-  drawBoardBadgesAndNumbers(ctx);
+export function drawBoardArt(
+  ctx: CanvasRenderingContext2D,
+  theme: BoardTheme = THEMES.jungle,
+) {
+  drawStaticBoard(ctx, theme);
+  drawAnimatedSnakes(ctx, 0, undefined, theme);
+  drawBoardBadgesAndNumbers(ctx, theme);
 }
 
 /* ---------------- tokens ---------------- */

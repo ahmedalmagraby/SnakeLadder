@@ -2,6 +2,8 @@ import { useState, useEffect, useRef, type ReactNode } from 'react';
 import Die from './components/Die';
 import OnlineLobby from './components/OnlineLobby';
 import OnlineHudBar from './components/OnlineHudBar';
+import ThemeModal from './components/ThemeModal';
+import { THEMES, type ThemeId, type BoardTheme } from './game/themes';
 import { useMultiplayer } from './game/network/useMultiplayer';
 import type { SavedSession } from './game/network/sessionStorage';
 import {
@@ -113,19 +115,29 @@ function ExpandIcon({ className }: { className?: string }) {
   );
 }
 
+function PaletteIcon({ className }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={`${ic} ${className ?? ''}`}>
+      <circle cx="13.5" cy="6.5" r=".5" fill="currentColor" />
+      <circle cx="17.5" cy="10.5" r=".5" fill="currentColor" />
+      <circle cx="8.5" cy="7.5" r=".5" fill="currentColor" />
+      <circle cx="6.5" cy="12.5" r=".5" fill="currentColor" />
+      <path d="M12 2C6.5 2 2 6.5 2 12s4.5 10 10 10c.926 0 1.648-.746 1.648-1.688 0-.437-.18-.835-.437-1.125-.29-.289-.438-.652-.438-1.125a1.64 1.64 0 0 1 1.668-1.668h1.996c3.051 0 5.563-2.512 5.563-5.563C22 6.5 17.5 2 12 2Z" />
+    </svg>
+  );
+}
+
 /* ---------------- shared bits ---------------- */
 
-const btnGold =
-  'font-display tracking-wide px-6 py-3 rounded-xl text-[#3a2302] bg-gradient-to-b from-amber-300 via-amber-400 to-amber-500 border-b-4 border-amber-700 shadow-[0_8px_20px_rgba(251,191,36,0.28)] active:translate-y-0.5 active:border-b-2 transition-all hover:brightness-105 cursor-pointer';
-const btnGhost =
-  'font-display tracking-wide px-6 py-3 rounded-xl text-amber-200 border-2 border-amber-400/40 hover:border-amber-400/80 hover:bg-amber-400/10 transition-all cursor-pointer';
+const btnGhost = 'btn-theme-ghost font-display tracking-wide px-6 py-3';
 
-function BgGlow() {
+function BgGlow({ bgGlow }: { bgGlow?: string }) {
   return (
     <div
-      className="absolute inset-0 pointer-events-none"
+      className="absolute inset-0 pointer-events-none transition-all duration-700"
       style={{
         background:
+          bgGlow ||
           'radial-gradient(950px 620px at 10% -5%, rgba(16,185,129,0.16), transparent 60%), radial-gradient(850px 620px at 92% 105%, rgba(251,191,36,0.14), transparent 60%), radial-gradient(1300px 900px at 50% 50%, rgba(7,60,44,0.5), transparent 75%)',
       }}
     />
@@ -163,18 +175,21 @@ function IconBtn({
   onClick,
   label,
   children,
+  size = 'md',
 }: {
   onClick: () => void;
   label: string;
   children: ReactNode;
+  size?: 'sm' | 'md';
 }) {
+  const s = size === 'sm' ? 'w-7 h-7' : 'w-8.5 h-8.5';
   return (
     <button
       type="button"
       aria-label={label}
       title={label}
       onClick={onClick}
-      className="w-8.5 h-8.5 rounded-lg border border-amber-400/20 bg-emerald-950/70 text-emerald-200/90 flex items-center justify-center hover:border-amber-400/60 hover:text-amber-300 transition-colors cursor-pointer"
+      className={`${s} rounded-lg border border-amber-400/20 bg-emerald-950/70 text-emerald-200/90 flex items-center justify-center hover:border-amber-400/60 hover:text-amber-300 transition-colors cursor-pointer shrink-0`}
     >
       {children}
     </button>
@@ -262,6 +277,93 @@ function PlayerCard({
   );
 }
 
+function MobilePlayerChip({
+  player,
+  pos,
+  active,
+  rolls,
+  ladders,
+  snakes,
+  activeLabel,
+  totalPlayers = 2,
+}: {
+  player: PlayerConfig;
+  pos: number;
+  active: boolean;
+  rolls: number;
+  ladders: number;
+  snakes: number;
+  activeLabel?: string;
+  totalPlayers?: number;
+}) {
+  const col = PLAYER_COLORS[player.colorId % PLAYER_COLORS.length];
+  const is4p = totalPlayers >= 4;
+
+  return (
+    <div
+      className={`min-w-0 px-1.5 py-1 rounded-lg border transition-all duration-300 flex items-center gap-1 ${
+        active
+          ? 'bg-amber-400/20 border-amber-400 shadow-[0_0_10px_rgba(251,191,36,0.35)] ring-1 ring-amber-400/60'
+          : 'bg-emerald-950/60 border-emerald-800/40 opacity-80'
+      }`}
+      style={active ? { borderColor: col.base } : undefined}
+    >
+      <span
+        className="w-4.5 h-4.5 rounded-full shrink-0 flex items-center justify-center text-[9px] font-black text-white shadow-sm"
+        style={{
+          background: `radial-gradient(circle at 35% 30%, ${col.light}, ${col.base} 55%, ${col.dark})`,
+          boxShadow: active ? `0 0 6px ${col.glow}` : undefined,
+        }}
+      >
+        {player.id + 1}
+      </span>
+
+      <div className="flex-1 min-w-0 leading-tight">
+        <div className="flex items-center gap-0.5">
+          <span className="font-display text-[10px] sm:text-[11px] text-white truncate">
+            {player.name}
+          </span>
+          {player.isCpu && (
+            <span className="text-[7px] font-black px-0.5 rounded bg-purple-950/80 text-purple-300 border border-purple-800/40 shrink-0">
+              AI
+            </span>
+          )}
+        </div>
+        {!is4p ? (
+          <div className="text-[8px] text-emerald-300/70 font-bold flex items-center gap-1 truncate">
+            {active && activeLabel ? (
+              <span className="font-black text-amber-300 uppercase tracking-tight truncate">
+                {activeLabel}
+              </span>
+            ) : (
+              <>
+                {ladders > 0 && <span className="text-amber-400">🪜{ladders}</span>}
+                {snakes > 0 && <span className="text-rose-400">🐍{snakes}</span>}
+                {ladders === 0 && snakes === 0 && <span>{rolls}r</span>}
+              </>
+            )}
+          </div>
+        ) : (
+          <div className="text-[7.5px] text-emerald-300/60 font-bold leading-none truncate">
+            {ladders > 0 && <span className="text-amber-400">🪜{ladders} </span>}
+            {snakes > 0 && <span className="text-rose-400">🐍{snakes} </span>}
+            {ladders === 0 && snakes === 0 && <span>{rolls}r</span>}
+          </div>
+        )}
+      </div>
+
+      <div className="shrink-0 text-right leading-none pl-0.5">
+        <span
+          className="font-display text-xs sm:text-sm font-black"
+          style={{ color: active ? col.light : '#a7f3d0' }}
+        >
+          {pos === 0 ? '0' : pos}
+        </span>
+      </div>
+    </div>
+  );
+}
+
 /* ---------------- start screen ---------------- */
 
 function StartScreen({
@@ -269,11 +371,17 @@ function StartScreen({
   onOpenOnline,
   savedSession,
   onResumeSession,
+  currentThemeId,
+  onSelectTheme,
+  onOpenThemeModal,
 }: {
   onStart: (players: PlayerConfig[], speed: GameSpeed, winRule: WinRule) => void;
   onOpenOnline: () => void;
   savedSession?: SavedSession | null;
   onResumeSession?: () => void;
+  currentThemeId: ThemeId;
+  onSelectTheme: (id: ThemeId) => void;
+  onOpenThemeModal: () => void;
 }) {
   const [mode, setMode] = useState<'solo' | 'pass'>('solo');
   const [playerCount, setPlayerCount] = useState<number>(2);
@@ -315,13 +423,13 @@ function StartScreen({
   };
 
   return (
-    <div className="relative z-10 h-full w-full flex items-center justify-center overflow-y-auto p-4 sm:p-6">
-      <SnakeIcon className="floaty absolute left-[5%] top-[8%] w-14 h-14 text-red-500/25" />
-      <LadderIcon className="floaty absolute right-[6%] top-[14%] w-14 h-14 text-amber-400/25 [--fr:14deg]" />
-      <DiceIcon className="floaty absolute left-[8%] bottom-[10%] w-12 h-12 text-emerald-400/25 [--fr:-10deg]" />
-      <SnakeIcon className="floaty absolute right-[8%] bottom-[8%] w-12 h-12 text-lime-400/20 [--fr:160deg]" />
+    <div className="relative z-10 h-full w-full overflow-y-auto p-2.5 sm:p-6 flex flex-col items-center justify-start sm:justify-center">
+      <SnakeIcon className="pointer-events-none floaty absolute left-[5%] top-[8%] w-14 h-14 text-red-500/25" />
+      <LadderIcon className="pointer-events-none floaty absolute right-[6%] top-[14%] w-14 h-14 text-amber-400/25 [--fr:14deg]" />
+      <DiceIcon className="pointer-events-none floaty absolute left-[8%] bottom-[10%] w-12 h-12 text-emerald-400/25 [--fr:-10deg]" />
+      <SnakeIcon className="pointer-events-none floaty absolute right-[8%] bottom-[8%] w-12 h-12 text-lime-400/20 [--fr:160deg]" />
 
-      <div className="relative w-full max-w-xl panel p-6 sm:p-8 text-center border-amber-400/30">
+      <div className="relative w-full max-w-xl panel p-4 sm:p-8 text-center border-amber-400/30 my-1 sm:my-auto shrink-0">
         <div className="flex items-center justify-center gap-3 mb-2">
           <SnakeIcon className="w-8 h-8 text-red-400" />
           <DiceIcon className="w-8 h-8 text-amber-300" />
@@ -510,9 +618,59 @@ function StartScreen({
           </div>
         </div>
 
+        {/* Board Theme Selector Strip */}
+        <div className="mt-3.5 p-3 rounded-xl bg-emerald-950/50 border border-emerald-800/30 text-left">
+          <div className="flex items-center justify-between mb-2">
+            <div className="flex items-center gap-1.5">
+              <PaletteIcon className="w-4 h-4 text-amber-300" />
+              <span className="text-xs font-black text-emerald-300/80 tracking-wider">BOARD THEME:</span>
+            </div>
+            <button
+              type="button"
+              onClick={onOpenThemeModal}
+              className="text-[11px] font-bold text-amber-300 hover:text-amber-200 underline cursor-pointer"
+            >
+              View All (5)
+            </button>
+          </div>
+          <div className="grid grid-cols-5 gap-1.5">
+            {(Object.values(THEMES) as BoardTheme[]).map((t) => {
+              const isSelected = t.id === currentThemeId;
+              return (
+                <button
+                  key={t.id}
+                  type="button"
+                  onClick={() => onSelectTheme(t.id)}
+                  title={`${t.name}: ${t.tagline}`}
+                  className={`p-1.5 rounded-xl border flex flex-col items-center gap-1 transition-all cursor-pointer ${
+                    isSelected
+                      ? 'bg-amber-400/20 border-amber-400 shadow-[0_0_12px_rgba(251,191,36,0.3)] ring-1 ring-amber-400/70 scale-[1.02]'
+                      : 'bg-emerald-950/60 border-emerald-800/40 hover:border-emerald-700/70 hover:bg-emerald-900/30'
+                  }`}
+                >
+                  <span className="text-lg sm:text-xl leading-none">{t.icon}</span>
+                  <span className="text-[10px] font-bold text-center leading-tight truncate w-full text-emerald-100">
+                    {t.name.split(' ')[0]}
+                  </span>
+                  <div className="flex gap-0.5 mt-0.5">
+                    <span
+                      className="w-2 h-2 rounded-full border border-black/30"
+                      style={{ backgroundColor: t.previewColors.accent }}
+                    />
+                    <span
+                      className="w-2 h-2 rounded-full border border-black/30"
+                      style={{ backgroundColor: t.previewColors.tileDark }}
+                    />
+                  </div>
+                </button>
+              );
+            })}
+          </div>
+        </div>
+
         {/* Start Game Button */}
-        <div className="mt-5">
-          <button type="button" onClick={handleLaunch} className={`${btnGold} w-full text-base sm:text-lg`}>
+        <div className="mt-4">
+          <button type="button" onClick={handleLaunch} className="btn-theme w-full py-3.5 text-base sm:text-lg">
             START MATCH
           </button>
         </div>
@@ -555,7 +713,7 @@ function WinOverlay({
   return (
     <div className="absolute inset-0 z-40 flex items-center justify-center bg-[#04100b]/80 p-4 fade-in">
       <div
-        className="panel pop-in w-full max-w-md p-6 sm:p-8 text-center"
+        className="panel pop-in w-full max-w-md p-6 sm:p-8 text-center max-h-[92vh] overflow-y-auto"
         style={{ borderColor: col.base, boxShadow: `0 0 32px ${col.glow}` }}
       >
         <TrophyIcon className="w-16 h-16 mx-auto text-amber-400 drop-shadow-[0_0_20px_rgba(251,191,36,0.7)]" />
@@ -609,7 +767,7 @@ function WinOverlay({
         </div>
 
         <div className="mt-5 flex gap-3 justify-center flex-wrap">
-          <button type="button" className={btnGold} onClick={onAgain}>
+          <button type="button" className="btn-theme px-6 py-3" onClick={onAgain}>
             PLAY AGAIN (SPACE)
           </button>
           <button type="button" className={btnGhost} onClick={onMenu}>
@@ -642,7 +800,7 @@ function ConfirmModal({
           The current game progress will be lost. Are you sure?
         </p>
         <div className="mt-5 flex gap-3 justify-center">
-          <button type="button" onClick={onConfirm} className={btnGold}>
+          <button type="button" onClick={onConfirm} className="btn-theme px-6 py-3">
             YES, PROCEED
           </button>
           <button type="button" onClick={onCancel} className={btnGhost}>
@@ -660,6 +818,7 @@ export default function App() {
   const [showOnlineModal, setShowOnlineModal] = useState(() => {
     return window.location.hash.startsWith('#room=');
   });
+  const [showThemeModal, setShowThemeModal] = useState(false);
 
   const gameRef = useRef<ReturnType<typeof useGame> | null>(null);
 
@@ -730,6 +889,18 @@ export default function App() {
     return () => window.removeEventListener('hashchange', handleHash);
   }, []);
 
+  // Keyboard shortcut T for theme picker
+  useEffect(() => {
+    const handleKey = (e: KeyboardEvent) => {
+      if ((e.target as HTMLElement)?.tagName === 'INPUT') return;
+      if (e.key === 't' || e.key === 'T') {
+        setShowThemeModal((v) => !v);
+      }
+    };
+    window.addEventListener('keydown', handleKey);
+    return () => window.removeEventListener('keydown', handleKey);
+  }, []);
+
   const hashRoomCode = window.location.hash.startsWith('#room=')
     ? window.location.hash.replace('#room=', '').trim()
     : '';
@@ -795,9 +966,29 @@ export default function App() {
     return 'ROLL DICE';
   };
 
+  const themeVars = {
+    ['--theme-panel-bg' as string]: game.theme.ui.panelBg,
+    ['--theme-panel-border' as string]: game.theme.ui.panelBorder,
+    ['--theme-accent' as string]: game.theme.ui.accent,
+    ['--theme-accent-glow' as string]: game.theme.ui.accentGlow,
+    ['--theme-btn-bg' as string]: game.theme.ui.btnBg,
+    ['--theme-btn-text' as string]: game.theme.ui.btnText,
+    ['--theme-btn-border' as string]: game.theme.ui.btnBorder,
+    ['--theme-btn-shadow' as string]: game.theme.ui.btnShadow,
+  };
+
   return (
-    <div className="h-[100dvh] w-full overflow-hidden font-ui text-emerald-50 relative select-none">
-      <BgGlow />
+    <div
+      className="h-[100dvh] w-full overflow-hidden font-ui text-emerald-50 relative select-none"
+      style={{
+        paddingTop: 'env(safe-area-inset-top, 0px)',
+        paddingBottom: 'env(safe-area-inset-bottom, 0px)',
+        paddingLeft: 'env(safe-area-inset-left, 0px)',
+        paddingRight: 'env(safe-area-inset-right, 0px)',
+        ...themeVars,
+      }}
+    >
+      <BgGlow bgGlow={game.theme.ui.bgGlow} />
 
       {hud.mode === 'menu' ? (
         showOnlineModal ? (
@@ -837,13 +1028,95 @@ export default function App() {
             onOpenOnline={() => setShowOnlineModal(true)}
             savedSession={multiplayer.savedSession}
             onResumeSession={() => setShowOnlineModal(true)}
+            currentThemeId={game.themeId}
+            onSelectTheme={game.setTheme}
+            onOpenThemeModal={() => setShowThemeModal(true)}
           />
         )
       ) : (
         <>
-          <div className="relative z-10 h-full flex flex-col lg:flex-row gap-2.5 p-2.5 sm:p-3 lg:p-4 max-w-[1550px] mx-auto">
-            {/* Board Area */}
-            <div className="relative flex-1 min-h-0 flex flex-col items-center justify-center gap-2">
+          <div className="relative z-10 h-full flex flex-col landscape:flex-row lg:flex-row gap-1.5 sm:gap-2 lg:gap-3 p-1.5 sm:p-2.5 lg:p-4 max-w-[1600px] mx-auto overflow-hidden">
+            {/* Mobile Top Header (Portrait only) */}
+            <div className="landscape:hidden lg:hidden shrink-0 flex items-center justify-between gap-1 px-2 py-1 rounded-xl bg-emerald-950/80 border border-emerald-800/40 backdrop-blur-md">
+              <div className="flex items-center gap-1.5 min-w-0">
+                <SnakeIcon className="w-4.5 h-4.5 text-red-400 shrink-0" />
+                <span className="font-display text-xs sm:text-sm tracking-wide text-emerald-100 truncate">
+                  SNAKE <span className="text-amber-400">&amp; LADDER</span>
+                </span>
+                <span className="hidden xs:inline-block px-1.5 py-0.5 rounded text-[8px] font-black bg-emerald-900/60 border border-emerald-700/40 text-emerald-300 uppercase shrink-0">
+                  {hud.winRule === 'exact' ? 'Exact' : 'Bounce'}
+                </span>
+              </div>
+
+              <div className="flex items-center gap-1 shrink-0">
+                <button
+                  type="button"
+                  onClick={() => setShowThemeModal(true)}
+                  aria-label="Change Theme"
+                  title="Change Theme (T)"
+                  className="px-1.5 py-1 rounded-lg border border-amber-400/30 bg-emerald-950/80 text-amber-300 text-[10px] font-bold hover:border-amber-400/60 transition-colors flex items-center gap-1 cursor-pointer"
+                >
+                  <span>{game.theme.icon}</span>
+                  <span className="truncate max-w-[50px] xs:max-w-[70px]">{game.theme.name.split(' ')[0]}</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => {
+                    const next: Record<GameSpeed, GameSpeed> = {
+                      normal: 'fast',
+                      fast: 'turbo',
+                      turbo: 'normal',
+                    };
+                    game.setSpeed(next[hud.speed]);
+                  }}
+                  title="Cycle Game Speed (S)"
+                  className="px-1.5 py-1 rounded-lg border border-emerald-700/40 bg-emerald-950/80 text-emerald-200 text-[10px] font-black uppercase hover:border-amber-400/50 transition-colors cursor-pointer"
+                >
+                  ⚡{SPEEDS[hud.speed].label.split(' ')[0]}
+                </button>
+
+                <IconBtn onClick={game.toggleMute} label="Toggle Sound (M)" size="sm">
+                  <SpeakerIcon on={!game.muted} />
+                </IconBtn>
+                <IconBtn onClick={handleRestart} label="Restart Match (R)" size="sm">
+                  <RestartIcon className="w-3.5 h-3.5" />
+                </IconBtn>
+                <IconBtn onClick={game.requestMenu} label="Main Menu (Esc)" size="sm">
+                  <HomeIcon className="w-3.5 h-3.5" />
+                </IconBtn>
+              </div>
+            </div>
+
+            {/* Mobile Player Strip (Portrait only - single row) */}
+            <div className="landscape:hidden lg:hidden shrink-0">
+              <div
+                className={`grid gap-1 ${
+                  hud.players.length === 2
+                    ? 'grid-cols-2'
+                    : hud.players.length === 3
+                    ? 'grid-cols-3'
+                    : 'grid-cols-4'
+                }`}
+              >
+                {hud.players.map((p, idx) => (
+                  <MobilePlayerChip
+                    key={p.id}
+                    player={p}
+                    pos={hud.pos[idx] ?? 0}
+                    rolls={hud.rolls[idx] ?? 0}
+                    ladders={hud.laddersHit[idx] ?? 0}
+                    snakes={hud.snakesHit[idx] ?? 0}
+                    active={hud.turn === idx && hud.mode === 'playing'}
+                    activeLabel={cardLabel(idx)}
+                    totalPlayers={hud.players.length}
+                  />
+                ))}
+              </div>
+            </div>
+
+            {/* Board Area - Shared by Mobile & Desktop */}
+            <div className="relative flex-1 min-h-0 flex flex-col items-center justify-center gap-1 w-full h-full">
               {multiplayer.isOnline && (
                 <OnlineHudBar
                   roomCode={multiplayer.roomCode}
@@ -855,62 +1128,105 @@ export default function App() {
                   onLeaveRoom={handleLeaveOnline}
                 />
               )}
-              <div className="relative w-full flex-1 min-h-0 flex items-center justify-center">
-                <div ref={game.wrapRef} className="w-full h-full flex items-center justify-center">
+
+              <div className="relative w-full flex-1 min-h-0 min-w-0 flex items-center justify-center overflow-hidden">
+                <div ref={game.wrapRef} className="w-full h-full min-h-0 min-w-0 flex items-center justify-center overflow-hidden">
                   <canvas ref={game.canvasRef} className="drop-shadow-[0_18px_44px_rgba(0,0,0,0.6)]" />
                 </div>
                 <ToastView toast={game.toast} />
 
-              {/* Hover inspection badge */}
-              {game.hoveredSquare && (
-                <div className="absolute bottom-2 left-1/2 -translate-x-1/2 z-20 pointer-events-none px-3.5 py-1.5 rounded-full bg-slate-950/92 border border-amber-400/40 backdrop-blur-md text-xs sm:text-sm font-bold shadow-2xl flex items-center gap-2">
-                  <span className="text-amber-300 font-display tracking-wide">
-                    Square {game.hoveredSquare}
-                  </span>
-                  {PORTALS[game.hoveredSquare]?.type === 'snake' && (
-                    <span className="text-rose-400 flex items-center gap-1">
-                      <span>🐍 Drops to {PORTALS[game.hoveredSquare].to}</span>
-                      <span className="opacity-75 font-normal">
-                        ({PORTALS[game.hoveredSquare].diff} squares)
+                {/* Floating latest move ticker on mobile/tablet */}
+                {game.log[0] && (
+                  <div className="landscape:hidden lg:hidden absolute top-1 left-1/2 -translate-x-1/2 z-20 pointer-events-none px-2.5 py-0.5 rounded-full bg-slate-950/85 border border-amber-400/30 backdrop-blur-md text-[10px] font-bold text-emerald-100 shadow-lg flex items-center gap-1.5 max-w-[85%] truncate">
+                    <span className="w-1.5 h-1.5 rounded-full bg-amber-400 shrink-0" />
+                    <span className="truncate">{game.log[0].text}</span>
+                  </div>
+                )}
+
+                {/* Hover inspection badge */}
+                {game.hoveredSquare && (
+                  <div className="absolute bottom-2 left-1/2 -translate-x-1/2 z-20 pointer-events-none px-3 py-1 rounded-full bg-slate-950/92 border border-amber-400/40 backdrop-blur-md text-xs font-bold shadow-2xl flex items-center gap-1.5">
+                    <span className="text-amber-300 font-display tracking-wide">
+                      Square {game.hoveredSquare}
+                    </span>
+                    {PORTALS[game.hoveredSquare]?.type === 'snake' && (
+                      <span className="text-rose-400 flex items-center gap-1">
+                        <span>🐍 Drops to {PORTALS[game.hoveredSquare].to}</span>
+                        <span className="opacity-75 font-normal">
+                          ({PORTALS[game.hoveredSquare].diff} squares)
+                        </span>
                       </span>
-                    </span>
-                  )}
-                  {PORTALS[game.hoveredSquare]?.type === 'ladder' && (
-                    <span className="text-emerald-400 flex items-center gap-1">
-                      <span>🪜 Climbs to {PORTALS[game.hoveredSquare].to}</span>
-                      <span className="opacity-75 font-normal">
-                        (+{PORTALS[game.hoveredSquare].diff} squares)
+                    )}
+                    {PORTALS[game.hoveredSquare]?.type === 'ladder' && (
+                      <span className="text-emerald-400 flex items-center gap-1">
+                        <span>🪜 Climbs to {PORTALS[game.hoveredSquare].to}</span>
+                        <span className="opacity-75 font-normal">
+                          (+{PORTALS[game.hoveredSquare].diff} squares)
+                        </span>
                       </span>
-                    </span>
-                  )}
-                  {!PORTALS[game.hoveredSquare] && game.hoveredSquare === 100 && (
-                    <span className="text-amber-200">★ FINISH PODIUM ★</span>
-                  )}
-                  {!PORTALS[game.hoveredSquare] && game.hoveredSquare < 100 && (
-                    <span className="text-slate-400 font-medium">
-                      ({100 - game.hoveredSquare} to 100)
-                    </span>
-                  )}
-                </div>
-              )}
+                    )}
+                    {!PORTALS[game.hoveredSquare] && game.hoveredSquare === 100 && (
+                      <span className="text-amber-200">★ FINISH PODIUM ★</span>
+                    )}
+                    {!PORTALS[game.hoveredSquare] && game.hoveredSquare < 100 && (
+                      <span className="text-slate-400 font-medium">
+                        ({100 - game.hoveredSquare} to 100)
+                      </span>
+                    )}
+                  </div>
+                )}
               </div>
             </div>
 
-            {/* Controls Side Panel */}
-            <aside className="shrink-0 w-full lg:w-[350px] flex flex-col gap-2.5 min-h-0 lg:overflow-y-auto">
-              {/* Header Bar */}
-              <div className="panel p-2.5 flex flex-col gap-2">
+            {/* Mobile Bottom Thumb Bar (Portrait only) */}
+            <div className="landscape:hidden lg:hidden shrink-0 flex items-center gap-2 p-1.5 rounded-xl panel shadow-xl">
+              <Die
+                value={hud.roll}
+                rolling={hud.rolling}
+                onRoll={() => game.doRoll()}
+                canRoll={game.canRoll}
+                rollMs={SPEEDS[hud.speed].rollMs}
+                activeColor={activePal.base}
+                compact={true}
+              />
+              <button
+                type="button"
+                disabled={!game.canRoll}
+                onClick={() => game.doRoll()}
+                className={`btn-theme flex-1 py-2.5 px-3 text-sm sm:text-base font-display tracking-wide rounded-xl flex items-center justify-center gap-2 ${
+                  !game.canRoll ? 'opacity-50 saturate-50 cursor-not-allowed' : 'pulse-glow'
+                }`}
+              >
+                <span>{rollButtonLabel()}</span>
+              </button>
+            </div>
+
+            {/* Controls Side Panel (Landscape Mobile AND Desktop: landscape:flex lg:flex) */}
+            <aside className="hidden landscape:flex lg:flex shrink-0 w-[215px] xs:w-[235px] lg:w-[350px] flex-col gap-1.5 lg:gap-2 min-h-0 overflow-y-auto">
+              {/* Header Bar - Desktop Rich Version */}
+              <div className="hidden lg:flex panel p-2.5 flex-col gap-2 shrink-0">
                 <div className="flex items-center justify-between gap-2">
                   <div className="flex items-center gap-2 min-w-0">
                     <SnakeIcon className="w-5.5 h-5.5 text-red-400 shrink-0" />
-                    <span className="font-display text-lg tracking-wide whitespace-nowrap">
+                    <span className="font-display text-base sm:text-lg tracking-wide whitespace-nowrap">
                       <span className="text-emerald-100">SNAKE</span>{' '}
                       <span className="text-amber-400">&amp; LADDER</span>
                     </span>
                   </div>
-                  <span className="px-2 py-0.5 rounded-full bg-emerald-900/60 border border-emerald-700/50 text-[10px] font-bold text-emerald-300 uppercase tracking-wider shrink-0">
-                    {hud.winRule === 'exact' ? 'Exact 100' : 'Bounce Back'}
-                  </span>
+                  <div className="flex items-center gap-1.5 shrink-0">
+                    <button
+                      type="button"
+                      onClick={() => setShowThemeModal(true)}
+                      title="Change Theme (T)"
+                      className="px-2 py-0.5 rounded-full bg-emerald-900/60 border border-amber-400/40 text-[10px] font-bold text-amber-300 flex items-center gap-1 hover:border-amber-400/80 transition-colors cursor-pointer"
+                    >
+                      <span>{game.theme.icon}</span>
+                      <span>{game.theme.name.split(' ')[0]}</span>
+                    </button>
+                    <span className="px-2 py-0.5 rounded-full bg-emerald-900/60 border border-emerald-700/50 text-[10px] font-bold text-emerald-300 uppercase tracking-wider">
+                      {hud.winRule === 'exact' ? 'Exact 100' : 'Bounce Back'}
+                    </span>
+                  </div>
                 </div>
 
                 {/* Controls toolbar */}
@@ -933,6 +1249,9 @@ export default function App() {
                   </button>
 
                   <div className="flex items-center gap-1 shrink-0">
+                    <IconBtn onClick={() => setShowThemeModal(true)} label="Board Theme (T)">
+                      <PaletteIcon className="w-4 h-4 text-amber-300" />
+                    </IconBtn>
                     <IconBtn onClick={toggleFullscreen} label="Toggle Fullscreen (F)">
                       <ExpandIcon className="w-4 h-4" />
                     </IconBtn>
@@ -949,9 +1268,52 @@ export default function App() {
                 </div>
               </div>
 
-              {/* Player Scorecards Grid (Responsive for 2, 3, or 4 players) */}
+              {/* Header Bar - Landscape Mobile Streamlined Toolbar */}
+              <div className="flex lg:hidden panel px-2 py-1 items-center justify-between gap-1 shrink-0">
+                <div className="flex items-center gap-1 min-w-0">
+                  <button
+                    type="button"
+                    onClick={() => setShowThemeModal(true)}
+                    title="Change Theme (T)"
+                    className="px-1.5 py-0.5 rounded-lg border border-amber-400/30 bg-emerald-950/80 text-amber-300 text-[10px] font-bold hover:border-amber-400/60 transition-colors flex items-center gap-1 cursor-pointer"
+                  >
+                    <span>{game.theme.icon}</span>
+                    <span className="truncate max-w-[45px]">{game.theme.name.split(' ')[0]}</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const next: Record<GameSpeed, GameSpeed> = {
+                        normal: 'fast',
+                        fast: 'turbo',
+                        turbo: 'normal',
+                      };
+                      game.setSpeed(next[hud.speed]);
+                    }}
+                    title="Cycle Game Speed (S)"
+                    className="px-1.5 py-0.5 rounded-lg border border-emerald-700/40 bg-emerald-950/80 text-emerald-200 text-[10px] font-black uppercase hover:border-amber-400/50 transition-colors cursor-pointer"
+                  >
+                    ⚡{SPEEDS[hud.speed].label.split(' ')[0]}
+                  </button>
+                </div>
+
+                <div className="flex items-center gap-1 shrink-0">
+                  <IconBtn onClick={game.toggleMute} label="Toggle Sound (M)" size="sm">
+                    <SpeakerIcon on={!game.muted} />
+                  </IconBtn>
+                  <IconBtn onClick={handleRestart} label="Restart Match (R)" size="sm">
+                    <RestartIcon className="w-3.5 h-3.5" />
+                  </IconBtn>
+                  <IconBtn onClick={game.requestMenu} label="Main Menu (Esc)" size="sm">
+                    <HomeIcon className="w-3.5 h-3.5" />
+                  </IconBtn>
+                </div>
+              </div>
+
+              {/* Player Scorecards - Desktop View (full cards with progress bars) */}
               <div
-                className={`grid gap-2 ${
+                className={`hidden lg:grid gap-1.5 ${
                   hud.players.length === 2
                     ? 'grid-cols-2 lg:grid-cols-1'
                     : hud.players.length === 3
@@ -973,8 +1335,33 @@ export default function App() {
                 ))}
               </div>
 
+              {/* Player Chips - Landscape Mobile View (compact chips fitting any height) */}
+              <div
+                className={`grid lg:hidden gap-1 shrink-0 ${
+                  hud.players.length === 2
+                    ? 'grid-cols-2'
+                    : hud.players.length === 3
+                    ? 'grid-cols-3'
+                    : 'grid-cols-2'
+                }`}
+              >
+                {hud.players.map((p, idx) => (
+                  <MobilePlayerChip
+                    key={p.id}
+                    player={p}
+                    pos={hud.pos[idx] ?? 0}
+                    rolls={hud.rolls[idx] ?? 0}
+                    ladders={hud.laddersHit[idx] ?? 0}
+                    snakes={hud.snakesHit[idx] ?? 0}
+                    active={hud.turn === idx && hud.mode === 'playing'}
+                    activeLabel={cardLabel(idx)}
+                    totalPlayers={hud.players.length}
+                  />
+                ))}
+              </div>
+
               {/* Dice & Action Panel */}
-              <div className="panel p-3 flex items-center gap-4">
+              <div className="panel p-1.5 sm:p-2 lg:p-2.5 flex items-center gap-2 sm:gap-3 shrink-0">
                 <Die
                   value={hud.roll}
                   rolling={hud.rolling}
@@ -982,14 +1369,15 @@ export default function App() {
                   canRoll={game.canRoll}
                   rollMs={SPEEDS[hud.speed].rollMs}
                   activeColor={activePal.base}
+                  compact={true}
                 />
-                <div className="flex-1 min-w-0 flex flex-col items-stretch gap-1.5">
+                <div className="flex-1 min-w-0 flex flex-col items-stretch gap-1">
                   <button
                     type="button"
                     disabled={!game.canRoll}
                     onClick={() => game.doRoll()}
-                    className={`${btnGold} w-full text-center ${
-                      !game.canRoll ? 'opacity-50 saturate-50 cursor-not-allowed' : ''
+                    className={`btn-theme w-full py-2 sm:py-2.5 px-2 text-xs sm:text-sm lg:text-base text-center font-display ${
+                      !game.canRoll ? 'opacity-50 saturate-50 cursor-not-allowed' : 'pulse-glow'
                     }`}
                   >
                     {rollButtonLabel()}
@@ -1000,12 +1388,12 @@ export default function App() {
                 </div>
               </div>
 
-              {/* Live Move Log */}
-              <div className="panel p-3 hidden md:block">
-                <div className="text-[10px] font-black tracking-widest text-emerald-300/50 mb-1.5">GAME LOG</div>
-                <ul className="space-y-1.5">
-                  {game.log.map((e) => (
-                    <li key={e.id} className="text-[12px] font-bold flex items-center gap-2 text-emerald-100/90">
+              {/* Live Move Log (Desktop only - mobile uses floating overlay ticker) */}
+              <div className="panel p-2.5 hidden lg:block">
+                <div className="text-[10px] font-black tracking-widest text-emerald-300/50 mb-1">GAME LOG</div>
+                <ul className="space-y-1">
+                  {game.log.slice(0, 5).map((e) => (
+                    <li key={e.id} className="text-[11px] sm:text-[12px] font-bold flex items-center gap-2 text-emerald-100/90 truncate">
                       <span
                         className={`w-1.5 h-1.5 rounded-full shrink-0 ${
                           e.kind === 'p0'
@@ -1019,7 +1407,7 @@ export default function App() {
                             : 'bg-yellow-300'
                         }`}
                       />
-                      {e.text}
+                      <span className="truncate">{e.text}</span>
                     </li>
                   ))}
                 </ul>
@@ -1064,6 +1452,15 @@ export default function App() {
                 }
               }}
               onMenu={handleLeaveOnline}
+            />
+          )}
+
+          {/* Theme Selector Modal */}
+          {showThemeModal && (
+            <ThemeModal
+              currentThemeId={game.themeId}
+              onSelectTheme={game.setTheme}
+              onClose={() => setShowThemeModal(false)}
             />
           )}
         </>

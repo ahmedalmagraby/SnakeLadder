@@ -33,12 +33,23 @@ Play directly in your browser without any installation:
 - **Pass & Play**: Play locally with up to 4 players on a single screen.
 - **Online Multiplayer**: Host or join internet rooms across any device.
 
-### 🎨 Board & Visuals
-- **Crisp High-DPI Canvas**: Crystal-clear 100-cell checkered mahogany grid with crisp subpixel typography.
-- **Lively Serpentine Snakes**: Multi-segmented bezier curves with animated breathing scales, glowing eyes, and reactive flicking red tongues.
-- **3D Golden Ladders**: Realistic rungs with metallic lighting, drop shadows, and climb sparks.
-- **Multi-Token Arrangement**: Dynamic orbital slot offsets when multiple players land on the same square.
-- **Podium Finish Celebrations**: Interactive confetti bursts, fireworks, and match breakdown statistics upon reaching cell 100.
+### 🎨 Multiple Board Themes
+- **5 Distinct Visual Themes**:
+  - 🌴 **Jungle Safari**: Lush rainforest glow, golden bamboo ladders, emerald checkered tiles, and natural serpents.
+  - ⚡ **Cyber Neon**: Synthwave matrix, circuit board frame, holographic energy bridges, and cyber data-serpents.
+  - 🏛️ **Desert Pharaoh**: Ancient sandstone, royal lapis lazuli accents, golden cobras, and obelisk finish podium.
+  - 🌌 **Cosmic Galaxy**: Deep space nebulas, pulsar starlight beams, celestial star serpents, and astral finish line.
+  - 🍭 **Candy Kingdom**: Chocolate cookie frame, peppermint candy-cane ladders, and rainbow gummy worms.
+- **Full Palette & Sprite Customization**: Each theme features custom board frame gradients, corner embellishments, tile sheen, ladder styles, snake skins, and finish podiums.
+- **Theme Selector Modal**: Interactive modal with live color preview swatches, accessible via header button, start screen, or pressing `T`.
+- **Theme Persistence**: Chosen theme is automatically remembered across game sessions using `localStorage`.
+
+### 📱 Optimized Mobile Experience
+- **Maximized Board Real Estate**: Board canvas dynamically expands to fill 100% of available viewport space (`Math.min(width, height)`) with subpixel crispness.
+- **Ergonomic Portrait HUD**: Single-row player chip strip frees up maximum vertical space for the board, with a thumb-friendly roll deck pinned at the bottom.
+- **Zero-Scroll Landscape Mode**: Specialized compact landscape deck keeps all player cards, 3D die, and action buttons in view without vertical scrolling.
+- **Touch-to-Inspect**: Tap any square to instantly see snake drops, ladder climbs, or distance to cell 100, with auto-dismissing badges.
+- **Safe Area Aware**: Full compatibility with notches, dynamic islands, and home indicator bars via `env(safe-area-inset-*)`.
 
 ### ⚙️ Rules & Quality of Life
 - **Win Rules**:
@@ -47,7 +58,7 @@ Play directly in your browser without any installation:
 - **Lucky 6**: Rolling a 6 grants an immediate extra roll!
 - **Speed Presets**: Normal, Fast, and Turbo modes.
 - **Procedural Sound Engine**: Synthesized in real time using the **Web Audio API** (dice rattle, hop clatter, golden ladder chimes, snake hiss, and victory fanfares) with zero external audio assets.
-- **Keyboard Shortcuts**: Space / Enter to roll, `M` to toggle sound, `S` to toggle speed, `F` for fullscreen, and `Esc` for menu.
+- **Keyboard Shortcuts**: Space / Enter to roll, `T` to open theme picker, `M` to toggle sound, `S` to toggle speed, `F` for fullscreen, and `Esc` for menu.
 
 ---
 
@@ -128,18 +139,21 @@ SnakeLadder/
 │   ├── components/
 │   │   ├── Die.tsx             # 3D animated CSS die
 │   │   ├── OnlineHudBar.tsx    # In-game multiplayer status bar & emoji bar
-│   │   └── OnlineLobby.tsx     # Waiting room, swatches & invite link modal
+│   │   ├── OnlineLobby.tsx     # Waiting room, swatches & invite link modal
+│   │   └── ThemeModal.tsx      # Visual board theme picker modal
 │   ├── game/
 │   │   ├── constants.ts        # Board dimensions, ladders, snakes, colors
+│   │   ├── render.ts           # Canvas rendering engine for boards, snakes & themes
 │   │   ├── sfx.ts              # Procedural Web Audio sound synthesizer
+│   │   ├── themes.ts           # 5 distinct visual theme definitions & palettes
 │   │   ├── useGame.ts          # Core 60fps board engine & turn state machine
 │   │   └── network/
 │   │       ├── peerManager.ts  # WebRTC peer coordinator & star relay
 │   │       ├── sessionStorage.ts # LocalStorage session persistence & LAN IP
 │   │       ├── types.ts        # Network packet definitions
 │   │       └── useMultiplayer.ts # Multiplayer game hook & state sync
-│   ├── App.tsx                 # Main layout, menus & HUD
-│   ├── index.css               # Theme & custom animations
+│   ├── App.tsx                 # Main layout, menus, responsive HUD & aside
+│   ├── index.css               # Theme CSS variables & custom animations
 │   └── main.tsx                # React root mount
 ├── index.html
 ├── package.json

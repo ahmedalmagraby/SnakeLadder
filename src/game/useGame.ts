@@ -19,6 +19,7 @@ import {
   squareFromPoint,
 } from './constants';
 import { sfx } from './audio';
+import { THEMES, getSavedTheme, saveTheme, type BoardTheme, type ThemeId } from './themes';
 import {
   drawAnimatedSnakes,
   drawBoardBadgesAndNumbers,
@@ -241,6 +242,16 @@ export function useGame(options: UseGameOptions = {}) {
   const [showWin, setShowWin] = useState(false);
   const [confirmAction, setConfirmAction] = useState<'restart' | 'menu' | null>(null);
   const [hoveredSquare, setHoveredSquare] = useState<number | undefined>(undefined);
+  const [themeId, setThemeIdState] = useState<ThemeId>(() => getSavedTheme());
+  const themeRef = useRef<BoardTheme>(THEMES[themeId] || THEMES.jungle);
+  themeRef.current = THEMES[themeId] || THEMES.jungle;
+
+  const setTheme = useCallback((id: ThemeId) => {
+    if (!THEMES[id]) return;
+    saveTheme(id);
+    themeRef.current = THEMES[id];
+    setThemeIdState(id);
+  }, []);
 
   const sync = useCallback((patch: Partial<Hud>) => {
     setHud((h) => ({ ...h, ...patch }));
@@ -305,11 +316,12 @@ export function useGame(options: UseGameOptions = {}) {
 
   /* ---------- board layer rendering ---------- */
 
-  const renderBoardLayer = useCallback(() => {
+  const renderBoardLayer = useCallback((theme?: BoardTheme) => {
     const canvas = canvasRef.current;
     if (!canvas || canvas.width < 10) return;
+    const currentTheme = theme || themeRef.current;
 
-    // 1. Static base board layer (mahogany frame, checkered emerald tiles, ladders, start bay)
+    // 1. Static base board layer
     const c1 = document.createElement('canvas');
     c1.width = canvas.width;
     c1.height = canvas.height;
@@ -317,7 +329,7 @@ export function useGame(options: UseGameOptions = {}) {
     if (ctx1) {
       const s = c1.width / LOGICAL;
       ctx1.setTransform(s, 0, 0, s, 0, 0);
-      drawStaticBoard(ctx1);
+      drawStaticBoard(ctx1, currentTheme);
       boardLayer.current = c1;
     }
 
@@ -329,10 +341,14 @@ export function useGame(options: UseGameOptions = {}) {
     if (ctx2) {
       const s = c2.width / LOGICAL;
       ctx2.setTransform(s, 0, 0, s, 0, 0);
-      drawBoardBadgesAndNumbers(ctx2);
+      drawBoardBadgesAndNumbers(ctx2, currentTheme);
       numberLayer.current = c2;
     }
   }, []);
+
+  useEffect(() => {
+    renderBoardLayer(THEMES[themeId] || THEMES.jungle);
+  }, [themeId, renderBoardLayer]);
 
   /* ---------- game flow ---------- */
 
@@ -956,16 +972,27 @@ export function useGame(options: UseGameOptions = {}) {
     const canvas = canvasRef.current;
     if (!wrap || !canvas) return;
 
+    let touchTimer = 0;
+
     const resize = () => {
       const rect = wrap.getBoundingClientRect();
-      const size = Math.max(220, Math.min(rect.width, rect.height));
-      sizeRef.current = size;
+      if (rect.width <= 0 || rect.height <= 0) return;
+      const size = Math.floor(Math.min(rect.width, rect.height));
+      if (size < 20) return;
+
       const dpr = Math.min(2.5, window.devicePixelRatio || 1);
-      canvas.width = Math.round(size * dpr);
-      canvas.height = Math.round(size * dpr);
+      const targetPx = Math.round(size * dpr);
+      const sizeChanged = sizeRef.current !== size || canvas.width !== targetPx;
+
+      sizeRef.current = size;
+      canvas.width = targetPx;
+      canvas.height = targetPx;
       canvas.style.width = `${size}px`;
       canvas.style.height = `${size}px`;
-      renderBoardLayer();
+
+      if (sizeChanged) {
+        renderBoardLayer();
+      }
     };
 
     resize();
@@ -990,9 +1017,19 @@ export function useGame(options: UseGameOptions = {}) {
         gs.current.hoveredSquare = val;
         setHoveredSquare(val);
       }
+
+      // If pointer is touch, auto-clear inspection badge after 2.5s
+      if (e.pointerType === 'touch' && val !== undefined) {
+        window.clearTimeout(touchTimer);
+        touchTimer = window.setTimeout(() => {
+          gs.current.hoveredSquare = undefined;
+          setHoveredSquare(undefined);
+        }, 2500);
+      }
     };
 
     const onPointerLeave = () => {
+      window.clearTimeout(touchTimer);
       if (gs.current.hoveredSquare !== undefined) {
         gs.current.hoveredSquare = undefined;
         setHoveredSquare(undefined);
@@ -1000,12 +1037,15 @@ export function useGame(options: UseGameOptions = {}) {
     };
 
     canvas.addEventListener('pointermove', onPointerMove);
+    canvas.addEventListener('pointerdown', onPointerMove);
     canvas.addEventListener('pointerleave', onPointerLeave);
 
     return () => {
       alive = false;
+      window.clearTimeout(touchTimer);
       ro.disconnect();
       canvas.removeEventListener('pointermove', onPointerMove);
+      canvas.removeEventListener('pointerdown', onPointerMove);
       canvas.removeEventListener('pointerleave', onPointerLeave);
     };
   }, [hud.mode, renderBoardLayer]);
@@ -1096,7 +1136,7 @@ export function useGame(options: UseGameOptions = {}) {
 
       // 3. Draw animated living snakes (slither waves, breathing, eye blinking, flicking tongue, strike reaction)
       const activeSnakeHead = g.sliding?.kind === 'snake' ? g.sliding.from : undefined;
-      drawAnimatedSnakes(ctx, g.time, activeSnakeHead);
+      drawAnimatedSnakes(ctx, g.time, activeSnakeHead, themeRef.current);
 
       // 4. Blit numbers & badges layer strictly ON TOP of the animated snakes!
       if (nLayer) {
@@ -1141,15 +1181,17 @@ export function useGame(options: UseGameOptions = {}) {
         drawHoverHighlight(ctx, g.hoveredSquare, g.time);
       }
 
-      // Square 100 Finish Line ambient golden beacon
+      // Square 100 Finish Line ambient beacon
       if (g.mode === 'playing') {
         const c100 = squareCenter(100);
-        const pulse = 0.35 + 0.2 * Math.sin(g.time * 3.5);
+        const beaconAccent = themeRef.current.ui.accent;
+        const pulse = 0.35 + 0.25 * Math.sin(g.time * 3.5);
         ctx.save();
-        ctx.strokeStyle = `rgba(254, 240, 138, ${pulse})`;
+        ctx.strokeStyle = beaconAccent;
+        ctx.globalAlpha = pulse;
         ctx.lineWidth = 2.5;
-        ctx.shadowColor = '#f59e0b';
-        ctx.shadowBlur = 12;
+        ctx.shadowColor = beaconAccent;
+        ctx.shadowBlur = 14;
         roundRectPath(ctx, c100.x - CELL / 2 + 3, c100.y - CELL / 2 + 3, CELL - 6, CELL - 6, 8);
         ctx.stroke();
         ctx.restore();
@@ -1340,6 +1382,9 @@ export function useGame(options: UseGameOptions = {}) {
     canRoll,
     confirmAction,
     hoveredSquare,
+    theme: THEMES[themeId] || THEMES.jungle,
+    themeId,
+    setTheme,
     playerName,
     playerPalette,
     startGame,

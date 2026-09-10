@@ -152,8 +152,9 @@ export default function OnlineLobby({
     const shareUrl = getShareUrl(roomCode);
 
     return (
-      <div className="relative w-full max-w-xl panel p-6 sm:p-8 text-center border-amber-400/30">
-        {/* Header */}
+      <div className="relative z-10 h-full w-full overflow-y-auto p-2.5 sm:p-6 flex flex-col items-center justify-start sm:justify-center">
+        <div className="relative w-full max-w-xl panel p-4 sm:p-8 text-center border-amber-400/30 my-1 sm:my-auto shrink-0">
+          {/* Header */}
         <div className="flex items-center justify-between border-b border-emerald-800/40 pb-3">
           <div className="flex items-center gap-2">
             <span className="w-3 h-3 rounded-full bg-emerald-400 animate-pulse" />
@@ -452,13 +453,15 @@ export default function OnlineLobby({
           )}
         </div>
       </div>
-    );
-  }
+    </div>
+  );
+}
 
   /* ---------------- Create / Join Screen View ---------------- */
   return (
-    <div className="relative w-full max-w-lg panel p-6 sm:p-8 text-center border-amber-400/30">
-      <div className="flex items-center justify-center gap-2 mb-2">
+    <div className="relative z-10 h-full w-full overflow-y-auto p-2.5 sm:p-6 flex flex-col items-center justify-start sm:justify-center">
+      <div className="relative w-full max-w-lg panel p-4 sm:p-8 text-center border-amber-400/30 my-1 sm:my-auto shrink-0">
+        <div className="flex items-center justify-center gap-2 mb-2">
         <span className="text-2xl">🌐</span>
         <h2 className="font-display text-3xl sm:text-4xl text-amber-300 drop-title">
           ONLINE MULTIPLAYER
@@ -743,5 +746,6 @@ export default function OnlineLobby({
         </button>
       </div>
     </div>
-  );
+  </div>
+);
 }
