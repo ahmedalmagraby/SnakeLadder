@@ -1,5 +1,19 @@
 import type { GameSpeed, WinRule } from '../constants';
 
+export type AdmissionState = 'pending' | 'authenticated' | 'joined' | 'closed';
+
+export const MAX_PACKET_BYTES = 16384;
+export const MAX_STRING_LEN = 128;
+export const MAX_PLAYER_NAME_LEN = 24;
+export const MAX_ROOM_CODE_LEN = 6;
+export const MAX_REASON_LEN = 128;
+export const MAX_TOKEN_LEN = 64;
+export const MAX_REQUEST_ID_LEN = 64;
+export const MAX_PLAYERS = 4;
+export const ALLOWED_EMOJIS = ['🐍', '🪜', '🎲', '👑', '😱', '😂', '🔥', '🎯'] as const;
+export type AllowedEmoji = typeof ALLOWED_EMOJIS[number];
+export const MIN_EMOTE_INTERVAL_MS = 1000;
+
 export interface NetworkPlayer {
   playerId: string;
   peerId: string;
@@ -10,6 +24,18 @@ export interface NetworkPlayer {
   isCpu: boolean;
   isReady: boolean;
   ping?: number;
+}
+
+export interface GameStateSnapshot {
+  pos: number[];
+  turn: number;
+  phase: string;
+  rolls: number[];
+  laddersHit: number[];
+  snakesHit: number[];
+  sixesHit: number[];
+  winner: number;
+  isPlaying?: boolean;
 }
 
 export type ConnectionStatus =
@@ -26,53 +52,56 @@ export type ConnectionStatus =
 export type Packet =
   | {
       type: 'JOIN_REQUEST';
-      playerId: string;
+      requestId: string;
+      roomCode: string;
       name: string;
       colorId: number;
     }
   | {
       type: 'JOIN_ACCEPTED';
+      requestId: string;
       slotIndex: number;
+      reconnectToken: string;
       roomCode: string;
       speed: GameSpeed;
       winRule: WinRule;
       players: NetworkPlayer[];
+      stateVersion: number;
+      turnId: number;
     }
   | {
       type: 'JOIN_REJECTED';
+      requestId: string;
       reason: string;
     }
   | {
       type: 'RECONNECT_REQUEST';
+      requestId: string;
       roomCode: string;
-      playerId: string;
-      name: string;
+      slotIndex: number;
+      reconnectToken: string;
     }
   | {
       type: 'RECONNECT_ACCEPTED';
+      requestId: string;
       slotIndex: number;
+      reconnectToken: string;
       roomCode: string;
       speed: GameSpeed;
       winRule: WinRule;
       players: NetworkPlayer[];
-      gameState?: {
-        pos: number[];
-        turn: number;
-        phase: string;
-        rolls: number[];
-        laddersHit: number[];
-        snakesHit: number[];
-        sixesHit: number[];
-        winner: number;
-        isPlaying: boolean;
-      };
+      stateVersion: number;
+      turnId: number;
+      gameState?: GameStateSnapshot;
     }
   | {
       type: 'RECONNECT_REJECTED';
+      requestId: string;
       reason: string;
     }
   | {
-      type: 'CHANGE_COLOR';
+      type: 'COLOR_CHANGE_REQUEST';
+      requestId: string;
       slotIndex: number;
       colorId: number;
     }
@@ -81,17 +110,28 @@ export type Packet =
       players: NetworkPlayer[];
       speed: GameSpeed;
       winRule: WinRule;
+      stateVersion: number;
     }
   | {
       type: 'GAME_START';
       players: NetworkPlayer[];
       speed: GameSpeed;
       winRule: WinRule;
+      stateVersion: number;
+      turnId: number;
     }
   | {
-      type: 'DICE_ROLL';
+      type: 'ROLL_REQUEST';
+      requestId: string;
+      turnId: number;
+      slotIndex: number;
+    }
+  | {
+      type: 'ROLL_RESULT';
       player: number;
       roll: number;
+      turnId: number;
+      stateVersion: number;
       timestamp: number;
     }
   | {
@@ -104,9 +144,12 @@ export type Packet =
       snakesHit: number[];
       sixesHit: number[];
       winner: number;
+      stateVersion: number;
+      turnId: number;
     }
   | {
       type: 'EMOTE';
+      requestId: string;
       player: number;
       emoji: string;
       timestamp: number;
@@ -115,6 +158,7 @@ export type Packet =
       type: 'PLAYER_DISCONNECTED';
       slotIndex: number;
       name: string;
+      stateVersion: number;
     }
   | {
       type: 'PING';
@@ -124,3 +168,5 @@ export type Packet =
       type: 'PONG';
       sentAt: number;
     };
+
+export type PacketType = Packet['type'];

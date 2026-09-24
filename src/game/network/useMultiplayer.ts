@@ -9,7 +9,32 @@ import {
   saveSession,
   type SavedSession,
 } from './sessionStorage';
-import type { ConnectionStatus, NetworkPlayer, Packet } from './types';
+import {
+  MIN_EMOTE_INTERVAL_MS,
+  type ConnectionStatus,
+  type GameStateSnapshot,
+  type NetworkPlayer,
+  type Packet,
+} from './types';
+import { isValidEmoji, stripCpuSuffix } from './validation';
+
+function generateSecureToken(): string {
+  if (typeof crypto !== 'undefined') {
+    if (typeof crypto.randomUUID === 'function') {
+      return (crypto.randomUUID().replace(/-/g, '') + Math.random().toString(36).slice(2)).slice(0, 32);
+    }
+    if (typeof crypto.getRandomValues === 'function') {
+      const bytes = new Uint8Array(16);
+      crypto.getRandomValues(bytes);
+      return Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('');
+    }
+  }
+  return 'tok_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2) + Math.random().toString(36).slice(2);
+}
+
+function generateRequestId(prefix = 'req'): string {
+  return `${prefix}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+}
 
 export interface UseMultiplayerProps {
   onGameStart?: (players: PlayerConfig[], speed: GameSpeed, winRule: WinRule) => void;
@@ -26,13 +51,15 @@ export interface UseMultiplayerProps {
   }) => void;
   onEmoteReceived?: (player: number, emoji: string) => void;
   onPlayerDisconnected?: (slotIndex: number, name: string) => void;
+  onPlayerReconnected?: (slotIndex: number, name: string) => void;
+  onPlayersUpdated?: (players: PlayerConfig[]) => void;
   onReconnected?: (
     players: PlayerConfig[],
     speed: GameSpeed,
     winRule: WinRule,
-    gameState?: any,
+    gameState?: GameStateSnapshot,
   ) => void;
-  getGameStateSnapshot?: () => any;
+  getGameStateSnapshot?: () => GameStateSnapshot | undefined;
 }
 
 export function useMultiplayer({
@@ -41,6 +68,8 @@ export function useMultiplayer({
   onSyncCheckpoint,
   onEmoteReceived,
   onPlayerDisconnected,
+  onPlayerReconnected,
+  onPlayersUpdated,
   onReconnected,
   getGameStateSnapshot,
 }: UseMultiplayerProps = {}) {
@@ -57,6 +86,17 @@ export function useMultiplayer({
   const [ping, setPing] = useState(0);
   const [savedSession, setSavedSession] = useState<SavedSession | null>(() => getSavedSession());
 
+  // Protocol state versions and turn IDs
+  const stateVersionRef = useRef<number>(1);
+  const turnIdRef = useRef<number>(1);
+  const lastSeenStateVersionRef = useRef<number>(0);
+  const hasRolledForCurrentTurnRef = useRef<boolean>(false);
+
+  // Host-only private state
+  const slotTokensRef = useRef<Map<number, string>>(new Map()); // slotIndex -> reconnectToken
+  const processedRequestIdsRef = useRef<Set<string>>(new Set());
+  const lastEmoteTimeRef = useRef<Map<number, number>>(new Map());
+
   // Keep references to state and callbacks for packet handlers
   const stateRef = useRef({
     isHost: false,
@@ -65,6 +105,7 @@ export function useMultiplayer({
     speed: 'normal' as GameSpeed,
     winRule: 'exact' as WinRule,
     mySlot: 0,
+    roomCode: '',
   });
 
   const callbacksRef = useRef({
@@ -73,6 +114,8 @@ export function useMultiplayer({
     onSyncCheckpoint,
     onEmoteReceived,
     onPlayerDisconnected,
+    onPlayerReconnected,
+    onPlayersUpdated,
     onReconnected,
     getGameStateSnapshot,
   });
@@ -84,6 +127,7 @@ export function useMultiplayer({
     speed,
     winRule,
     mySlot,
+    roomCode,
   };
 
   callbacksRef.current = {
@@ -92,6 +136,8 @@ export function useMultiplayer({
     onSyncCheckpoint,
     onEmoteReceived,
     onPlayerDisconnected,
+    onPlayerReconnected,
+    onPlayersUpdated,
     onReconnected,
     getGameStateSnapshot,
   };
@@ -131,333 +177,488 @@ export function useMultiplayer({
   useEffect(() => {
     const unsubPacket = peerManager.onPacket((packet, fromPeerId) => {
       const s = stateRef.current;
+      const peerId = fromPeerId ?? '';
 
-      switch (packet.type) {
-        case 'JOIN_REQUEST': {
-          if (!s.isHost) return;
+      // Host packet handler
+      if (s.isHost) {
+        // Enforce request deduplication
+        if ('requestId' in packet && packet.requestId) {
+          if (processedRequestIdsRef.current.has(packet.requestId)) {
+            // Already processed this request
+            return;
+          }
+          // Cap processed requests history to avoid memory growth
+          if (processedRequestIdsRef.current.size > 500) {
+            const first = processedRequestIdsRef.current.values().next().value;
+            if (first !== undefined) processedRequestIdsRef.current.delete(first);
+          }
+          processedRequestIdsRef.current.add(packet.requestId);
+        }
 
-          // Check if this player was already in room and is rejoining
-          const existingSlot = s.players.find(
-            (p) =>
-              p.playerId === packet.playerId ||
-              (p.isCpu && p.name.replace(' (CPU)', '') === packet.name),
-          );
+        switch (packet.type) {
+          case 'JOIN_REQUEST': {
+            // Verify room code
+            if (packet.roomCode !== s.roomCode) {
+              peerManager.sendToPeer(peerId, {
+                type: 'JOIN_REJECTED',
+                requestId: packet.requestId,
+                reason: `Invalid room code: expected ${s.roomCode}`,
+              });
+              peerManager.closeConnection(peerId, 'Invalid room code');
+              return;
+            }
 
-          if (existingSlot) {
-            const restoredPlayer: NetworkPlayer = {
-              ...existingSlot,
-              peerId: fromPeerId ?? '',
-              playerId: packet.playerId,
-              name: packet.name || existingSlot.name.replace(' (CPU)', ''),
+            // Check if room is full
+            const humanCount = s.players.filter((p) => !p.isCpu).length;
+            if (humanCount >= s.maxPlayers) {
+              peerManager.sendToPeer(peerId, {
+                type: 'JOIN_REJECTED',
+                requestId: packet.requestId,
+                reason: 'Room is already full.',
+              });
+              peerManager.closeConnection(peerId, 'Room full');
+              return;
+            }
+
+            // Find next available slot
+            const occupiedSlots = new Set(s.players.map((p) => p.slotIndex));
+            let assignedSlot = -1;
+            for (let i = 0; i < s.maxPlayers; i++) {
+              if (!occupiedSlots.has(i)) {
+                assignedSlot = i;
+                break;
+              }
+            }
+
+            if (assignedSlot === -1) {
+              peerManager.sendToPeer(peerId, {
+                type: 'JOIN_REJECTED',
+                requestId: packet.requestId,
+                reason: 'No open slots.',
+              });
+              peerManager.closeConnection(peerId, 'No slots available');
+              return;
+            }
+
+            // Ensure unique color
+            const takenColors = new Set(s.players.map((p) => p.colorId));
+            let finalColorId = packet.colorId;
+            if (takenColors.has(finalColorId) || finalColorId < 0 || finalColorId > 3) {
+              finalColorId = [0, 1, 2, 3].find((c) => !takenColors.has(c)) ?? assignedSlot;
+            }
+
+            // Generate secret host-issued reconnect token
+            const reconnectToken = generateSecureToken();
+            slotTokensRef.current.set(assignedSlot, reconnectToken);
+
+            // Update peer admission state in peerManager to 'joined'
+            peerManager.setAdmissionState(peerId, 'joined', assignedSlot);
+
+            const newPlayer: NetworkPlayer = {
+              playerId: 'p_' + peerId.slice(-6),
+              peerId,
+              name: packet.name,
+              slotIndex: assignedSlot,
+              colorId: finalColorId,
+              isHost: false,
               isCpu: false,
               isReady: true,
             };
 
-            const updatedPlayers = s.players.map((p) =>
-              p.slotIndex === existingSlot.slotIndex ? restoredPlayer : p,
+            const updatedPlayers = [...s.players, newPlayer].sort(
+              (a, b) => a.slotIndex - b.slotIndex,
             );
 
+            stateVersionRef.current += 1;
             setPlayers(updatedPlayers);
-            const currentGameState = callbacksRef.current.getGameStateSnapshot?.();
 
-            peerManager.sendToPeer(fromPeerId ?? '', {
-              type: 'RECONNECT_ACCEPTED',
-              slotIndex: existingSlot.slotIndex,
-              roomCode: peerManager.getRoomCode(),
+            // Send ACCEPTED to the joining guest with their private reconnect token
+            peerManager.sendToPeer(peerId, {
+              type: 'JOIN_ACCEPTED',
+              requestId: packet.requestId,
+              slotIndex: assignedSlot,
+              reconnectToken,
+              roomCode: s.roomCode,
               speed: s.speed,
               winRule: s.winRule,
               players: updatedPlayers,
-              gameState: currentGameState,
+              stateVersion: stateVersionRef.current,
+              turnId: turnIdRef.current,
             });
 
+            // Broadcast updated lobby roster ONLY to other joined peers
             peerManager.broadcast({
               type: 'LOBBY_UPDATE',
               players: updatedPlayers,
               speed: s.speed,
               winRule: s.winRule,
+              stateVersion: stateVersionRef.current,
             });
             break;
           }
 
-          // Check if room is full
-          const humanCount = s.players.filter((p) => !p.isCpu).length;
-          if (humanCount >= s.maxPlayers) {
-            peerManager.sendToPeer(fromPeerId ?? '', {
-              type: 'JOIN_REJECTED',
-              reason: 'Room is already full.',
-            });
-            return;
-          }
-
-          // Assign next open slot
-          const occupiedSlots = new Set(s.players.map((p) => p.slotIndex));
-          let assignedSlot = -1;
-          for (let i = 0; i < s.maxPlayers; i++) {
-            if (!occupiedSlots.has(i)) {
-              assignedSlot = i;
-              break;
-            }
-          }
-
-          if (assignedSlot === -1) {
-            peerManager.sendToPeer(fromPeerId ?? '', {
-              type: 'JOIN_REJECTED',
-              reason: 'No available slots.',
-            });
-            return;
-          }
-
-          // Ensure strictly UNIQUE color!
-          const takenColors = new Set(s.players.map((p) => p.colorId));
-          let finalColorId = packet.colorId;
-          if (takenColors.has(finalColorId) || finalColorId < 0 || finalColorId > 3) {
-            finalColorId = [0, 1, 2, 3].find((c) => !takenColors.has(c)) ?? assignedSlot;
-          }
-
-          const newPlayer: NetworkPlayer = {
-            playerId: packet.playerId,
-            peerId: fromPeerId ?? '',
-            name: packet.name,
-            slotIndex: assignedSlot,
-            colorId: finalColorId,
-            isHost: false,
-            isCpu: false,
-            isReady: true,
-          };
-
-          const updatedPlayers = [...s.players, newPlayer].sort(
-            (a, b) => a.slotIndex - b.slotIndex,
-          );
-
-          setPlayers(updatedPlayers);
-
-          // Tell the joining guest they are accepted
-          peerManager.sendToPeer(fromPeerId ?? '', {
-            type: 'JOIN_ACCEPTED',
-            slotIndex: assignedSlot,
-            roomCode: peerManager.getRoomCode(),
-            speed: s.speed,
-            winRule: s.winRule,
-            players: updatedPlayers,
-          });
-
-          // Broadcast updated lobby roster to all other peers
-          peerManager.broadcast({
-            type: 'LOBBY_UPDATE',
-            players: updatedPlayers,
-            speed: s.speed,
-            winRule: s.winRule,
-          });
-          break;
-        }
-
-        case 'RECONNECT_REQUEST': {
-          if (!s.isHost) return;
-
-          const match = s.players.find(
-            (p) =>
-              p.playerId === packet.playerId ||
-              (p.isCpu && p.name.replace(' (CPU)', '') === packet.name),
-          );
-
-          if (!match) {
-            peerManager.sendToPeer(fromPeerId ?? '', {
-              type: 'RECONNECT_REJECTED',
-              reason: 'No matching player slot found to rejoin.',
-            });
-            return;
-          }
-
-          const restored: NetworkPlayer = {
-            ...match,
-            peerId: fromPeerId ?? '',
-            playerId: packet.playerId,
-            name: packet.name || match.name.replace(' (CPU)', ''),
-            isCpu: false,
-            isReady: true,
-          };
-
-          const updated = s.players.map((p) =>
-            p.slotIndex === match.slotIndex ? restored : p,
-          );
-
-          setPlayers(updated);
-          const currentGameState = callbacksRef.current.getGameStateSnapshot?.();
-
-          peerManager.sendToPeer(fromPeerId ?? '', {
-            type: 'RECONNECT_ACCEPTED',
-            slotIndex: match.slotIndex,
-            roomCode: peerManager.getRoomCode(),
-            speed: s.speed,
-            winRule: s.winRule,
-            players: updated,
-            gameState: currentGameState,
-          });
-
-          peerManager.broadcast({
-            type: 'LOBBY_UPDATE',
-            players: updated,
-            speed: s.speed,
-            winRule: s.winRule,
-          });
-          break;
-        }
-
-        case 'JOIN_ACCEPTED': {
-          setMySlot(packet.slotIndex);
-          setRoomCode(packet.roomCode);
-          setSpeed(packet.speed);
-          setWinRule(packet.winRule);
-          setPlayers(packet.players);
-          setStatus('connected');
-          setIsOnline(true);
-          setStatusDetail('Joined room successfully!');
-
-          const p = packet.players.find((x) => x.slotIndex === packet.slotIndex);
-          saveSession({
-            roomCode: packet.roomCode,
-            playerId: getOrCreatePlayerId(),
-            playerName: p?.name || 'Player',
-            colorId: p?.colorId ?? packet.slotIndex,
-            slotIndex: packet.slotIndex,
-            isHost: false,
-          });
-          refreshSavedSession();
-          break;
-        }
-
-        case 'RECONNECT_ACCEPTED': {
-          setMySlot(packet.slotIndex);
-          setRoomCode(packet.roomCode);
-          setSpeed(packet.speed);
-          setWinRule(packet.winRule);
-          setPlayers(packet.players);
-          setStatus('connected');
-          setIsOnline(true);
-          setStatusDetail('Reconnected to match!');
-
-          const p = packet.players.find((x) => x.slotIndex === packet.slotIndex);
-          saveSession({
-            roomCode: packet.roomCode,
-            playerId: getOrCreatePlayerId(),
-            playerName: p?.name || 'Player',
-            colorId: p?.colorId ?? packet.slotIndex,
-            slotIndex: packet.slotIndex,
-            isHost: false,
-          });
-          refreshSavedSession();
-
-          const configs: PlayerConfig[] = packet.players.map((x) => ({
-            id: x.slotIndex,
-            name: x.name,
-            isCpu: x.isCpu,
-            colorId: x.colorId,
-          }));
-
-          callbacksRef.current.onReconnected?.(
-            configs,
-            packet.speed,
-            packet.winRule,
-            packet.gameState,
-          );
-          break;
-        }
-
-        case 'RECONNECT_REJECTED': {
-          clearSession();
-          refreshSavedSession();
-          setStatus('error');
-          setStatusDetail(packet.reason);
-          break;
-        }
-
-        case 'JOIN_REJECTED': {
-          setStatus('error');
-          setStatusDetail(packet.reason);
-          break;
-        }
-
-        case 'CHANGE_COLOR': {
-          if (!s.isHost) return;
-          const isTaken = s.players.some(
-            (p) => p.slotIndex !== packet.slotIndex && p.colorId === packet.colorId,
-          );
-          if (isTaken) return;
-
-          const updated = s.players.map((p) =>
-            p.slotIndex === packet.slotIndex ? { ...p, colorId: packet.colorId } : p,
-          );
-          setPlayers(updated);
-          peerManager.broadcast({
-            type: 'LOBBY_UPDATE',
-            players: updated,
-            speed: s.speed,
-            winRule: s.winRule,
-          });
-          break;
-        }
-
-        case 'LOBBY_UPDATE': {
-          setPlayers(packet.players);
-          setSpeed(packet.speed);
-          setWinRule(packet.winRule);
-          break;
-        }
-
-        case 'GAME_START': {
-          setPlayers(packet.players);
-          setSpeed(packet.speed);
-          setWinRule(packet.winRule);
-          const configs: PlayerConfig[] = packet.players.map((p) => ({
-            id: p.slotIndex,
-            name: p.name,
-            isCpu: p.isCpu,
-            colorId: p.colorId,
-          }));
-          callbacksRef.current.onGameStart?.(configs, packet.speed, packet.winRule);
-          break;
-        }
-
-        case 'DICE_ROLL': {
-          callbacksRef.current.onRemoteRoll?.(packet.player, packet.roll);
-          break;
-        }
-
-        case 'SYNC_CHECKPOINT': {
-          callbacksRef.current.onSyncCheckpoint?.(packet);
-          break;
-        }
-
-        case 'EMOTE': {
-          callbacksRef.current.onEmoteReceived?.(packet.player, packet.emoji);
-          break;
-        }
-
-        case 'PLAYER_DISCONNECTED': {
-          const dcSlot = packet.slotIndex;
-          if (s.isHost) {
-            // Find disconnected player by peerId or slot
-            const dcPlayer = s.players.find(
-              (p) => p.peerId === fromPeerId || p.slotIndex === dcSlot,
-            );
-            if (dcPlayer) {
-              // Convert to CPU bot so game keeps going
-              const converted = s.players.map((p) =>
-                p.slotIndex === dcPlayer.slotIndex
-                  ? { ...p, isCpu: true, name: `${p.name.replace(' (CPU)', '')} (CPU)` }
-                  : p,
-              );
-              setPlayers(converted);
-              peerManager.broadcast({
-                type: 'LOBBY_UPDATE',
-                players: converted,
-                speed: s.speed,
-                winRule: s.winRule,
+          case 'RECONNECT_REQUEST': {
+            if (packet.roomCode !== s.roomCode) {
+              peerManager.sendToPeer(peerId, {
+                type: 'RECONNECT_REJECTED',
+                requestId: packet.requestId,
+                reason: `Invalid room code: expected ${s.roomCode}`,
               });
-              callbacksRef.current.onPlayerDisconnected?.(dcPlayer.slotIndex, dcPlayer.name);
+              peerManager.closeConnection(peerId, 'Invalid room code');
+              return;
             }
+
+            // Authenticate using host-issued reconnect token
+            const expectedToken = slotTokensRef.current.get(packet.slotIndex);
+            if (!expectedToken || expectedToken !== packet.reconnectToken) {
+              // Failed token authentication
+              peerManager.sendToPeer(peerId, {
+                type: 'RECONNECT_REJECTED',
+                requestId: packet.requestId,
+                reason: 'Authentication failed: Invalid or expired reconnect token.',
+              });
+              peerManager.closeConnection(peerId, 'Invalid reconnect token');
+              return;
+            }
+
+            const targetPlayer = s.players.find((p) => p.slotIndex === packet.slotIndex);
+            if (!targetPlayer) {
+              peerManager.sendToPeer(peerId, {
+                type: 'RECONNECT_REJECTED',
+                requestId: packet.requestId,
+                reason: 'Player slot no longer exists.',
+              });
+              peerManager.closeConnection(peerId, 'Slot does not exist');
+              return;
+            }
+
+            // Restore player to active human state
+            peerManager.setAdmissionState(peerId, 'joined', packet.slotIndex);
+
+            const cleanName = stripCpuSuffix(targetPlayer.name);
+            const restored: NetworkPlayer = {
+              ...targetPlayer,
+              peerId,
+              isCpu: false,
+              isReady: true,
+              name: cleanName,
+            };
+
+            const updated = s.players.map((p) =>
+              p.slotIndex === packet.slotIndex ? restored : p,
+            );
+
+            stateVersionRef.current += 1;
+            setPlayers(updated);
+
+            const configs: PlayerConfig[] = updated.map((p) => ({
+              id: p.slotIndex,
+              name: stripCpuSuffix(p.name),
+              isCpu: p.isCpu,
+              colorId: p.colorId,
+            }));
+            callbacksRef.current.onPlayersUpdated?.(configs);
+            callbacksRef.current.onPlayerReconnected?.(packet.slotIndex, cleanName);
+
+            const currentGameState = callbacksRef.current.getGameStateSnapshot?.();
+
+            peerManager.sendToPeer(peerId, {
+              type: 'RECONNECT_ACCEPTED',
+              requestId: packet.requestId,
+              slotIndex: packet.slotIndex,
+              reconnectToken: expectedToken,
+              roomCode: s.roomCode,
+              speed: s.speed,
+              winRule: s.winRule,
+              players: updated,
+              stateVersion: stateVersionRef.current,
+              turnId: turnIdRef.current,
+              gameState: currentGameState,
+            });
+
+            peerManager.broadcast({
+              type: 'LOBBY_UPDATE',
+              players: updated,
+              speed: s.speed,
+              winRule: s.winRule,
+              stateVersion: stateVersionRef.current,
+            });
+            break;
           }
-          break;
+
+          case 'COLOR_CHANGE_REQUEST': {
+            // Verify slot is bound to this connection
+            const admission = peerManager.getAdmissionState(peerId);
+            if (admission !== 'joined') return;
+
+            // Reject if color taken by someone else
+            const isTaken = s.players.some(
+              (p) => p.slotIndex !== packet.slotIndex && p.colorId === packet.colorId,
+            );
+            if (isTaken) return;
+
+            const updated = s.players.map((p) =>
+              p.slotIndex === packet.slotIndex ? { ...p, colorId: packet.colorId } : p,
+            );
+            stateVersionRef.current += 1;
+            setPlayers(updated);
+
+            peerManager.broadcast({
+              type: 'LOBBY_UPDATE',
+              players: updated,
+              speed: s.speed,
+              winRule: s.winRule,
+              stateVersion: stateVersionRef.current,
+            });
+            break;
+          }
+
+          case 'ROLL_REQUEST': {
+            // Validate connection is joined
+            const admission = peerManager.getAdmissionState(peerId);
+            if (admission !== 'joined') {
+              peerManager.closeConnection(peerId, 'Unauthenticated ROLL_REQUEST');
+              return;
+            }
+
+            // Validate turn ID
+            if (packet.turnId !== turnIdRef.current) {
+              // Stale or future turn request
+              return;
+            }
+
+            // Check if roll already generated for current turn
+            if (hasRolledForCurrentTurnRef.current) {
+              // Reject duplicate roll
+              return;
+            }
+
+            // Check if current turn actually belongs to this player's slot
+            const snapshot = callbacksRef.current.getGameStateSnapshot?.();
+            const currentTurn = snapshot ? snapshot.turn : s.mySlot;
+            if (packet.slotIndex !== currentTurn) {
+              // Out-of-turn request
+              return;
+            }
+
+            // Host generates authoritative roll 1..6
+            const roll = 1 + Math.floor(Math.random() * 6);
+            hasRolledForCurrentTurnRef.current = true;
+            stateVersionRef.current += 1;
+
+            peerManager.broadcast({
+              type: 'ROLL_RESULT',
+              player: packet.slotIndex,
+              roll,
+              turnId: turnIdRef.current,
+              stateVersion: stateVersionRef.current,
+              timestamp: Date.now(),
+            });
+
+            // Execute roll locally on host
+            callbacksRef.current.onRemoteRoll?.(packet.slotIndex, roll);
+            break;
+          }
+
+          case 'EMOTE': {
+            const admission = peerManager.getAdmissionState(peerId);
+            if (admission !== 'joined') return;
+
+            // Rate limit: 1 emote per MIN_EMOTE_INTERVAL_MS
+            const now = Date.now();
+            const last = lastEmoteTimeRef.current.get(packet.player) || 0;
+            if (now - last < MIN_EMOTE_INTERVAL_MS) {
+              return;
+            }
+            lastEmoteTimeRef.current.set(packet.player, now);
+
+            if (!isValidEmoji(packet.emoji)) return;
+
+            // Relay emote to all other joined peers
+            peerManager.broadcast(packet);
+            callbacksRef.current.onEmoteReceived?.(packet.player, packet.emoji);
+            break;
+          }
+
+          case 'PLAYER_DISCONNECTED': {
+            // Internal disconnect notification emitted by peerManager
+            const dcSlot = packet.slotIndex;
+            if (dcSlot >= 0) {
+              const dcPlayer = s.players.find((p) => p.slotIndex === dcSlot);
+              if (dcPlayer && !dcPlayer.isCpu) {
+                const cleanName = stripCpuSuffix(dcPlayer.name);
+                // Convert to CPU bot so game can continue
+                const converted = s.players.map((p) =>
+                  p.slotIndex === dcSlot
+                    ? { ...p, isCpu: true, name: `${cleanName} (CPU)` }
+                    : p,
+                );
+                stateVersionRef.current += 1;
+                setPlayers(converted);
+
+                peerManager.broadcast({
+                  type: 'LOBBY_UPDATE',
+                  players: converted,
+                  speed: s.speed,
+                  winRule: s.winRule,
+                  stateVersion: stateVersionRef.current,
+                });
+
+                const configs: PlayerConfig[] = converted.map((p) => ({
+                  id: p.slotIndex,
+                  name: p.name,
+                  isCpu: p.isCpu,
+                  colorId: p.colorId,
+                }));
+                callbacksRef.current.onPlayersUpdated?.(configs);
+                callbacksRef.current.onPlayerDisconnected?.(dcPlayer.slotIndex, cleanName);
+              }
+            }
+            break;
+          }
+
+          default:
+            // Forbidden guest-originated packet (e.g. GAME_START, LOBBY_UPDATE, SYNC_CHECKPOINT, ROLL_RESULT)
+            peerManager.closeConnection(peerId, `Unauthorized packet type: ${packet.type}`);
+            break;
+        }
+      } else {
+        // Guest packet handler (receiving from host)
+        if ('stateVersion' in packet && typeof packet.stateVersion === 'number') {
+          if (packet.stateVersion < lastSeenStateVersionRef.current) {
+            // Drop stale packet from host
+            return;
+          }
+          lastSeenStateVersionRef.current = packet.stateVersion;
+        }
+
+        switch (packet.type) {
+          case 'JOIN_ACCEPTED': {
+            setMySlot(packet.slotIndex);
+            setRoomCode(packet.roomCode);
+            setSpeed(packet.speed);
+            setWinRule(packet.winRule);
+            setPlayers(packet.players);
+            turnIdRef.current = packet.turnId;
+            setStatus('connected');
+            setIsOnline(true);
+            setStatusDetail('Joined room successfully!');
+
+            const me = packet.players.find((x) => x.slotIndex === packet.slotIndex);
+            saveSession({
+              roomCode: packet.roomCode,
+              playerId: me?.playerId || getOrCreatePlayerId(),
+              reconnectToken: packet.reconnectToken,
+              playerName: me?.name || 'Player',
+              colorId: me?.colorId ?? packet.slotIndex,
+              slotIndex: packet.slotIndex,
+              isHost: false,
+            });
+            refreshSavedSession();
+            break;
+          }
+
+          case 'RECONNECT_ACCEPTED': {
+            setMySlot(packet.slotIndex);
+            setRoomCode(packet.roomCode);
+            setSpeed(packet.speed);
+            setWinRule(packet.winRule);
+            setPlayers(packet.players);
+            turnIdRef.current = packet.turnId;
+            setStatus('connected');
+            setIsOnline(true);
+            setStatusDetail('Reconnected to match!');
+
+            const me = packet.players.find((x) => x.slotIndex === packet.slotIndex);
+            saveSession({
+              roomCode: packet.roomCode,
+              playerId: me?.playerId || getOrCreatePlayerId(),
+              reconnectToken: packet.reconnectToken,
+              playerName: me ? stripCpuSuffix(me.name) : 'Player',
+              colorId: me?.colorId ?? packet.slotIndex,
+              slotIndex: packet.slotIndex,
+              isHost: false,
+            });
+            refreshSavedSession();
+
+            const configs: PlayerConfig[] = packet.players.map((x) => ({
+              id: x.slotIndex,
+              name: x.isCpu ? `${stripCpuSuffix(x.name)} (CPU)` : stripCpuSuffix(x.name),
+              isCpu: x.isCpu,
+              colorId: x.colorId,
+            }));
+
+            callbacksRef.current.onPlayersUpdated?.(configs);
+            callbacksRef.current.onReconnected?.(
+              configs,
+              packet.speed,
+              packet.winRule,
+              packet.gameState,
+            );
+            break;
+          }
+
+          case 'JOIN_REJECTED':
+          case 'RECONNECT_REJECTED': {
+            clearSession();
+            refreshSavedSession();
+            setStatus('error');
+            setStatusDetail(packet.reason);
+            break;
+          }
+
+          case 'LOBBY_UPDATE': {
+            setPlayers(packet.players);
+            setSpeed(packet.speed);
+            setWinRule(packet.winRule);
+
+            const configs: PlayerConfig[] = packet.players.map((p) => ({
+              id: p.slotIndex,
+              name: p.isCpu ? `${stripCpuSuffix(p.name)} (CPU)` : stripCpuSuffix(p.name),
+              isCpu: p.isCpu,
+              colorId: p.colorId,
+            }));
+            callbacksRef.current.onPlayersUpdated?.(configs);
+            break;
+          }
+
+          case 'GAME_START': {
+            setPlayers(packet.players);
+            setSpeed(packet.speed);
+            setWinRule(packet.winRule);
+            turnIdRef.current = packet.turnId;
+
+            const configs: PlayerConfig[] = packet.players.map((p) => ({
+              id: p.slotIndex,
+              name: p.name,
+              isCpu: p.isCpu,
+              colorId: p.colorId,
+            }));
+            callbacksRef.current.onGameStart?.(configs, packet.speed, packet.winRule);
+            break;
+          }
+
+          case 'ROLL_RESULT': {
+            turnIdRef.current = packet.turnId;
+            callbacksRef.current.onRemoteRoll?.(packet.player, packet.roll);
+            break;
+          }
+
+          case 'SYNC_CHECKPOINT': {
+            turnIdRef.current = packet.turnId;
+            callbacksRef.current.onSyncCheckpoint?.(packet);
+            break;
+          }
+
+          case 'EMOTE': {
+            callbacksRef.current.onEmoteReceived?.(packet.player, packet.emoji);
+            break;
+          }
+
+          case 'PLAYER_DISCONNECTED': {
+            callbacksRef.current.onPlayerDisconnected?.(packet.slotIndex, packet.name);
+            break;
+          }
         }
       }
     });
@@ -484,6 +685,11 @@ export function useMultiplayer({
       setMaxPlayers(capacity);
       setSpeed(initialSpeed);
       setWinRule(initialRule);
+      stateVersionRef.current = 1;
+      turnIdRef.current = 1;
+      hasRolledForCurrentTurnRef.current = false;
+      slotTokensRef.current.clear();
+      processedRequestIdsRef.current.clear();
 
       const hostPlayer: NetworkPlayer = {
         playerId: myPlayerId,
@@ -521,31 +727,46 @@ export function useMultiplayer({
     [refreshSavedSession],
   );
 
-  /* Guest joins or reconnects to room */
+  /* Guest joins room */
   const joinRoom = useCallback(
-    async (code: string, guestName: string, colorId = 1, isReconnect = false) => {
+    async (code: string, guestName: string, colorId = 1) => {
       const cleanCode = code.toUpperCase().trim();
       setIsHost(false);
       setRoomCode(cleanCode);
-      const myPlayerId = getOrCreatePlayerId();
+      lastSeenStateVersionRef.current = 0;
+
+      const session = getSavedSession();
+      // If we have an active saved session with a reconnect token for this room, automatically reconnect
+      if (session && session.roomCode === cleanCode && session.reconnectToken) {
+        try {
+          await peerManager.joinRoom(
+            cleanCode,
+            guestName.trim() || session.playerName || 'Player',
+            colorId,
+            true,
+            session.slotIndex,
+            session.reconnectToken,
+          );
+          window.location.hash = `room=${cleanCode}`;
+          return;
+        } catch {
+          // If reconnect fails, clear stale session and try fresh join
+          clearSession();
+          refreshSavedSession();
+        }
+      }
 
       try {
-        await peerManager.joinRoom(
-          cleanCode,
-          guestName.trim() || 'Player',
-          colorId,
-          myPlayerId,
-          isReconnect,
-        );
+        await peerManager.joinRoom(cleanCode, guestName.trim() || 'Player', colorId, false);
         window.location.hash = `room=${cleanCode}`;
       } catch (err) {
         throw err;
       }
     },
-    [],
+    [refreshSavedSession],
   );
 
-  /* Reconnect using saved session */
+  /* Reconnect using host-issued reconnect token */
   const reconnectRoom = useCallback(
     async (targetRoomCode?: string) => {
       const session = getSavedSession();
@@ -555,18 +776,24 @@ export function useMultiplayer({
       if (session?.isHost) {
         return createRoom(session.playerName, session.colorId, maxPlayers, speed, winRule);
       } else {
-        return joinRoom(
+        setIsHost(false);
+        setRoomCode(code);
+        lastSeenStateVersionRef.current = 0;
+
+        return peerManager.joinRoom(
           code,
           session?.playerName || 'Player',
           session?.colorId ?? 1,
           true,
+          session?.slotIndex ?? 0,
+          session?.reconnectToken || '',
         );
       }
     },
-    [createRoom, joinRoom, maxPlayers, speed, winRule],
+    [createRoom, maxPlayers, speed, winRule],
   );
 
-  /* Change color of a player */
+  /* Change color */
   const changeColor = useCallback(
     (slotIdx: number, newColorId: number) => {
       const s = stateRef.current;
@@ -579,19 +806,23 @@ export function useMultiplayer({
         const updated = s.players.map((p) =>
           p.slotIndex === slotIdx ? { ...p, colorId: newColorId } : p,
         );
+        stateVersionRef.current += 1;
         setPlayers(updated);
         peerManager.broadcast({
           type: 'LOBBY_UPDATE',
           players: updated,
           speed: s.speed,
           winRule: s.winRule,
+          stateVersion: stateVersionRef.current,
         });
       } else {
+        const reqId = generateRequestId('color');
         peerManager.sendToPeer('host', {
-          type: 'CHANGE_COLOR',
+          type: 'COLOR_CHANGE_REQUEST',
+          requestId: reqId,
           slotIndex: slotIdx,
           colorId: newColorId,
-        } as Packet);
+        });
       }
     },
     [],
@@ -605,14 +836,13 @@ export function useMultiplayer({
         const exists = curr.find((p) => p.slotIndex === slotIdx);
         let updated: NetworkPlayer[];
         if (exists) {
-          // If was CPU, remove slot. If was human, don't remove.
           if (exists.isCpu) {
             updated = curr.filter((p) => p.slotIndex !== slotIdx);
+            slotTokensRef.current.delete(slotIdx);
           } else {
             return curr;
           }
         } else {
-          // Ensure bot gets unique color
           const takenColors = new Set(curr.map((p) => p.colorId));
           const botColor = [0, 1, 2, 3].find((c) => !takenColors.has(c)) ?? slotIdx;
 
@@ -629,11 +859,13 @@ export function useMultiplayer({
           updated = [...curr, cpuBot].sort((a, b) => a.slotIndex - b.slotIndex);
         }
 
+        stateVersionRef.current += 1;
         peerManager.broadcast({
           type: 'LOBBY_UPDATE',
           players: updated,
           speed,
           winRule,
+          stateVersion: stateVersionRef.current,
         });
 
         return updated;
@@ -648,11 +880,13 @@ export function useMultiplayer({
       if (!isHost) return;
       setSpeed(newSpeed);
       setWinRule(newRule);
+      stateVersionRef.current += 1;
       peerManager.broadcast({
         type: 'LOBBY_UPDATE',
         players,
         speed: newSpeed,
         winRule: newRule,
+        stateVersion: stateVersionRef.current,
       });
     },
     [isHost, players],
@@ -663,11 +897,17 @@ export function useMultiplayer({
     if (!isHost) return;
     if (players.length < 2) return;
 
+    turnIdRef.current = 1;
+    hasRolledForCurrentTurnRef.current = false;
+    stateVersionRef.current += 1;
+
     peerManager.broadcast({
       type: 'GAME_START',
       players,
       speed,
       winRule,
+      stateVersion: stateVersionRef.current,
+      turnId: turnIdRef.current,
     });
 
     const configs: PlayerConfig[] = players.map((p) => ({
@@ -680,17 +920,33 @@ export function useMultiplayer({
     callbacksRef.current.onGameStart?.(configs, speed, winRule);
   }, [isHost, players, speed, winRule]);
 
-  /* Broadcast dice roll */
+  /* Broadcast roll result (Host) or send roll request (Guest) */
   const broadcastRoll = useCallback(
     (player: number, roll: number) => {
-      peerManager.broadcast({
-        type: 'DICE_ROLL',
-        player,
-        roll,
-        timestamp: Date.now(),
-      });
+      if (isHost) {
+        // Host broadcasts authoritative roll result
+        hasRolledForCurrentTurnRef.current = true;
+        stateVersionRef.current += 1;
+        peerManager.broadcast({
+          type: 'ROLL_RESULT',
+          player,
+          roll,
+          turnId: turnIdRef.current,
+          stateVersion: stateVersionRef.current,
+          timestamp: Date.now(),
+        });
+      } else {
+        // Guest sends roll request to host
+        const reqId = generateRequestId('roll');
+        peerManager.sendToPeer('host', {
+          type: 'ROLL_REQUEST',
+          requestId: reqId,
+          turnId: turnIdRef.current,
+          slotIndex: mySlot,
+        });
+      }
     },
-    [],
+    [isHost, mySlot],
   );
 
   /* Broadcast state checkpoint (Host only) */
@@ -706,9 +962,15 @@ export function useMultiplayer({
       winner: number;
     }) => {
       if (!isHost) return;
+      turnIdRef.current += 1;
+      hasRolledForCurrentTurnRef.current = false;
+      stateVersionRef.current += 1;
+
       peerManager.broadcast({
         type: 'SYNC_CHECKPOINT',
         ...checkpoint,
+        turnId: turnIdRef.current,
+        stateVersion: stateVersionRef.current,
       });
     },
     [isHost],
@@ -717,16 +979,33 @@ export function useMultiplayer({
   /* Broadcast reaction emoji */
   const broadcastEmote = useCallback(
     (emoji: string) => {
-      peerManager.broadcast({
+      if (!isValidEmoji(emoji)) return;
+
+      const now = Date.now();
+      const last = lastEmoteTimeRef.current.get(mySlot) || 0;
+      if (now - last < MIN_EMOTE_INTERVAL_MS) {
+        return; // Client-side rate-limit throttling
+      }
+      lastEmoteTimeRef.current.set(mySlot, now);
+
+      const reqId = generateRequestId('emote');
+      const emotePacket: Packet = {
         type: 'EMOTE',
+        requestId: reqId,
         player: mySlot,
         emoji,
-        timestamp: Date.now(),
-      });
+        timestamp: now,
+      };
+
+      if (isHost) {
+        peerManager.broadcast(emotePacket);
+      } else {
+        peerManager.sendToPeer('host', emotePacket);
+      }
       // Also emit locally
       callbacksRef.current.onEmoteReceived?.(mySlot, emoji);
     },
-    [mySlot],
+    [isHost, mySlot],
   );
 
   /* Leave room and clean up */
@@ -740,6 +1019,13 @@ export function useMultiplayer({
     setPlayers([]);
     setStatus('idle');
     setStatusDetail('');
+    stateVersionRef.current = 1;
+    turnIdRef.current = 1;
+    lastSeenStateVersionRef.current = 0;
+    slotTokensRef.current.clear();
+    processedRequestIdsRef.current.clear();
+    lastEmoteTimeRef.current.clear();
+
     if (window.location.hash.startsWith('#room=')) {
       window.history.replaceState(null, '', window.location.pathname);
     }

@@ -1,7 +1,12 @@
 import Peer, { type DataConnection } from 'peerjs';
-import type { ConnectionStatus, Packet } from './types';
+import type { AdmissionState, ConnectionStatus, Packet } from './types';
+import {
+  isGuestAllowedPacket,
+  validatePacket,
+} from './validation';
 
 const PEER_PREFIX = 'snkladr-';
+const PENDING_TIMEOUT_MS = 10000; // 10s to authenticate/join before disconnection
 
 /* Generate clean 6-character room code */
 export function generateRoomCode(): string {
@@ -16,9 +21,18 @@ export function generateRoomCode(): string {
 export type PacketHandler = (packet: Packet, fromPeerId?: string) => void;
 export type StatusHandler = (status: ConnectionStatus, detail?: string) => void;
 
+export interface ManagedConnection {
+  conn: DataConnection;
+  peerId: string;
+  admissionState: AdmissionState;
+  slotIndex: number;
+  createdAt: number;
+  pendingTimer?: ReturnType<typeof setTimeout> | null;
+}
+
 export class PeerManager {
   private peer: Peer | null = null;
-  private connections: Map<string, DataConnection> = new Map();
+  private connections: Map<string, ManagedConnection> = new Map();
   private hostConn: DataConnection | null = null; // Used by guest
   private isHost = false;
   private roomCode = '';
@@ -55,6 +69,79 @@ export class PeerManager {
 
   private emitPacket(packet: Packet, fromPeerId?: string) {
     this.onPacketListeners.forEach((fn) => fn(packet, fromPeerId));
+  }
+
+  /* ---------- Connection Admission Management (Host) ---------- */
+
+  getAdmissionState(peerId: string): AdmissionState | undefined {
+    return this.connections.get(peerId)?.admissionState;
+  }
+
+  setAdmissionState(peerId: string, state: AdmissionState, slotIndex?: number) {
+    const mc = this.connections.get(peerId);
+    if (!mc) return;
+
+    mc.admissionState = state;
+    if (slotIndex !== undefined) {
+      mc.slotIndex = slotIndex;
+    }
+
+    if (state === 'authenticated' || state === 'joined') {
+      if (mc.pendingTimer) {
+        clearTimeout(mc.pendingTimer);
+        mc.pendingTimer = null;
+      }
+    }
+
+    if (state === 'closed') {
+      this.closeConnection(peerId, 'Admission state transitioned to closed');
+    }
+  }
+
+  closeConnection(peerId: string, reason?: string) {
+    const mc = this.connections.get(peerId);
+    if (!mc) return;
+
+    if (reason) {
+      console.warn(`[PeerManager] Closed connection ${peerId}: ${reason}`);
+    }
+
+    if (mc.pendingTimer) {
+      clearTimeout(mc.pendingTimer);
+      mc.pendingTimer = null;
+    }
+
+    mc.admissionState = 'closed';
+    try {
+      mc.conn.close();
+    } catch {
+      // Ignore
+    }
+
+    this.connections.delete(peerId);
+
+    // If connection was already joined to a slot, notify host logic that player left
+    if (this.isHost && mc.slotIndex >= 0) {
+      this.emitPacket(
+        {
+          type: 'PLAYER_DISCONNECTED',
+          slotIndex: mc.slotIndex,
+          name: peerId,
+          stateVersion: 0,
+        },
+        peerId,
+      );
+    }
+  }
+
+  getConnections(): ManagedConnection[] {
+    return Array.from(this.connections.values());
+  }
+
+  getJoinedConnections(): ManagedConnection[] {
+    return Array.from(this.connections.values()).filter(
+      (c) => c.admissionState === 'joined' && c.conn.open,
+    );
   }
 
   /* ---------- HOST: Create Room ---------- */
@@ -121,8 +208,9 @@ export class PeerManager {
     roomCode: string,
     guestName: string,
     colorId: number,
-    playerId: string,
     isReconnect = false,
+    reconnectSlotIndex = 0,
+    reconnectToken = '',
   ): Promise<void> {
     this.cleanup();
     this.isHost = false;
@@ -154,18 +242,21 @@ export class PeerManager {
 
         conn.on('open', () => {
           this.emitStatus('connected');
-          // Request to join or reconnect
+          const reqId = 'req_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 8);
+
           if (isReconnect) {
             conn.send({
               type: 'RECONNECT_REQUEST',
+              requestId: reqId,
               roomCode: this.roomCode,
-              playerId,
-              name: this.myPlayerName,
+              slotIndex: reconnectSlotIndex,
+              reconnectToken,
             } as Packet);
           } else {
             conn.send({
               type: 'JOIN_REQUEST',
-              playerId,
+              requestId: reqId,
+              roomCode: this.roomCode,
               name: this.myPlayerName,
               colorId: this.myColorId,
             } as Packet);
@@ -175,7 +266,7 @@ export class PeerManager {
         });
 
         conn.on('data', (raw: any) => {
-          this.handlePacket(raw as Packet, hostPeerId);
+          this.handlePacket(raw, hostPeerId);
         });
 
         conn.on('close', () => {
@@ -200,40 +291,120 @@ export class PeerManager {
     });
   }
 
-  /* ---------- Connection Handlers ---------- */
+  /* ---------- Incoming Connection Handlers ---------- */
 
   private handleIncomingConnection(conn: DataConnection) {
     const peerId = conn.peer;
-    this.connections.set(peerId, conn);
+
+    // Reject if too many connections (limit to 12 total pending/active to avoid socket exhaustion)
+    if (this.connections.size >= 12) {
+      try {
+        conn.close();
+      } catch {
+        // Ignore
+      }
+      return;
+    }
+
+    const timer = setTimeout(() => {
+      const mc = this.connections.get(peerId);
+      if (mc && mc.admissionState === 'pending') {
+        this.closeConnection(peerId, 'Timed out in pending admission state');
+      }
+    }, PENDING_TIMEOUT_MS);
+
+    const managedConn: ManagedConnection = {
+      conn,
+      peerId,
+      admissionState: 'pending',
+      slotIndex: -1,
+      createdAt: Date.now(),
+      pendingTimer: timer,
+    };
+
+    this.connections.set(peerId, managedConn);
 
     conn.on('open', () => {
-      // Connection established
+      // Opened socket
     });
 
     conn.on('data', (raw: any) => {
-      const packet = raw as Packet;
-      // Host relays game packets to all other connected peers (star network topology)
-      if (this.isHost && (packet.type === 'DICE_ROLL' || packet.type === 'EMOTE')) {
-        this.connections.forEach((otherConn, otherPeerId) => {
-          if (otherPeerId !== peerId && otherConn.open) {
-            otherConn.send(packet);
-          }
-        });
+      // 1. Validate payload structure & schema
+      const val = validatePacket(raw);
+      if (!val.valid || !val.packet) {
+        // Invalid or malformed packet: close connection immediately
+        this.closeConnection(peerId, `Invalid packet: ${val.error}`);
+        return;
       }
+
+      const packet = val.packet;
+
+      if (this.isHost) {
+        // 2. Enforce host/guest packet permissions: Guests may only send permitted packets
+        if (!isGuestAllowedPacket(packet.type)) {
+          this.closeConnection(peerId, `Forbidden packet type from guest: ${packet.type}`);
+          return;
+        }
+
+        const currentMC = this.connections.get(peerId);
+        if (!currentMC) return;
+
+        // 3. Admission state gating:
+        if (currentMC.admissionState === 'pending') {
+          // In pending state, ONLY JOIN_REQUEST, RECONNECT_REQUEST, and PING are accepted
+          if (
+            packet.type !== 'JOIN_REQUEST' &&
+            packet.type !== 'RECONNECT_REQUEST' &&
+            packet.type !== 'PING' &&
+            packet.type !== 'PONG'
+          ) {
+            this.closeConnection(peerId, `Packet ${packet.type} not allowed in pending state`);
+            return;
+          }
+        } else if (currentMC.admissionState === 'joined') {
+          // Cannot re-request join if already joined
+          if (packet.type === 'JOIN_REQUEST' || packet.type === 'RECONNECT_REQUEST') {
+            return;
+          }
+
+          // Slot-bound packet validation: verify sender is using their assigned slot
+          if (
+            packet.type === 'COLOR_CHANGE_REQUEST' &&
+            packet.slotIndex !== currentMC.slotIndex
+          ) {
+            this.closeConnection(peerId, 'Impersonation: COLOR_CHANGE_REQUEST slot mismatch');
+            return;
+          }
+
+          if (
+            packet.type === 'ROLL_REQUEST' &&
+            packet.slotIndex !== currentMC.slotIndex
+          ) {
+            this.closeConnection(peerId, 'Impersonation: ROLL_REQUEST slot mismatch');
+            return;
+          }
+
+          if (
+            packet.type === 'EMOTE' &&
+            packet.player !== currentMC.slotIndex
+          ) {
+            this.closeConnection(peerId, 'Impersonation: EMOTE slot mismatch');
+            return;
+          }
+        } else if (currentMC.admissionState === 'closed') {
+          return;
+        }
+      }
+
       this.handlePacket(packet, peerId);
     });
 
     conn.on('close', () => {
-      this.connections.delete(peerId);
-      this.emitPacket({
-        type: 'PLAYER_DISCONNECTED',
-        slotIndex: -1,
-        name: peerId,
-      }, peerId);
+      this.closeConnection(peerId, 'Peer closed connection');
     });
 
     conn.on('error', () => {
-      this.connections.delete(peerId);
+      this.closeConnection(peerId, 'Peer connection error');
     });
   }
 
@@ -259,22 +430,39 @@ export class PeerManager {
 
   /* ---------- Send / Broadcast Packets ---------- */
 
+  /**
+   * Broadcasts packet strictly to authenticated, joined connections.
+   * Never broadcasts to unauthenticated or pending connections.
+   */
   broadcast(packet: Packet) {
     if (this.isHost) {
-      // Send to all connected guests
-      this.connections.forEach((conn) => {
-        if (conn.open) conn.send(packet);
+      this.connections.forEach((mc) => {
+        if (mc.admissionState === 'joined' && mc.conn.open) {
+          try {
+            mc.conn.send(packet);
+          } catch {
+            // Socket send error
+          }
+        }
       });
     } else if (this.hostConn && this.hostConn.open) {
-      // Guest sends to host
       this.hostConn.send(packet);
     }
   }
 
+  /**
+   * Send packet to a specific peer
+   */
   sendToPeer(peerId: string, packet: Packet) {
     if (this.isHost) {
-      const conn = this.connections.get(peerId);
-      if (conn && conn.open) conn.send(packet);
+      const mc = this.connections.get(peerId);
+      if (mc && mc.conn.open) {
+        try {
+          mc.conn.send(packet);
+        } catch {
+          // Socket send error
+        }
+      }
     } else if (this.hostConn && this.hostConn.open) {
       this.hostConn.send(packet);
     }
@@ -286,8 +474,10 @@ export class PeerManager {
     this.pingInterval = window.setInterval(() => {
       this.lastPingSent = Date.now();
       if (this.isHost) {
-        this.connections.forEach((conn) => {
-          if (conn.open) conn.send({ type: 'PING', sentAt: this.lastPingSent });
+        this.connections.forEach((mc) => {
+          if (mc.conn.open && mc.admissionState === 'joined') {
+            mc.conn.send({ type: 'PING', sentAt: this.lastPingSent });
+          }
         });
       } else if (this.hostConn && this.hostConn.open) {
         this.hostConn.send({ type: 'PING', sentAt: this.lastPingSent });
@@ -314,14 +504,29 @@ export class PeerManager {
       clearInterval(this.pingInterval);
       this.pingInterval = null;
     }
-    this.connections.forEach((conn) => conn.close());
+    this.connections.forEach((mc) => {
+      if (mc.pendingTimer) clearTimeout(mc.pendingTimer);
+      try {
+        mc.conn.close();
+      } catch {
+        // Ignore
+      }
+    });
     this.connections.clear();
     if (this.hostConn) {
-      this.hostConn.close();
+      try {
+        this.hostConn.close();
+      } catch {
+        // Ignore
+      }
       this.hostConn = null;
     }
     if (this.peer) {
-      this.peer.destroy();
+      try {
+        this.peer.destroy();
+      } catch {
+        // Ignore
+      }
       this.peer = null;
     }
     this.isHost = false;

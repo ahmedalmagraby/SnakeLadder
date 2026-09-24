@@ -1,6 +1,7 @@
 export interface SavedSession {
   roomCode: string;
   playerId: string;
+  reconnectToken?: string;
   playerName: string;
   colorId: number;
   slotIndex: number;

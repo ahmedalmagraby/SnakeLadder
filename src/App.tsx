@@ -724,22 +724,22 @@ function WinOverlay({
           {winner.name.toUpperCase()} WINS!
         </h2>
         <p className="mt-1 font-bold text-emerald-100/90 text-sm">
-          Conquered square 100 in {rolls[winner.id]} {rolls[winner.id] === 1 ? 'roll' : 'rolls'}!
+          Conquered square 100 in {rolls[winner.id] ?? 0} {(rolls[winner.id] ?? 0) === 1 ? 'roll' : 'rolls'}!
         </p>
 
         {/* Match breakdown stats */}
         <div className="mt-4 grid grid-cols-3 gap-2 p-3 rounded-xl bg-emerald-950/70 border border-amber-400/30 text-center">
           <div>
             <div className="text-[10px] font-black tracking-wider text-emerald-300/60">ROLLS</div>
-            <div className="font-display text-xl text-amber-300 mt-0.5">{rolls[winner.id]}</div>
+            <div className="font-display text-xl text-amber-300 mt-0.5">{rolls[winner.id] ?? 0}</div>
           </div>
           <div>
             <div className="text-[10px] font-black tracking-wider text-emerald-300/60">LADDERS</div>
-            <div className="font-display text-xl text-yellow-300 mt-0.5">🪜 {ladders[winner.id]}</div>
+            <div className="font-display text-xl text-yellow-300 mt-0.5">🪜 {ladders[winner.id] ?? 0}</div>
           </div>
           <div>
             <div className="text-[10px] font-black tracking-wider text-emerald-300/60">SNAKES</div>
-            <div className="font-display text-xl text-rose-300 mt-0.5">🐍 {snakes[winner.id]}</div>
+            <div className="font-display text-xl text-rose-300 mt-0.5">🐍 {snakes[winner.id] ?? 0}</div>
           </div>
         </div>
 
@@ -836,15 +836,14 @@ export default function App() {
     onEmoteReceived: (player, emoji) => {
       gameRef.current?.triggerEmote(player, emoji);
     },
-    onPlayerDisconnected: (slot, name) => {
+    onPlayerDisconnected: (_slot, name) => {
       gameRef.current?.showToast('PLAYER LEFT', `${name} left. CPU bot took over.`, 'pink');
-      const updated = multiplayer.players.map((p) => ({
-        id: p.slotIndex,
-        name: p.slotIndex === slot ? `${name.replace(' (CPU)', '')} (CPU)` : p.name,
-        isCpu: p.slotIndex === slot ? true : p.isCpu,
-        colorId: p.colorId,
-      }));
-      gameRef.current?.updatePlayers(updated);
+    },
+    onPlayerReconnected: (_slot, name) => {
+      gameRef.current?.showToast('PLAYER REJOINED', `${name} rejoined the match!`, 'cyan');
+    },
+    onPlayersUpdated: (updatedPlayers) => {
+      gameRef.current?.updatePlayers(updatedPlayers);
     },
     onReconnected: (players, speed, winRule, gameState) => {
       setShowOnlineModal(false);
@@ -1434,7 +1433,14 @@ export default function App() {
           {/* Winner Celebration Modal */}
           {hud.mode === 'over' && game.showWin && hud.winner >= 0 && (
             <WinOverlay
-              winner={hud.players[hud.winner]}
+              winner={
+                hud.players[hud.winner] || {
+                  id: hud.winner,
+                  name: `Player ${hud.winner + 1}`,
+                  colorId: hud.winner,
+                  isCpu: false,
+                }
+              }
               players={hud.players}
               rolls={hud.rolls}
               ladders={hud.laddersHit}

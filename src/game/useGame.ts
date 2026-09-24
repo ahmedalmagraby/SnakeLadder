@@ -450,7 +450,7 @@ export function useGame(options: UseGameOptions = {}) {
       winner: number;
     }) => {
       const g = gs.current;
-      if (g.mode !== 'playing') return;
+      if (g.mode !== 'playing' && checkpoint.winner < 0) return;
 
       g.pos = [...checkpoint.pos];
       g.turn = checkpoint.turn;
@@ -459,17 +459,37 @@ export function useGame(options: UseGameOptions = {}) {
       g.snakesHit = [...checkpoint.snakesHit];
       g.sixesHit = [...checkpoint.sixesHit];
 
-      if (checkpoint.winner >= 0) {
+      const isGameOver = checkpoint.winner >= 0;
+      if (isGameOver) {
+        const wasOver = g.mode === 'over';
         g.winner = checkpoint.winner;
         g.mode = 'over';
         g.phase = 'over';
-        setShowWin(true);
+
+        if (!wasOver) {
+          pushLog(`🏆 ${playerName(checkpoint.winner)} conquered square 100 and WON THE GAME!`, 'event');
+          sfx.win();
+          spawnConfetti(g.particles);
+          spawnFirework(g.particles, 520, 200);
+          after(500, () => {
+            spawnConfetti(gs.current.particles);
+            spawnFirework(gs.current.particles, 300, 300);
+          });
+          after(1100, () => {
+            spawnConfetti(gs.current.particles);
+            spawnFirework(gs.current.particles, 740, 260);
+          });
+          after(1500, () => setShowWin(true));
+        } else {
+          setShowWin(true);
+        }
       }
 
-      const nextPhase = (checkpoint.phase as Phase) || 'idle';
+      const nextPhase = isGameOver ? 'over' : ((checkpoint.phase as Phase) || 'idle');
       g.phase = nextPhase;
 
       sync({
+        mode: isGameOver ? 'over' : g.mode,
         pos: [...g.pos],
         turn: g.turn,
         phase: nextPhase,
@@ -480,7 +500,7 @@ export function useGame(options: UseGameOptions = {}) {
         winner: g.winner,
       });
     },
-    [sync],
+    [after, playerName, pushLog, sync],
   );
 
   const switchTurn = useCallback(
@@ -542,6 +562,10 @@ export function useGame(options: UseGameOptions = {}) {
           spawnFirework(gs.current.particles, 740, 260);
         });
         after(1500, () => setShowWin(true));
+
+        if (pendingCheckpoint.current) {
+          pendingCheckpoint.current = null;
+        }
 
         const { isOnline, isHost, onTurnSettled } = optionsRef.current;
         if (isOnline && isHost) {
@@ -709,6 +733,46 @@ export function useGame(options: UseGameOptions = {}) {
           return;
         } else {
           // Exact roll required
+          if (v === 6) {
+            g.sixesHit[player] += 1;
+            g.turn = player; // Turn stays with this player
+            g.phase = 'waiting';
+            sync({ turn: player, phase: 'waiting', sixesHit: [...g.sixesHit] });
+            showToast('LUCKY SIX!', `Can't move (need ${100 - pos}), but ${playerName(player)} earns an extra roll!`, 'gold');
+            pushLog(
+              `🎲 ${playerName(player)} rolled a 6 on square ${pos} (needs ${100 - pos}) — earns an extra roll!`,
+              'event',
+            );
+            sfx.ding();
+            const cfg = SPEEDS[g.speed];
+            after(cfg.settleMs + 650, () => {
+              gs.current.phase = 'idle';
+              sync({ phase: 'idle' });
+
+              const { isOnline, isHost, onTurnSettled } = optionsRef.current;
+              if (isOnline && isHost) {
+                onTurnSettled?.({
+                  pos: [...gs.current.pos],
+                  turn: gs.current.turn,
+                  phase: 'idle',
+                  rolls: [...gs.current.rolls],
+                  laddersHit: [...gs.current.laddersHit],
+                  snakesHit: [...gs.current.snakesHit],
+                  sixesHit: [...gs.current.sixesHit],
+                  winner: gs.current.winner,
+                });
+              }
+
+              if (pendingCheckpoint.current) {
+                const cp = pendingCheckpoint.current;
+                pendingCheckpoint.current = null;
+                applyCheckpoint(cp);
+              }
+            });
+            return;
+          }
+
+          // Exact roll required (not a 6)
           g.phase = 'waiting';
           sync({ phase: 'waiting' });
           showToast('NEED EXACT ROLL', `Must land on 100 exactly (need ${100 - pos})`, 'info');
@@ -740,7 +804,7 @@ export function useGame(options: UseGameOptions = {}) {
       g.phase = 'moving';
       sync({ phase: 'moving', targetSquare: target });
     },
-    [after, playerName, pushLog, showToast, switchTurn, sync],
+    [after, applyCheckpoint, playerName, pushLog, showToast, switchTurn, sync],
   );
 
   const doRoll = useCallback(
@@ -748,12 +812,18 @@ export function useGame(options: UseGameOptions = {}) {
       const g = gs.current;
       if (g.mode !== 'playing' || g.phase !== 'idle' || g.rolling) return;
 
-      const { isOnline, onlineSlot, onLocalRoll } = optionsRef.current;
+      const { isOnline, isHost, onlineSlot, onLocalRoll } = optionsRef.current;
       const currPlayer = g.players[g.turn];
       if (currPlayer?.isCpu && !isAI) return;
 
       // In online mode, human player can only roll on their assigned slot
       if (isOnline && !currPlayer?.isCpu && g.turn !== onlineSlot) return;
+
+      // In online mode, guest asks host for authoritative roll
+      if (isOnline && !isHost) {
+        onLocalRoll?.(0, g.turn);
+        return;
+      }
 
       // Cleanly settle any lingering movement
       if (g.moving) {
@@ -879,7 +949,7 @@ export function useGame(options: UseGameOptions = {}) {
       winner: number;
     }) => {
       const g = gs.current;
-      if (g.mode !== 'playing') return;
+      if (g.mode !== 'playing' && checkpoint.winner < 0) return;
 
       // If this client is currently mid-animation, defer until turn finishes to prevent desync
       if (g.moving || g.sliding || g.rolling) {
