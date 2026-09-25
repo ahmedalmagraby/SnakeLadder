@@ -26,7 +26,10 @@ export interface NetworkPlayer {
   ping?: number;
 }
 
+export type CheckpointMode = 'idle' | 'playing' | 'over';
+
 export interface GameStateSnapshot {
+  mode: CheckpointMode;
   pos: number[];
   turn: number;
   phase: string;
@@ -46,6 +49,42 @@ export type ConnectionStatus =
   | 'reconnecting'
   | 'disconnected'
   | 'error';
+
+export type TransportStatus =
+  | 'disconnected'
+  | 'connecting'
+  | 'connected'
+  | 'reconnecting'
+  | 'failed';
+
+export type AuthStatus =
+  | 'unauthenticated'
+  | 'authenticating'
+  | 'authenticated'
+  | 'rejected';
+
+export type RoomMembership =
+  | 'none'
+  | 'joining'
+  | 'joined'
+  | 'left';
+
+export type GameLifecycleStatus =
+  | 'none'
+  | 'lobby'
+  | 'playing'
+  | 'paused'
+  | 'over'
+  | 'abandoned';
+
+export interface NetworkLifecycleState {
+  transportStatus: TransportStatus;
+  authStatus: AuthStatus;
+  roomMembership: RoomMembership;
+  gameStatus: GameLifecycleStatus;
+  statusDetail: string;
+  isOnline: boolean;
+}
 
 /* ---------- Packet Messages ---------- */
 
@@ -68,6 +107,8 @@ export type Packet =
       players: NetworkPlayer[];
       stateVersion: number;
       turnId: number;
+      maxPlayers: number;
+      gameState?: GameStateSnapshot;
     }
   | {
       type: 'JOIN_REJECTED';
@@ -92,6 +133,7 @@ export type Packet =
       players: NetworkPlayer[];
       stateVersion: number;
       turnId: number;
+      maxPlayers: number;
       gameState?: GameStateSnapshot;
     }
   | {
@@ -111,6 +153,7 @@ export type Packet =
       speed: GameSpeed;
       winRule: WinRule;
       stateVersion: number;
+      maxPlayers: number;
     }
   | {
       type: 'GAME_START';
@@ -136,6 +179,7 @@ export type Packet =
     }
   | {
       type: 'SYNC_CHECKPOINT';
+      mode: CheckpointMode;
       pos: number[];
       turn: number;
       phase: string;

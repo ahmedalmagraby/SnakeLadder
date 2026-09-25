@@ -201,33 +201,101 @@ const SNAKE_PALETTE: [string, string][] = [
 ];
 export const snakeColor = (i: number) => SNAKE_PALETTE[i % SNAKE_PALETTE.length];
 
-/* ---------- precomputed paths ---------- */
+export interface SnakeWaveParams {
+  baseAmp: number;
+  waves: number;
+  phase: number;
+  speed: number;
+}
 
-function buildSnakePath(head: number, tail: number): Pt[] {
+export const SNAKE_PARAMS: Record<number, SnakeWaveParams> = {};
+Object.keys(SNAKES).forEach((headStr, idx) => {
+  const head = Number(headStr);
+  const rnd = mulberry32(head * 31 + 7);
+  SNAKE_PARAMS[head] = {
+    baseAmp: 10 + rnd() * 12,
+    waves: 1.4 + rnd() * 1.1,
+    phase: rnd() * Math.PI * 2,
+    speed: 2.2 + (idx % 3) * 0.45,
+  };
+});
+
+/**
+ * Shared mathematical spine generator for both animated snake rendering
+ * and token movement during snake slides.
+ */
+export function getSnakeSpine(
+  head: number,
+  tail: number,
+  time = 0,
+  isActive = false,
+  customN?: number,
+): Pt[] {
   const a = squareCenter(head);
   const b = squareCenter(tail);
   const dx = b.x - a.x;
   const dy = b.y - a.y;
-  const len = Math.hypot(dx, dy);
+  const len = Math.hypot(dx, dy) || 1;
   const px = -dy / len;
   const py = dx / len;
-  const rnd = mulberry32(head * 31 + 7);
-  const amp = 10 + rnd() * 14;
-  const waves = 1.5 + rnd() * 1.3;
-  const phase = rnd() * Math.PI;
-  const n = Math.max(26, Math.round(len / 6));
+  const nx = dx / len;
+  const ny = dy / len;
+
+  const params = SNAKE_PARAMS[head] || {
+    baseAmp: 16,
+    waves: 2,
+    phase: 0,
+    speed: 2.5,
+  };
+
+  const amp = isActive ? params.baseAmp * 1.3 : params.baseAmp;
+  const speed = isActive ? 5.5 : params.speed;
+  const headBob = isActive
+    ? Math.sin(time * 16) * 4.2
+    : Math.sin(time * 2.6 + params.phase) * 1.6;
+
+  const n = customN ?? Math.max(28, Math.round(len / 5.5));
   const pts: Pt[] = [];
+
   for (let i = 0; i <= n; i++) {
     const f = i / n;
-    const wob = Math.sin(f * Math.PI * waves + phase) * amp * Math.sin(f * Math.PI);
-    pts.push({ x: a.x + dx * f + px * wob, y: a.y + dy * f + py * wob });
+    // Envelope is 0 at both head and tail so endpoints remain anchored to square centers
+    const env = Math.sin(f * Math.PI);
+    // Traveling wave equation along the snake's spine
+    const wavePhase = f * Math.PI * params.waves * 2 + params.phase - time * speed;
+    const wob = Math.sin(wavePhase) * amp * env;
+
+    // Small head micro-motion along spine vector
+    const bobOffset = headBob * Math.pow(1 - f, 2.5);
+
+    pts.push({
+      x: a.x + dx * f + px * wob + nx * bobOffset,
+      y: a.y + dy * f + py * wob + ny * bobOffset,
+    });
   }
+
   return pts;
+}
+
+/**
+ * Samples a precise coordinate along the animated snake spine at frame time `time`.
+ * Guaranteed to match the rendered snake geometry at that exact moment.
+ */
+export function getSnakeSlidePoint(
+  head: number,
+  tail: number,
+  progress: number, // 0..1
+  time = 0,
+  isActive = true,
+): Pt {
+  const pts = getSnakeSpine(head, tail, time, isActive);
+  const { cum, total } = pathCum(pts);
+  return pointAt(pts, cum, clamp(progress, 0, 1) * total);
 }
 
 export const SNAKE_PATHS: Record<number, Pt[]> = {};
 Object.keys(SNAKES).forEach((h) => {
-  SNAKE_PATHS[Number(h)] = buildSnakePath(Number(h), SNAKES[Number(h)]);
+  SNAKE_PATHS[Number(h)] = getSnakeSpine(Number(h), SNAKES[Number(h)], 0, false);
 });
 
 export const LADDER_PATHS: Record<number, Pt[]> = {};

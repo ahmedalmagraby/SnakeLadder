@@ -9,53 +9,72 @@
 
 import { WebSocketServer } from 'ws';
 
-const PORT = process.env.PORT ? parseInt(process.env.PORT, 10) : 8080;
-const wss = new WebSocketServer({ port: PORT });
+export function createRelayServer(port = 8080) {
+  const wss = new WebSocketServer({ port });
+  // roomCode -> Set of client sockets
+  const rooms = new Map();
 
-// roomCode -> Set of client sockets
-const rooms = new Map();
+  wss.on('connection', (ws) => {
+    let currentRoom = null;
 
-console.log(`[Snake & Ladder] Relay server running on ws://localhost:${PORT}`);
+    ws.on('message', (message) => {
+      try {
+        const data = JSON.parse(message.toString());
 
-wss.on('connection', (ws) => {
-  let currentRoom = null;
+        if (data.type === 'JOIN_ROOM') {
+          const room = data.roomCode?.toUpperCase();
+          if (!room) return;
 
-  ws.on('message', (message) => {
-    try {
-      const data = JSON.parse(message.toString());
-
-      if (data.type === 'JOIN_ROOM') {
-        const room = data.roomCode?.toUpperCase();
-        if (!room) return;
-        currentRoom = room;
-        if (!rooms.has(room)) rooms.set(room, new Set());
-        rooms.get(room).add(ws);
-        console.log(`[Relay] Client joined room: ${room} (Total: ${rooms.get(room).size})`);
-        return;
-      }
-
-      if (currentRoom && rooms.has(currentRoom)) {
-        // Broadcast packet to all other clients in the room
-        const roomSockets = rooms.get(currentRoom);
-        roomSockets.forEach((client) => {
-          if (client !== ws && client.readyState === 1) {
-            client.send(message.toString());
+          // Room switching: remove socket from old room before joining new room
+          if (currentRoom && currentRoom !== room && rooms.has(currentRoom)) {
+            const prevRoomSockets = rooms.get(currentRoom);
+            prevRoomSockets.delete(ws);
+            if (prevRoomSockets.size === 0) {
+              rooms.delete(currentRoom);
+            }
           }
-        });
+
+          currentRoom = room;
+          if (!rooms.has(room)) rooms.set(room, new Set());
+          rooms.get(room).add(ws);
+          return;
+        }
+
+        if (currentRoom && rooms.has(currentRoom)) {
+          // Broadcast packet to all other clients in the room
+          const roomSockets = rooms.get(currentRoom);
+          roomSockets.forEach((client) => {
+            if (client !== ws && client.readyState === 1) {
+              client.send(message.toString());
+            }
+          });
+        }
+      } catch (err) {
+        console.error('[Relay] Error handling message:', err);
       }
-    } catch (err) {
-      console.error('[Relay] Error handling message:', err);
-    }
+    });
+
+    ws.on('close', () => {
+      if (currentRoom && rooms.has(currentRoom)) {
+        const roomSockets = rooms.get(currentRoom);
+        roomSockets.delete(ws);
+        if (roomSockets.size === 0) {
+          rooms.delete(currentRoom);
+        }
+      }
+    });
   });
 
-  ws.on('close', () => {
-    if (currentRoom && rooms.has(currentRoom)) {
-      const roomSockets = rooms.get(currentRoom);
-      roomSockets.delete(ws);
-      if (roomSockets.size === 0) {
-        rooms.delete(currentRoom);
-        console.log(`[Relay] Room ${currentRoom} empty and closed.`);
-      }
-    }
-  });
-});
+  return { wss, rooms };
+}
+
+// Start immediately when executed directly
+const isDirectRun = process.argv[1] && (
+  process.argv[1].endsWith('relay.js') || process.argv[1].endsWith('relay')
+);
+
+if (isDirectRun) {
+  const PORT = process.env.PORT ? parseInt(process.env.PORT, 10) : 8080;
+  createRelayServer(PORT);
+  console.log(`[Snake & Ladder] Relay server running on ws://localhost:${PORT}`);
+}

@@ -1,9 +1,12 @@
-import { useState, useEffect, useRef, type ReactNode } from 'react';
+import { useState, useEffect, useRef, useCallback, type ReactNode } from 'react';
 import Die from './components/Die';
 import OnlineLobby from './components/OnlineLobby';
 import OnlineHudBar from './components/OnlineHudBar';
 import ThemeModal from './components/ThemeModal';
 import { THEMES, type ThemeId, type BoardTheme } from './game/themes';
+import Dialog from './components/Dialog';
+import AriaLiveAnnouncer from './components/AriaLiveAnnouncer';
+import AccessibleBoardTable from './components/AccessibleBoardTable';
 import { useMultiplayer } from './game/network/useMultiplayer';
 import type { SavedSession } from './game/network/sessionStorage';
 import {
@@ -189,7 +192,7 @@ function IconBtn({
       aria-label={label}
       title={label}
       onClick={onClick}
-      className={`${s} rounded-lg border border-amber-400/20 bg-emerald-950/70 text-emerald-200/90 flex items-center justify-center hover:border-amber-400/60 hover:text-amber-300 transition-colors cursor-pointer shrink-0`}
+      className={`${s} relative before:absolute before:-inset-2 before:content-[''] rounded-lg border border-amber-400/20 bg-emerald-950/70 text-emerald-200/90 flex items-center justify-center hover:border-amber-400/60 hover:text-amber-300 transition-colors cursor-pointer shrink-0`}
     >
       {children}
     </button>
@@ -229,7 +232,7 @@ function PlayerCard({
             boxShadow: `0 0 10px ${col.glow}`,
           }}
         >
-          {player.id + 1}
+          {player.slotIndex + 1}
         </span>
         <span className="font-display text-xs sm:text-sm tracking-wide truncate">{player.name}</span>
         <span
@@ -315,7 +318,7 @@ function MobilePlayerChip({
           boxShadow: active ? `0 0 6px ${col.glow}` : undefined,
         }}
       >
-        {player.id + 1}
+        {player.slotIndex + 1}
       </span>
 
       <div className="flex-1 min-w-0 leading-tight">
@@ -374,6 +377,7 @@ function StartScreen({
   currentThemeId,
   onSelectTheme,
   onOpenThemeModal,
+  onConfigChange,
 }: {
   onStart: (players: PlayerConfig[], speed: GameSpeed, winRule: WinRule) => void;
   onOpenOnline: () => void;
@@ -382,6 +386,7 @@ function StartScreen({
   currentThemeId: ThemeId;
   onSelectTheme: (id: ThemeId) => void;
   onOpenThemeModal: () => void;
+  onConfigChange?: (config: { players: PlayerConfig[]; speed: GameSpeed; rule: WinRule }) => void;
 }) {
   const [mode, setMode] = useState<'solo' | 'pass'>('solo');
   const [playerCount, setPlayerCount] = useState<number>(2);
@@ -402,7 +407,7 @@ function StartScreen({
     });
   };
 
-  const handleLaunch = () => {
+  const getPlayerList = useCallback(() => {
     const list: PlayerConfig[] = [];
     for (let i = 0; i < playerCount; i++) {
       const isCpu = mode === 'solo' ? i > 0 : false;
@@ -413,13 +418,23 @@ function StartScreen({
             : `CPU ${i}`
           : `Player ${i + 1}`;
       list.push({
-        id: i,
+        id: `player-${i}`,
+        slotIndex: i,
         name: names[i]?.trim() || defaultName,
         isCpu,
         colorId: i,
       });
     }
-    onStart(list, speed, rule);
+    return list;
+  }, [playerCount, mode, names]);
+
+  // Keep parent in sync for menu Space/Enter shortcut
+  useEffect(() => {
+    onConfigChange?.({ players: getPlayerList(), speed, rule });
+  }, [getPlayerList, speed, rule, onConfigChange]);
+
+  const handleLaunch = () => {
+    onStart(getPlayerList(), speed, rule);
   };
 
   return (
@@ -458,7 +473,8 @@ function StartScreen({
             <button
               type="button"
               onClick={onResumeSession}
-              className="px-3.5 py-1.5 rounded-lg text-xs font-black bg-amber-400 text-stone-900 hover:bg-amber-300 transition-all cursor-pointer shadow flex items-center gap-1"
+              aria-label="Resume active online match"
+              className="px-3.5 py-1.5 rounded-lg text-xs font-black bg-amber-400 text-stone-900 hover:bg-amber-300 transition-all cursor-pointer shadow flex items-center gap-1 min-h-[44px]"
             >
               <span>RESUME</span>
               <span>➔</span>
@@ -467,14 +483,16 @@ function StartScreen({
         )}
 
         {/* Mode Selector */}
-        <div className="mt-5 grid grid-cols-2 gap-3">
+        <div className="mt-5 grid grid-cols-2 gap-3" role="group" aria-label="Game Mode">
           <button
             type="button"
+            aria-pressed={mode === 'solo'}
+            aria-label="Solo vs CPU mode"
             onClick={() => {
               setMode('solo');
               setNames(['You', 'CPU 1', 'CPU 2', 'CPU 3']);
             }}
-            className={`p-3 rounded-xl border text-left transition-all cursor-pointer ${
+            className={`p-3 rounded-xl border text-left transition-all cursor-pointer min-h-[48px] ${
               mode === 'solo'
                 ? 'bg-amber-400/15 border-amber-400/80 shadow-[0_0_14px_rgba(251,191,36,0.25)]'
                 : 'bg-emerald-950/40 border-emerald-800/40 hover:border-emerald-700/60'
@@ -489,11 +507,13 @@ function StartScreen({
 
           <button
             type="button"
+            aria-pressed={mode === 'pass'}
+            aria-label="Pass and play mode"
             onClick={() => {
               setMode('pass');
               setNames(['Player 1', 'Player 2', 'Player 3', 'Player 4']);
             }}
-            className={`p-3 rounded-xl border text-left transition-all cursor-pointer ${
+            className={`p-3 rounded-xl border text-left transition-all cursor-pointer min-h-[48px] ${
               mode === 'pass'
                 ? 'bg-amber-400/15 border-amber-400/80 shadow-[0_0_14px_rgba(251,191,36,0.25)]'
                 : 'bg-emerald-950/40 border-emerald-800/40 hover:border-emerald-700/60'
@@ -511,10 +531,11 @@ function StartScreen({
         <button
           type="button"
           onClick={onOpenOnline}
-          className="mt-3 w-full p-3 rounded-xl border border-amber-400/60 bg-gradient-to-r from-amber-500/20 via-emerald-900/40 to-amber-500/20 hover:border-amber-400/90 hover:from-amber-500/30 hover:to-amber-500/30 text-left transition-all cursor-pointer shadow-[0_0_16px_rgba(251,191,36,0.2)] flex items-center justify-between"
+          aria-label="Open online multiplayer lobby"
+          className="mt-3 w-full p-3 rounded-xl border border-amber-400/60 bg-gradient-to-r from-amber-500/20 via-emerald-900/40 to-amber-500/20 hover:border-amber-400/90 hover:from-amber-500/30 hover:to-amber-500/30 text-left transition-all cursor-pointer shadow-[0_0_16px_rgba(251,191,36,0.2)] flex items-center justify-between min-h-[48px]"
         >
           <div className="flex items-center gap-2.5">
-            <span className="text-2xl">🌐</span>
+            <span className="text-2xl" aria-hidden="true">🌐</span>
             <div>
               <div className="font-display text-base text-amber-300 flex items-center gap-2">
                 <span>ONLINE MULTIPLAYER</span>
@@ -534,13 +555,15 @@ function StartScreen({
         <div className="mt-4 p-3.5 rounded-xl bg-emerald-950/50 border border-emerald-800/30 text-left">
           <div className="flex items-center justify-between mb-2">
             <span className="text-xs font-black text-emerald-300/80 tracking-wider">PLAYERS:</span>
-            <div className="flex gap-1.5">
+            <div className="flex gap-1.5" role="group" aria-label="Player count">
               {[2, 3, 4].map((n) => (
                 <button
                   key={n}
                   type="button"
+                  aria-pressed={playerCount === n}
+                  aria-label={`${n} players`}
                   onClick={() => setPlayerCount(n)}
-                  className={`w-7 h-7 rounded-lg text-xs font-display transition-all cursor-pointer ${
+                  className={`w-8 h-8 rounded-lg text-xs font-display transition-all cursor-pointer flex items-center justify-center min-h-[36px] ${
                     playerCount === n
                       ? 'bg-amber-400 text-stone-900 font-black'
                       : 'bg-emerald-900/60 text-emerald-200 hover:bg-emerald-800/60'
@@ -555,19 +578,27 @@ function StartScreen({
           <div className="grid grid-cols-2 gap-2 mt-2">
             {Array.from({ length: playerCount }, (_, idx) => {
               const col = PLAYER_COLORS[idx];
+              const inputId = `player-name-${idx}`;
+              const placeholderText = mode === 'solo' && idx > 0 ? `CPU ${idx}` : `Player ${idx + 1}`;
               return (
                 <div key={idx} className="flex items-center gap-1.5 p-1.5 rounded-lg bg-emerald-950/70 border border-emerald-800/40">
                   <span
                     className="w-3.5 h-3.5 rounded-full shrink-0"
                     style={{ background: col.base, boxShadow: `0 0 6px ${col.glow}` }}
+                    aria-hidden="true"
                   />
+                  <label htmlFor={inputId} className="sr-only">
+                    {mode === 'solo' && idx > 0 ? `CPU ${idx} Name` : `Player ${idx + 1} Name`}
+                  </label>
                   <input
+                    id={inputId}
                     type="text"
                     maxLength={12}
                     value={names[idx] ?? ''}
                     onChange={(e) => handleNameChange(idx, e.target.value)}
-                    placeholder={mode === 'solo' && idx > 0 ? `CPU ${idx}` : `Player ${idx + 1}`}
-                    className="w-full bg-transparent text-xs font-bold text-emerald-100 outline-none placeholder:text-emerald-500"
+                    placeholder={placeholderText}
+                    aria-label={mode === 'solo' && idx > 0 ? `CPU ${idx} Name` : `Player ${idx + 1} Name`}
+                    className="w-full bg-transparent text-xs font-bold text-emerald-100 outline-none placeholder:text-emerald-500 min-h-[36px]"
                   />
                 </div>
               );
@@ -579,13 +610,15 @@ function StartScreen({
         <div className="mt-3 grid grid-cols-2 gap-2 text-left text-xs">
           <div className="p-2.5 rounded-xl bg-emerald-950/50 border border-emerald-800/30">
             <span className="text-[10px] font-black text-emerald-300/70 tracking-wider block mb-1">SPEED</span>
-            <div className="flex gap-1">
+            <div className="flex gap-1" role="group" aria-label="Game Speed">
               {(['normal', 'fast', 'turbo'] as GameSpeed[]).map((s) => (
                 <button
                   key={s}
                   type="button"
+                  aria-pressed={speed === s}
+                  aria-label={`${s} speed`}
                   onClick={() => setSpeed(s)}
-                  className={`flex-1 py-1 rounded text-[10px] font-black uppercase transition-all cursor-pointer ${
+                  className={`flex-1 py-1.5 rounded text-[10px] font-black uppercase transition-all cursor-pointer min-h-[36px] flex items-center justify-center ${
                     speed === s
                       ? 'bg-amber-400 text-stone-900'
                       : 'bg-emerald-900/50 text-emerald-300/80 hover:bg-emerald-800/50'
@@ -599,13 +632,15 @@ function StartScreen({
 
           <div className="p-2.5 rounded-xl bg-emerald-950/50 border border-emerald-800/30">
             <span className="text-[10px] font-black text-emerald-300/70 tracking-wider block mb-1">WIN RULE</span>
-            <div className="flex gap-1">
+            <div className="flex gap-1" role="group" aria-label="Win Rule">
               {(['exact', 'bounce'] as WinRule[]).map((r) => (
                 <button
                   key={r}
                   type="button"
+                  aria-pressed={rule === r}
+                  aria-label={r === 'exact' ? 'Exact 100 win rule' : 'Bounce back win rule'}
                   onClick={() => setRule(r)}
-                  className={`flex-1 py-1 rounded text-[10px] font-black uppercase transition-all cursor-pointer ${
+                  className={`flex-1 py-1.5 rounded text-[10px] font-black uppercase transition-all cursor-pointer min-h-[36px] flex items-center justify-center ${
                     rule === r
                       ? 'bg-amber-400 text-stone-900'
                       : 'bg-emerald-900/50 text-emerald-300/80 hover:bg-emerald-800/50'
@@ -628,31 +663,34 @@ function StartScreen({
             <button
               type="button"
               onClick={onOpenThemeModal}
-              className="text-[11px] font-bold text-amber-300 hover:text-amber-200 underline cursor-pointer"
+              aria-label="View all 5 board themes"
+              className="text-[11px] font-bold text-amber-300 hover:text-amber-200 underline cursor-pointer p-1"
             >
               View All (5)
             </button>
           </div>
-          <div className="grid grid-cols-5 gap-1.5">
+          <div className="grid grid-cols-5 gap-1.5" role="group" aria-label="Board themes">
             {(Object.values(THEMES) as BoardTheme[]).map((t) => {
               const isSelected = t.id === currentThemeId;
               return (
                 <button
                   key={t.id}
                   type="button"
+                  aria-pressed={isSelected}
+                  aria-label={`Theme: ${t.name}`}
                   onClick={() => onSelectTheme(t.id)}
                   title={`${t.name}: ${t.tagline}`}
-                  className={`p-1.5 rounded-xl border flex flex-col items-center gap-1 transition-all cursor-pointer ${
+                  className={`p-1.5 rounded-xl border flex flex-col items-center gap-1 transition-all cursor-pointer min-h-[44px] ${
                     isSelected
                       ? 'bg-amber-400/20 border-amber-400 shadow-[0_0_12px_rgba(251,191,36,0.3)] ring-1 ring-amber-400/70 scale-[1.02]'
                       : 'bg-emerald-950/60 border-emerald-800/40 hover:border-emerald-700/70 hover:bg-emerald-900/30'
                   }`}
                 >
-                  <span className="text-lg sm:text-xl leading-none">{t.icon}</span>
+                  <span className="text-lg sm:text-xl leading-none" aria-hidden="true">{t.icon}</span>
                   <span className="text-[10px] font-bold text-center leading-tight truncate w-full text-emerald-100">
                     {t.name.split(' ')[0]}
                   </span>
-                  <div className="flex gap-0.5 mt-0.5">
+                  <div className="flex gap-0.5 mt-0.5" aria-hidden="true">
                     <span
                       className="w-2 h-2 rounded-full border border-black/30"
                       style={{ backgroundColor: t.previewColors.accent }}
@@ -670,7 +708,12 @@ function StartScreen({
 
         {/* Start Game Button */}
         <div className="mt-4">
-          <button type="button" onClick={handleLaunch} className="btn-theme w-full py-3.5 text-base sm:text-lg">
+          <button
+            type="button"
+            onClick={handleLaunch}
+            aria-label="Start match with configured settings"
+            className="btn-theme w-full py-3.5 text-base sm:text-lg min-h-[48px] cursor-pointer"
+          >
             START MATCH
           </button>
         </div>
@@ -681,7 +724,7 @@ function StartScreen({
           <span className="px-2.5 py-1 rounded-full bg-emerald-950/70 border border-emerald-700/40">SNAKES DROP ▼</span>
         </div>
         <p className="mt-3 text-[11px] text-emerald-300/50 font-bold">
-          PC — SPACE / ENTER to roll &middot; M to mute &middot; S for speed
+          PC — SPACE / ENTER to roll &middot; M to mute &middot; S for speed &middot; F fullscreen &middot; R restart &middot; Esc menu
         </p>
       </div>
     </div>
@@ -697,6 +740,8 @@ function WinOverlay({
   ladders,
   snakes,
   sixes,
+  isOnline,
+  isHost,
   onAgain,
   onMenu,
 }: {
@@ -706,40 +751,68 @@ function WinOverlay({
   ladders: number[];
   snakes: number[];
   sixes: number[];
+  isOnline: boolean;
+  isHost: boolean;
   onAgain: () => void;
   onMenu: () => void;
 }) {
   const col = PLAYER_COLORS[winner.colorId % PLAYER_COLORS.length];
+  const winnerIndex = players.findIndex((p) => p.slotIndex === winner.slotIndex);
+  const safeWinnerIndex = winnerIndex >= 0 ? winnerIndex : 0;
+  const winnerRolls = rolls[safeWinnerIndex] ?? 0;
+  const winnerLadders = ladders[safeWinnerIndex] ?? 0;
+  const winnerSnakes = snakes[safeWinnerIndex] ?? 0;
+
+  const canRestart = !isOnline || isHost;
+
+  useEffect(() => {
+    const handleKey = (e: KeyboardEvent) => {
+      if (e.code === 'Space') {
+        if (canRestart) {
+          e.preventDefault();
+          onAgain();
+        }
+      }
+    };
+    window.addEventListener('keydown', handleKey);
+    return () => window.removeEventListener('keydown', handleKey);
+  }, [canRestart, onAgain]);
+
   return (
-    <div className="absolute inset-0 z-40 flex items-center justify-center bg-[#04100b]/80 p-4 fade-in">
-      <div
-        className="panel pop-in w-full max-w-md p-6 sm:p-8 text-center max-h-[92vh] overflow-y-auto"
-        style={{ borderColor: col.base, boxShadow: `0 0 32px ${col.glow}` }}
-      >
+    <Dialog
+      isOpen={true}
+      onClose={onMenu}
+      titleId="win-dialog-title"
+      closeOnBackdropClick={false}
+      className="w-full max-w-md p-6 sm:p-8 text-center"
+      backdropClassName="z-40"
+    >
+      <div style={{ borderColor: col.base }}>
         <TrophyIcon className="w-16 h-16 mx-auto text-amber-400 drop-shadow-[0_0_20px_rgba(251,191,36,0.7)]" />
         <h2
+          id="win-dialog-title"
           className="font-display text-4xl drop-title mt-2"
           style={{ color: col.light, textShadow: `0 0 20px ${col.glow}` }}
         >
           {winner.name.toUpperCase()} WINS!
         </h2>
         <p className="mt-1 font-bold text-emerald-100/90 text-sm">
-          Conquered square 100 in {rolls[winner.id] ?? 0} {(rolls[winner.id] ?? 0) === 1 ? 'roll' : 'rolls'}!
+          Conquered square 100 in {winnerRolls} {winnerRolls === 1 ? 'roll' : 'rolls'}!
         </p>
 
         {/* Match breakdown stats */}
         <div className="mt-4 grid grid-cols-3 gap-2 p-3 rounded-xl bg-emerald-950/70 border border-amber-400/30 text-center">
           <div>
             <div className="text-[10px] font-black tracking-wider text-emerald-300/60">ROLLS</div>
-            <div className="font-display text-xl text-amber-300 mt-0.5">{rolls[winner.id] ?? 0}</div>
+            <div className="font-display text-xl text-amber-300 mt-0.5">{winnerRolls}</div>
           </div>
           <div>
             <div className="text-[10px] font-black tracking-wider text-emerald-300/60">LADDERS</div>
-            <div className="font-display text-xl text-yellow-300 mt-0.5">🪜 {ladders[winner.id] ?? 0}</div>
+            <div className="font-display text-xl text-yellow-300 mt-0.5">🪜 {winnerLadders}</div>
           </div>
           <div>
             <div className="text-[10px] font-black tracking-wider text-emerald-300/60">SNAKES</div>
-            <div className="font-display text-xl text-rose-300 mt-0.5">🐍 {snakes[winner.id] ?? 0}</div>
+            <div className="font-display text-xl text-rose-300 mt-0.5">🐍 {winnerSnakes}</div>
           </div>
         </div>
 
@@ -747,18 +820,18 @@ function WinOverlay({
         <div className="mt-3 p-2.5 rounded-xl bg-emerald-950/50 border border-emerald-800/30 text-left">
           <div className="text-[10px] font-black text-emerald-300/60 uppercase mb-1.5">Match Summary</div>
           <div className="space-y-1 text-xs font-bold">
-            {players.map((p) => {
+            {players.map((p, idx) => {
               const pal = PLAYER_COLORS[p.colorId % PLAYER_COLORS.length];
               return (
                 <div key={p.id} className="flex items-center justify-between py-0.5 text-emerald-100/90">
                   <div className="flex items-center gap-2">
-                    <span className="w-2.5 h-2.5 rounded-full" style={{ background: pal.base }} />
+                    <span className="w-2.5 h-2.5 rounded-full" style={{ background: pal.base }} aria-hidden="true" />
                     <span>{p.name}</span>
-                    {p.id === winner.id && <span className="text-[10px] text-amber-400">👑 WINNER</span>}
+                    {p.slotIndex === winner.slotIndex && <span className="text-[10px] text-amber-400">👑 WINNER</span>}
                   </div>
                   <div className="flex items-center gap-3 text-emerald-300/70 text-[11px]">
-                    <span>{rolls[p.id]} rolls</span>
-                    <span>{sixes[p.id]} sixes</span>
+                    <span>{rolls[idx] ?? 0} rolls</span>
+                    <span>{sixes[idx] ?? 0} sixes</span>
                   </div>
                 </div>
               );
@@ -766,16 +839,32 @@ function WinOverlay({
           </div>
         </div>
 
-        <div className="mt-5 flex gap-3 justify-center flex-wrap">
-          <button type="button" className="btn-theme px-6 py-3" onClick={onAgain}>
-            PLAY AGAIN (SPACE)
-          </button>
-          <button type="button" className={btnGhost} onClick={onMenu}>
+        <div className="mt-5 flex gap-3 justify-center flex-wrap items-center">
+          {canRestart ? (
+            <button
+              type="button"
+              className="btn-theme min-h-[44px] px-6 py-3 cursor-pointer"
+              onClick={onAgain}
+              aria-label="Play again"
+            >
+              PLAY AGAIN (SPACE)
+            </button>
+          ) : (
+            <div className="p-3 text-xs font-bold text-amber-300 bg-amber-950/60 rounded-xl border border-amber-500/40">
+              Waiting for room host to restart match...
+            </div>
+          )}
+          <button
+            type="button"
+            className={`${btnGhost} min-h-[44px] cursor-pointer`}
+            onClick={onMenu}
+            aria-label="Return to main menu"
+          >
             MAIN MENU
           </button>
         </div>
       </div>
-    </div>
+    </Dialog>
   );
 }
 
@@ -791,24 +880,39 @@ function ConfirmModal({
   onCancel: () => void;
 }) {
   return (
-    <div className="absolute inset-0 z-50 flex items-center justify-center bg-[#04100b]/80 p-4 fade-in">
-      <div className="panel pop-in w-full max-w-sm p-6 text-center border-amber-400/40">
-        <h3 className="font-display text-2xl text-amber-300 drop-title">
-          {action === 'restart' ? 'RESTART MATCH?' : 'RETURN TO MENU?'}
-        </h3>
-        <p className="mt-2 text-xs font-bold text-emerald-200/80">
-          The current game progress will be lost. Are you sure?
-        </p>
-        <div className="mt-5 flex gap-3 justify-center">
-          <button type="button" onClick={onConfirm} className="btn-theme px-6 py-3">
-            YES, PROCEED
-          </button>
-          <button type="button" onClick={onCancel} className={btnGhost}>
-            CANCEL
-          </button>
-        </div>
+    <Dialog
+      isOpen={true}
+      onClose={onCancel}
+      titleId="confirm-dialog-title"
+      descriptionId="confirm-dialog-desc"
+      className="w-full max-w-sm p-6 text-center border-amber-400/40"
+      backdropClassName="z-50"
+    >
+      <h3 id="confirm-dialog-title" className="font-display text-2xl text-amber-300 drop-title">
+        {action === 'restart' ? 'RESTART MATCH?' : 'RETURN TO MENU?'}
+      </h3>
+      <p id="confirm-dialog-desc" className="mt-2 text-xs font-bold text-emerald-200/80">
+        The current game progress will be lost. Are you sure?
+      </p>
+      <div className="mt-5 flex gap-3 justify-center">
+        <button
+          type="button"
+          onClick={onConfirm}
+          aria-label="Confirm and proceed"
+          className="btn-theme min-h-[44px] px-6 py-3 cursor-pointer"
+        >
+          YES, PROCEED
+        </button>
+        <button
+          type="button"
+          onClick={onCancel}
+          aria-label="Cancel and return to match"
+          className={`${btnGhost} min-h-[44px] cursor-pointer`}
+        >
+          CANCEL
+        </button>
       </div>
-    </div>
+    </Dialog>
   );
 }
 
@@ -821,9 +925,20 @@ export default function App() {
   const [showThemeModal, setShowThemeModal] = useState(false);
 
   const gameRef = useRef<ReturnType<typeof useGame> | null>(null);
+  const reconnectTimeoutRef = useRef<number | null>(null);
+
+  const clearReconnectTimeout = useCallback(() => {
+    if (reconnectTimeoutRef.current !== null) {
+      window.clearTimeout(reconnectTimeoutRef.current);
+      reconnectTimeoutRef.current = null;
+    }
+  }, []);
+
+  useEffect(() => clearReconnectTimeout, [clearReconnectTimeout]);
 
   const multiplayer = useMultiplayer({
     onGameStart: (players, speed, winRule) => {
+      clearReconnectTimeout();
       setShowOnlineModal(false);
       gameRef.current?.startGame(players, speed, winRule);
     },
@@ -837,7 +952,11 @@ export default function App() {
       gameRef.current?.triggerEmote(player, emoji);
     },
     onPlayerDisconnected: (_slot, name) => {
-      gameRef.current?.showToast('PLAYER LEFT', `${name} left. CPU bot took over.`, 'pink');
+      gameRef.current?.showToast(
+        'PLAYER DISCONNECTED',
+        `${name} disconnected. Waiting for them to rejoin...`,
+        'pink',
+      );
     },
     onPlayerReconnected: (_slot, name) => {
       gameRef.current?.showToast('PLAYER REJOINED', `${name} rejoined the match!`, 'cyan');
@@ -846,12 +965,12 @@ export default function App() {
       gameRef.current?.updatePlayers(updatedPlayers);
     },
     onReconnected: (players, speed, winRule, gameState) => {
+      clearReconnectTimeout();
       setShowOnlineModal(false);
-      gameRef.current?.startGame(players, speed, winRule);
       if (gameState) {
-        setTimeout(() => {
-          gameRef.current?.syncFromCheckpoint(gameState);
-        }, 120);
+        gameRef.current?.reconnectGame(players, speed, winRule, gameState);
+      } else {
+        gameRef.current?.startGame(players, speed, winRule);
       }
       gameRef.current?.showToast('RECONNECTED', 'Welcome back to your match!', 'info');
     },
@@ -862,6 +981,8 @@ export default function App() {
 
   const game = useGame({
     isOnline: multiplayer.isOnline,
+    isOnlineMatch: multiplayer.isOnlineMatch,
+    isPaused: multiplayer.isPaused,
     isHost: multiplayer.isHost,
     onlineSlot: multiplayer.mySlot,
     onLocalRoll: (roll, player) => {
@@ -888,35 +1009,51 @@ export default function App() {
     return () => window.removeEventListener('hashchange', handleHash);
   }, []);
 
-  // Keyboard shortcut T for theme picker
+  const menuConfigRef = useRef<{
+    players: PlayerConfig[];
+    speed: GameSpeed;
+    rule: WinRule;
+  } | null>(null);
+
+  const lastAnnouncedTextRef = useRef('');
+  const [liveAnnouncement, setLiveAnnouncement] = useState('');
+
   useEffect(() => {
-    const handleKey = (e: KeyboardEvent) => {
-      if ((e.target as HTMLElement)?.tagName === 'INPUT') return;
-      if (e.key === 't' || e.key === 'T') {
-        setShowThemeModal((v) => !v);
-      }
-    };
-    window.addEventListener('keydown', handleKey);
-    return () => window.removeEventListener('keydown', handleKey);
-  }, []);
+    let msg = '';
+    if (hud.mode === 'over' && hud.winner >= 0) {
+      const winnerName = hud.players[hud.winner]?.name ?? `Player ${hud.winner + 1}`;
+      msg = `${winnerName} won the match!`;
+    } else if (game.toast) {
+      msg = `${game.toast.title}: ${game.toast.sub ?? ''}`;
+    } else if (game.log[0]) {
+      msg = game.log[0].text;
+    }
+    if (msg && msg !== lastAnnouncedTextRef.current) {
+      lastAnnouncedTextRef.current = msg;
+      setLiveAnnouncement(msg);
+    }
+  }, [game.toast, game.log, hud.mode, hud.winner, hud.players]);
 
   const hashRoomCode = window.location.hash.startsWith('#room=')
     ? window.location.hash.replace('#room=', '').trim()
     : '';
 
-  const handleLeaveOnline = () => {
+  const handleLeaveOnline = useCallback(() => {
+    clearReconnectTimeout();
     multiplayer.leaveRoom();
     game.backToMenu();
-  };
+  }, [clearReconnectTimeout, multiplayer, game]);
 
-  const handleConfirm = () => {
+  const handleConfirm = useCallback(() => {
+    clearReconnectTimeout();
     if (game.confirmAction === 'menu' && multiplayer.isOnline) {
       multiplayer.leaveRoom();
     }
     game.confirmPending();
-  };
+  }, [clearReconnectTimeout, game, multiplayer]);
 
-  const handleRestart = () => {
+  const handleRestart = useCallback(() => {
+    clearReconnectTimeout();
     if (multiplayer.isOnline) {
       if (multiplayer.isHost) {
         multiplayer.startGame();
@@ -926,20 +1063,75 @@ export default function App() {
     } else {
       game.requestRestart();
     }
-  };
+  }, [clearReconnectTimeout, multiplayer, game]);
 
-  const toggleFullscreen = () => {
+  const toggleFullscreen = useCallback(() => {
     if (!document.fullscreenElement) {
       document.documentElement.requestFullscreen().catch(() => {});
     } else {
       document.exitFullscreen().catch(() => {});
     }
-  };
+  }, []);
 
-  const isMyTurn = !multiplayer.isOnline || hud.turn === multiplayer.mySlot;
+  // Global keyboard shortcuts (F, R, Esc, T, Space, Enter)
+  useEffect(() => {
+    const handleKey = (e: KeyboardEvent) => {
+      if (e.repeat) return;
+      const target = e.target as HTMLElement | null;
+      if (
+        target &&
+        (target.tagName === 'INPUT' ||
+          target.tagName === 'TEXTAREA' ||
+          target.tagName === 'SELECT' ||
+          target.isContentEditable ||
+          target.closest?.('[contenteditable="true"]') ||
+          target.closest?.('[role="dialog"]') ||
+          target.closest?.('dialog'))
+      ) {
+        return;
+      }
+
+      // If any modal dialog is currently open in DOM, do not handle global shortcuts
+      if (typeof document !== 'undefined' && document.querySelector('[role="dialog"], dialog')) {
+        return;
+      }
+
+      if (e.code === 'KeyF') {
+        toggleFullscreen();
+      } else if (e.code === 'KeyR') {
+        if (hud.mode === 'playing') {
+          handleRestart();
+        }
+      } else if (e.code === 'Escape') {
+        if (hud.mode === 'playing') {
+          game.requestMenu();
+        }
+      } else if (e.code === 'KeyT') {
+        setShowThemeModal((v) => !v);
+      } else if (e.code === 'Space' || e.code === 'Enter') {
+        if (hud.mode === 'menu' && !showOnlineModal) {
+          e.preventDefault();
+          if (menuConfigRef.current) {
+            clearReconnectTimeout();
+            game.startGame(
+              menuConfigRef.current.players,
+              menuConfigRef.current.speed,
+              menuConfigRef.current.rule
+            );
+          }
+        }
+      }
+    };
+    window.addEventListener('keydown', handleKey);
+    return () => window.removeEventListener('keydown', handleKey);
+  }, [hud.mode, showOnlineModal, clearReconnectTimeout, game, handleRestart, toggleFullscreen]);
+
+  const isMyTurn =
+    !multiplayer.isOnline || hud.players[hud.turn]?.slotIndex === multiplayer.mySlot;
 
   const cardLabel = (idx: number) => {
     if (hud.turn !== idx || hud.mode !== 'playing') return undefined;
+    if (multiplayer.isPaused) return 'PAUSED';
     if (hud.rolling) return 'ROLLING';
     if (hud.phase === 'moving') return 'HOPPING';
     if (hud.phase === 'sliding') return 'SLIDING';
@@ -947,12 +1139,16 @@ export default function App() {
     const player = hud.players[idx];
     if (player?.isCpu) return 'THINKING...';
     if (multiplayer.isOnline) {
-      return idx === multiplayer.mySlot ? 'YOUR TURN!' : 'WAITING...';
+      const netPlayer = multiplayer.players.find((p) => p.slotIndex === player?.slotIndex);
+      if (netPlayer && !netPlayer.isReady) return 'DISCONNECTED';
+      return player?.slotIndex === multiplayer.mySlot ? 'YOUR TURN!' : 'WAITING...';
     }
     return 'YOUR TURN';
   };
 
   const rollButtonLabel = () => {
+    if (multiplayer.isPaused) return 'MATCH PAUSED (RECONNECTING...)';
+    if (multiplayer.isOnlineMatch && !multiplayer.isOnline) return 'DISCONNECTED...';
     if (hud.mode === 'over') return 'GAME FINISHED';
     if (hud.rolling) return 'ROLLING...';
     if (hud.phase === 'moving') return 'MOVING...';
@@ -960,6 +1156,12 @@ export default function App() {
     if (hud.phase === 'settling') return 'LANDED!';
     if (activePlayer?.isCpu) return `${activePlayer.name.toUpperCase()} THINKING...`;
     if (multiplayer.isOnline) {
+      const activeNetPlayer = multiplayer.players.find(
+        (p) => p.slotIndex === activePlayer?.slotIndex,
+      );
+      if (activeNetPlayer && !activeNetPlayer.isReady) {
+        return `WAITING FOR ${activePlayer.name.toUpperCase()} TO RECONNECT...`;
+      }
       return isMyTurn ? 'ROLL DICE (YOUR TURN)' : `WAITING FOR ${activePlayer.name.toUpperCase()}...`;
     }
     return 'ROLL DICE';
@@ -988,6 +1190,12 @@ export default function App() {
       }}
     >
       <BgGlow bgGlow={game.theme.ui.bgGlow} />
+      <AriaLiveAnnouncer message={liveAnnouncement} />
+      <AccessibleBoardTable
+        players={hud.players}
+        positions={hud.pos}
+        currentTurn={hud.turn}
+      />
 
       {hud.mode === 'menu' ? (
         showOnlineModal ? (
@@ -1006,7 +1214,9 @@ export default function App() {
             savedSession={multiplayer.savedSession}
             initialRoomCode={hashRoomCode}
             onCreateRoom={multiplayer.createRoom}
-            onJoinRoom={multiplayer.joinRoom}
+            onJoinRoom={async (roomCode, guestName, colorId) => {
+              await multiplayer.joinRoom(roomCode, guestName, colorId);
+            }}
             onReconnect={multiplayer.reconnectRoom}
             onChangeColor={multiplayer.changeColor}
             onToggleCpu={multiplayer.toggleCpuSlot}
@@ -1014,6 +1224,7 @@ export default function App() {
             onStartGame={multiplayer.startGame}
             onLeaveRoom={multiplayer.leaveRoom}
             onCancel={() => {
+              clearReconnectTimeout();
               setShowOnlineModal(false);
               multiplayer.leaveRoom();
               if (window.location.hash.startsWith('#room=')) {
@@ -1023,7 +1234,13 @@ export default function App() {
           />
         ) : (
           <StartScreen
-            onStart={game.startGame}
+            onStart={(players, speed, winRule) => {
+              clearReconnectTimeout();
+              game.startGame(players, speed, winRule);
+            }}
+            onConfigChange={(config) => {
+              menuConfigRef.current = config;
+            }}
             onOpenOnline={() => setShowOnlineModal(true)}
             savedSession={multiplayer.savedSession}
             onResumeSession={() => setShowOnlineModal(true)}
@@ -1062,6 +1279,10 @@ export default function App() {
                 <button
                   type="button"
                   onClick={() => {
+                    if (multiplayer.isOnline && hud.mode === 'playing') {
+                      game.showToast('LOCKED', 'Speed is locked during online matches.', 'gold');
+                      return;
+                    }
                     const next: Record<GameSpeed, GameSpeed> = {
                       normal: 'fast',
                       fast: 'turbo',
@@ -1233,6 +1454,10 @@ export default function App() {
                   <button
                     type="button"
                     onClick={() => {
+                      if (multiplayer.isOnline && hud.mode === 'playing') {
+                        game.showToast('LOCKED', 'Speed is locked during online matches.', 'gold');
+                        return;
+                      }
                       const next: Record<GameSpeed, GameSpeed> = {
                         normal: 'fast',
                         fast: 'turbo',
@@ -1283,6 +1508,10 @@ export default function App() {
                   <button
                     type="button"
                     onClick={() => {
+                      if (multiplayer.isOnline && hud.mode === 'playing') {
+                        game.showToast('LOCKED', 'Speed is locked during online matches.', 'gold');
+                        return;
+                      }
                       const next: Record<GameSpeed, GameSpeed> = {
                         normal: 'fast',
                         fast: 'turbo',
@@ -1435,7 +1664,8 @@ export default function App() {
             <WinOverlay
               winner={
                 hud.players[hud.winner] || {
-                  id: hud.winner,
+                  id: `player-${hud.winner}`,
+                  slotIndex: hud.winner,
                   name: `Player ${hud.winner + 1}`,
                   colorId: hud.winner,
                   isCpu: false,
@@ -1446,6 +1676,8 @@ export default function App() {
               ladders={hud.laddersHit}
               snakes={hud.snakesHit}
               sixes={hud.sixesHit}
+              isOnline={multiplayer.isOnline}
+              isHost={multiplayer.isHost}
               onAgain={() => {
                 if (multiplayer.isOnline) {
                   if (multiplayer.isHost) {

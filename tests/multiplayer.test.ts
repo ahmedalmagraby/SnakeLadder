@@ -500,32 +500,35 @@ describe('8. Player Disconnect/Reconnect & AI Mark Removal', () => {
     expect(stripCpuSuffix('')).toBe('');
   });
 
-  it('restores isCpu to false and removes (CPU) when a disconnected player reconnects', () => {
+  it('preserves isCpu as false and clean name when a player disconnects and reconnects', () => {
     // 1. Initial state: Alice (host) and Bob (friend)
     let players = [
-      { slotIndex: 0, name: 'Alice', isCpu: false, colorId: 0 },
-      { slotIndex: 1, name: 'Bob', isCpu: false, colorId: 1 },
+      { slotIndex: 0, name: 'Alice', isCpu: false, isReady: true, colorId: 0 },
+      { slotIndex: 1, name: 'Bob', isCpu: false, isReady: true, colorId: 1 },
     ];
 
-    // 2. Bob disconnects -> converted to CPU
+    // 2. Bob disconnects -> keeps isCpu: false, marks isReady: false, no CPU suffix
     const dcSlot = 1;
     players = players.map((p) =>
       p.slotIndex === dcSlot
-        ? { ...p, isCpu: true, name: `${stripCpuSuffix(p.name)} (CPU)` }
-        : p,
-    );
-
-    expect(players[1].isCpu).toBe(true);
-    expect(players[1].name).toBe('Bob (CPU)');
-
-    // 3. Bob rejoins -> restored to human and (CPU) removed
-    players = players.map((p) =>
-      p.slotIndex === dcSlot
-        ? { ...p, isCpu: false, name: stripCpuSuffix(p.name) }
+        ? { ...p, isCpu: false, isReady: false, name: stripCpuSuffix(p.name) }
         : p,
     );
 
     expect(players[1].isCpu).toBe(false);
+    expect(players[1].isReady).toBe(false);
+    expect(players[1].name).toBe('Bob');
+    expect(players[1].name.includes('(CPU)')).toBe(false);
+
+    // 3. Bob rejoins -> isReady: true, stays human
+    players = players.map((p) =>
+      p.slotIndex === dcSlot
+        ? { ...p, isCpu: false, isReady: true, name: stripCpuSuffix(p.name) }
+        : p,
+    );
+
+    expect(players[1].isCpu).toBe(false);
+    expect(players[1].isReady).toBe(true);
     expect(players[1].name).toBe('Bob');
     expect(players[1].name.includes('(CPU)')).toBe(false);
   });
@@ -534,6 +537,7 @@ describe('8. Player Disconnect/Reconnect & AI Mark Removal', () => {
     it('accepts and validates authoritative SYNC_CHECKPOINT with winner', () => {
       const winCheckpoint = {
         type: 'SYNC_CHECKPOINT',
+        mode: 'over' as const,
         pos: [100, 75],
         turn: 0,
         phase: 'over',
@@ -553,8 +557,29 @@ describe('8. Player Disconnect/Reconnect & AI Mark Removal', () => {
         if (result.packet.type === 'SYNC_CHECKPOINT') {
           expect(result.packet.winner).toBe(0);
           expect(result.packet.phase).toBe('over');
+          expect(result.packet.mode).toBe('over');
         }
       }
+    });
+
+    it('rejects SYNC_CHECKPOINT with missing or invalid mode', () => {
+      const invalidCheckpoint = {
+        type: 'SYNC_CHECKPOINT',
+        mode: 'invalid_mode',
+        pos: [50, 40],
+        turn: 1,
+        phase: 'idle',
+        rolls: [5, 4],
+        laddersHit: [0, 0],
+        snakesHit: [0, 0],
+        sixesHit: [0, 0],
+        winner: -1,
+        turnId: 3,
+        stateVersion: 8,
+      };
+      const result = validatePacket(invalidCheckpoint, 'guest', false);
+      expect(result.valid).toBe(false);
+      expect(result.error).toMatch(/Invalid mode in SYNC_CHECKPOINT/);
     });
 
     it('retains turn and awards extra roll when rolling a 6 on square 99 with exact rule', () => {
@@ -564,7 +589,7 @@ describe('8. Player Disconnect/Reconnect & AI Mark Removal', () => {
       const v = 6;
       const winRule = 'exact';
       let turn = 1;
-      let sixesHit = [0, 0];
+      const sixesHit = [0, 0];
       let turnSwitched = false;
       let extraRollAwarded = false;
 
@@ -592,7 +617,7 @@ describe('8. Player Disconnect/Reconnect & AI Mark Removal', () => {
       const v = 3;
       const winRule = 'exact';
       let turn = 1;
-      let sixesHit = [0, 0];
+      const sixesHit = [0, 0];
       let turnSwitched = false;
       let extraRollAwarded = false;
 

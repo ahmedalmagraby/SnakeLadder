@@ -12,8 +12,26 @@ import {
   hexLerp,
   mulberry32,
   squareCenter,
+  getSnakeSpine,
+  SNAKE_PARAMS,
 } from './constants';
+import type { PlayerConfig } from './gameReducer';
 import { THEMES, type BoardTheme } from './themes';
+
+/* Memoized segment color cache for fast 60fps rendering without allocations */
+const segmentColorCache = new Map<string, string[]>();
+export function getSegmentColors(main: string, dark: string, n: number): string[] {
+  const key = `${main}_${dark}_${n}`;
+  let cached = segmentColorCache.get(key);
+  if (!cached) {
+    cached = [];
+    for (let i = 0; i < n; i++) {
+      cached.push(hexLerp(main, dark, i / n));
+    }
+    segmentColorCache.set(key, cached);
+  }
+  return cached;
+}
 
 /* ---------------- particles ---------------- */
 
@@ -323,54 +341,15 @@ export function drawAnimatedSnake(
   const tb = theme.board;
   const palette = tb.snakePalette;
   const [main, dark] = palette[idx % palette.length];
-  const a = squareCenter(headNum);
-  const b = squareCenter(tailNum);
-  const dx = b.x - a.x;
-  const dy = b.y - a.y;
-  const len = Math.hypot(dx, dy) || 1;
-  const px = -dy / len;
-  const py = dx / len;
-  const nx = dx / len;
-  const ny = dy / len;
-
-  // Stable procedural wave parameters based on head square
-  const rnd = mulberry32(headNum * 31 + 7);
-  const baseAmp = 10 + rnd() * 12;
-  const amp = isActive ? baseAmp * 1.3 : baseAmp;
-  const waves = 1.4 + rnd() * 1.1;
-  const phase = rnd() * Math.PI * 2;
-  const speed = isActive ? 5.5 : 2.2 + (idx % 3) * 0.45;
+  const pts = getSnakeSpine(headNum, tailNum, time, isActive);
+  const n = pts.length - 1;
+  const params = SNAKE_PARAMS[headNum] || { phase: 0 };
+  const phase = params.phase;
 
   // Breathing oscillation
   const breathe = isActive
     ? Math.sin(time * 7.5) * 2.2
     : Math.sin(time * 2.4 + phase) * 1.2;
-
-  // Head micro-lunge or idle swaying motion
-  const headBob = isActive
-    ? Math.sin(time * 16) * 4.2
-    : Math.sin(time * 2.6 + phase) * 1.6;
-
-  // Generate dynamic undulating spine points
-  const n = Math.max(28, Math.round(len / 5.5));
-  const pts: Pt[] = [];
-
-  for (let i = 0; i <= n; i++) {
-    const f = i / n;
-    // Envelope is 0 at both head and tail so endpoints remain anchored to square centers
-    const env = Math.sin(f * Math.PI);
-    // Traveling wave equation along the snake's spine
-    const wavePhase = f * Math.PI * waves * 2 + phase - time * speed;
-    const wob = Math.sin(wavePhase) * amp * env;
-
-    // Small head micro-motion along spine vector
-    const bobOffset = headBob * Math.pow(1 - f, 2.5);
-
-    pts.push({
-      x: a.x + dx * f + px * wob + nx * bobOffset,
-      y: a.y + dy * f + py * wob + ny * bobOffset,
-    });
-  }
 
   const wAt = (f: number) =>
     Math.max(4, 24 * (1 - f * 0.65) + 5 + breathe * Math.sin(f * Math.PI));
@@ -401,9 +380,10 @@ export function drawAnimatedSnake(
     seg(i, wAt(i / n) + 4.5, tb.snakeOutline);
   }
 
-  // 3. Colored body gradient
+  // 3. Colored body gradient with cached segment colors
+  const segColors = getSegmentColors(main, dark, n);
   for (let i = 0; i < n; i++) {
-    seg(i, wAt(i / n), hexLerp(main, dark, i / n));
+    seg(i, wAt(i / n), segColors[i] || main);
   }
 
   // 4. Style-specific spine patterns
@@ -868,6 +848,7 @@ export function drawSquare100Podium(
 export function drawStaticBoard(
   ctx: CanvasRenderingContext2D,
   theme: BoardTheme = THEMES.jungle,
+  players?: PlayerConfig[],
 ) {
   const rnd = mulberry32(20240601);
   const tb = theme.board;
@@ -1156,9 +1137,11 @@ export function drawStaticBoard(
   ctx.lineTo(bayX + 116, bayY + bayH - 6);
   ctx.stroke();
 
-  // 4 Recessed Docking Dishes
+  // 4 Recessed Docking Dishes using selected player colors
   START_POS.forEach((pt, idx) => {
-    const col = PLAYER_COLORS[idx];
+    const player = players?.[idx];
+    const colorId = player !== undefined ? player.colorId : idx;
+    const col = PLAYER_COLORS[colorId % PLAYER_COLORS.length];
     const sockGrad = ctx.createRadialGradient(pt.x, pt.y - 1, 2, pt.x, pt.y, 16);
     sockGrad.addColorStop(0, tb.startBayDockGrad[0]);
     sockGrad.addColorStop(0.7, tb.startBayDockGrad[1]);

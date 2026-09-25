@@ -17,6 +17,7 @@ import {
   pointAt,
   squareCenter,
   squareFromPoint,
+  getSnakeSlidePoint,
 } from './constants';
 import { sfx } from './audio';
 import { THEMES, getSavedTheme, saveTheme, type BoardTheme, type ThemeId } from './themes';
@@ -35,24 +36,26 @@ import {
   spawnSpark,
   updateParticles,
 } from './render';
-import type { Particle } from './render';
+import type { CheckpointMode, GameStateSnapshot } from './network/types';
+import {
+  gameReducer,
+  initialGameState,
+  isStablePhase,
+  isNonStablePhase,
+  isTerminalCheckpoint,
+  defaultPlayers,
+  slotToIndex,
+  type Phase,
+  type Mode,
+  type PlayerConfig,
+  type CheckpointData,
+  type GameState,
+  type GameAction,
+  type Sliding,
+  type FloatingEmote,
+} from './gameReducer';
 
-export type Phase =
-  | 'idle'
-  | 'rolling'
-  | 'moving'
-  | 'sliding'
-  | 'settling'
-  | 'waiting'
-  | 'over';
-export type Mode = 'menu' | 'playing' | 'over';
-
-export interface PlayerConfig {
-  id: number;
-  name: string;
-  isCpu: boolean;
-  colorId: number;
-}
+export type { Phase, Mode, PlayerConfig, CheckpointData, Sliding, FloatingEmote, GameState, GameAction };
 
 export interface Hud {
   mode: Mode;
@@ -86,109 +89,15 @@ export interface LogEntry {
   kind: 'p0' | 'p1' | 'p2' | 'p3' | 'event';
 }
 
-interface Moving {
-  player: number;
-  steps: Pt[];
-  idx: number;
-  t0: number;
-  base: number;
-  finalRoll: number;
-  finalTarget: number;
-}
-
-interface Sliding {
-  player: number;
-  pts: Pt[];
-  cum: number[];
-  total: number;
-  t0: number;
-  dur: number;
-  kind: 'ladder' | 'snake';
-  from: number;
-  to: number;
-  roll: number;
-}
-
-interface GS {
-  mode: Mode;
-  players: PlayerConfig[];
-  turn: number;
-  phase: Phase;
-  rolling: boolean;
-  roll: number;
-  pos: number[];
-  rolls: number[];
-  laddersHit: number[];
-  snakesHit: number[];
-  sixesHit: number[];
-  winner: number;
-  speed: GameSpeed;
-  winRule: WinRule;
-  moving: Moving | null;
-  sliding: Sliding | null;
-  particles: Particle[];
-  emotes: FloatingEmote[];
-  shake: number;
-  time: number;
-  targetSquare?: number;
-  hoveredSquare?: number;
-}
-
-export interface FloatingEmote {
-  id: number;
-  player: number;
-  emoji: string;
-  x: number;
-  y: number;
-  vy: number;
-  life: number;
-  maxLife: number;
-}
-
 export interface UseGameOptions {
   isOnline?: boolean;
+  isOnlineMatch?: boolean;
+  isPaused?: boolean;
   isHost?: boolean;
   onlineSlot?: number;
   onLocalRoll?: (roll: number, player: number) => void;
-  onTurnSettled?: (snapshot: {
-    pos: number[];
-    turn: number;
-    phase: string;
-    rolls: number[];
-    laddersHit: number[];
-    snakesHit: number[];
-    sixesHit: number[];
-    winner: number;
-  }) => void;
+  onTurnSettled?: (snapshot: GameStateSnapshot) => void;
 }
-
-const defaultPlayers: PlayerConfig[] = [
-  { id: 0, name: 'You', isCpu: false, colorId: 0 },
-  { id: 1, name: 'CPU', isCpu: true, colorId: 1 },
-];
-
-const initialGS = (): GS => ({
-  mode: 'menu',
-  players: defaultPlayers,
-  turn: 0,
-  phase: 'idle',
-  rolling: false,
-  roll: 0,
-  pos: [0, 0],
-  rolls: [0, 0],
-  laddersHit: [0, 0],
-  snakesHit: [0, 0],
-  sixesHit: [0, 0],
-  winner: -1,
-  speed: 'normal',
-  winRule: 'exact',
-  moving: null,
-  sliding: null,
-  particles: [],
-  emotes: [],
-  shake: 0,
-  time: 0,
-});
 
 export function useGame(options: UseGameOptions = {}) {
   const optionsRef = useRef(options);
@@ -201,21 +110,14 @@ export function useGame(options: UseGameOptions = {}) {
 
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const wrapRef = useRef<HTMLDivElement>(null);
-  const gs = useRef<GS>(initialGS());
-  const pendingCheckpoint = useRef<{
-    pos: number[];
-    turn: number;
-    phase: string;
-    rolls: number[];
-    laddersHit: number[];
-    snakesHit: number[];
-    sixesHit: number[];
-    winner: number;
-  } | null>(null);
+  const gs = useRef<GameState>(initialGameState());
+  const pendingCheckpoint = useRef<CheckpointData | null>(null);
+  const lastStableSnapshot = useRef<GameStateSnapshot | null>(null);
   const boardLayer = useRef<HTMLCanvasElement | null>(null);
   const numberLayer = useRef<HTMLCanvasElement | null>(null);
   const sizeRef = useRef(0);
-  const timers = useRef<number[]>([]);
+  const activeTimers = useRef<Map<string, { id: number; txId: number }>>(new Map());
+  const uiTimers = useRef<Set<number>>(new Set());
   const toastId = useRef(0);
   const logId = useRef(0);
 
@@ -253,22 +155,112 @@ export function useGame(options: UseGameOptions = {}) {
     setThemeIdState(id);
   }, []);
 
-  const sync = useCallback((patch: Partial<Hud>) => {
-    setHud((h) => ({ ...h, ...patch }));
+  const cancelObsoleteTimers = useCallback((currentTxId?: number) => {
+    activeTimers.current.forEach((val, name) => {
+      if (currentTxId === undefined || val.txId !== currentTxId) {
+        window.clearTimeout(val.id);
+        activeTimers.current.delete(name);
+      }
+    });
   }, []);
 
-  const after = useCallback((ms: number, fn: () => void) => {
-    const t = window.setTimeout(fn, ms);
-    timers.current.push(t);
+  const clearAllTimers = useCallback(() => {
+    activeTimers.current.forEach((val) => window.clearTimeout(val.id));
+    activeTimers.current.clear();
+    uiTimers.current.forEach((t) => window.clearTimeout(t));
+    uiTimers.current.clear();
+  }, []);
+
+  useEffect(() => clearAllTimers, [clearAllTimers]);
+
+  const scheduleUiTimer = useCallback((ms: number, fn: () => void) => {
+    const t = window.setTimeout(() => {
+      uiTimers.current.delete(t);
+      fn();
+    }, ms);
+    uiTimers.current.add(t);
     return t;
   }, []);
 
-  const clearTimers = useCallback(() => {
-    timers.current.forEach((t) => window.clearTimeout(t));
-    timers.current = [];
+  const clearHover = useCallback(() => {
+    gs.current.hoveredSquare = undefined;
+    setHoveredSquare(undefined);
   }, []);
 
-  useEffect(() => clearTimers, [clearTimers]);
+  const dispatch = useCallback((action: GameAction) => {
+    const prevState = gs.current;
+    const nextState = gameReducer(prevState, action);
+    gs.current = nextState;
+
+    setHud((prev) => ({
+      ...prev,
+      mode: nextState.mode,
+      phase: nextState.phase,
+      players: nextState.players,
+      turn: nextState.turn,
+      pos: [...nextState.pos],
+      roll: nextState.roll,
+      rolling: nextState.rolling,
+      winner: nextState.winner,
+      rolls: [...nextState.rolls],
+      laddersHit: [...nextState.laddersHit],
+      snakesHit: [...nextState.snakesHit],
+      sixesHit: [...nextState.sixesHit],
+      speed: nextState.speed,
+      winRule: nextState.winRule,
+      targetSquare: nextState.targetSquare,
+      hoveredSquare: nextState.hoveredSquare,
+    }));
+
+    return nextState;
+  }, []);
+
+  const scheduleGameTimer = useCallback(
+    (name: string, ms: number, expectedPhase: Phase, callback: () => void) => {
+      const existing = activeTimers.current.get(name);
+      if (existing) {
+        window.clearTimeout(existing.id);
+      }
+      const txId = gs.current.txId;
+      const t = window.setTimeout(() => {
+        activeTimers.current.delete(name);
+        if (gs.current.txId !== txId || gs.current.phase !== expectedPhase) {
+          if (name === 'roll' && gs.current.rolling) {
+            dispatch({ type: 'CLEAR_ROLLING' });
+          }
+          return;
+        }
+        callback();
+      }, ms);
+      activeTimers.current.set(name, { id: t, txId });
+      return t;
+    },
+    [dispatch],
+  );
+
+  const recordStableSnapshot = useCallback((state: GameState): GameStateSnapshot => {
+    const checkpointMode: CheckpointMode =
+      state.winner >= 0 || state.mode === 'over'
+        ? 'over'
+        : state.mode === 'playing'
+        ? 'playing'
+        : 'idle';
+
+    const snap: GameStateSnapshot = {
+      mode: checkpointMode,
+      pos: [...state.pos],
+      turn: state.turn,
+      phase: state.winner >= 0 || state.mode === 'over' ? 'over' : 'idle',
+      rolls: [...state.rolls],
+      laddersHit: [...state.laddersHit],
+      snakesHit: [...state.snakesHit],
+      sixesHit: [...state.sixesHit],
+      winner: state.winner,
+      isPlaying: state.mode === 'playing',
+    };
+    lastStableSnapshot.current = snap;
+    return snap;
+  }, []);
 
   const playerName = useCallback((p: number) => {
     const g = gs.current;
@@ -292,9 +284,9 @@ export function useGame(options: UseGameOptions = {}) {
       toastId.current += 1;
       const id = toastId.current;
       setToast({ id, title, sub, kind });
-      after(1600, () => setToast((t) => (t && t.id === id ? null : t)));
+      scheduleUiTimer(1600, () => setToast((t) => (t && t.id === id ? null : t)));
     },
-    [after],
+    [scheduleUiTimer],
   );
 
   const toggleMute = useCallback(() => {
@@ -329,7 +321,7 @@ export function useGame(options: UseGameOptions = {}) {
     if (ctx1) {
       const s = c1.width / LOGICAL;
       ctx1.setTransform(s, 0, 0, s, 0, 0);
-      drawStaticBoard(ctx1, currentTheme);
+      drawStaticBoard(ctx1, currentTheme, gs.current.players);
       boardLayer.current = c1;
     }
 
@@ -352,61 +344,25 @@ export function useGame(options: UseGameOptions = {}) {
 
   /* ---------- game flow ---------- */
 
-  const resetGS = useCallback(
-    (players: PlayerConfig[], speed: GameSpeed, winRule: WinRule) => {
-      const g = gs.current;
-      const count = players.length;
-      g.players = players;
-      g.turn = 0;
-      g.phase = 'idle';
-      g.rolling = false;
-      g.roll = 0;
-      g.pos = new Array(count).fill(0);
-      g.rolls = new Array(count).fill(0);
-      g.laddersHit = new Array(count).fill(0);
-      g.snakesHit = new Array(count).fill(0);
-      g.sixesHit = new Array(count).fill(0);
-      g.winner = -1;
-      g.speed = speed;
-      g.winRule = winRule;
-      g.moving = null;
-      g.sliding = null;
-      g.particles = [];
-      g.emotes = [];
-      g.shake = 0;
-      g.targetSquare = undefined;
-      pendingCheckpoint.current = null;
-    },
-    [],
-  );
-
   const startGame = useCallback(
     (
       players: PlayerConfig[] = defaultPlayers,
       speed: GameSpeed = 'normal',
       winRule: WinRule = 'exact',
     ) => {
-      clearTimers();
-      resetGS(players, speed, winRule);
-      gs.current.mode = 'playing';
+      cancelObsoleteTimers();
+      clearHover();
+      pendingCheckpoint.current = null;
 
-      sync({
-        mode: 'playing',
+      const nextState = dispatch({
+        type: 'START_GAME',
         players,
-        turn: 0,
-        pos: new Array(players.length).fill(0),
-        roll: 0,
-        rolling: false,
-        phase: 'idle',
-        winner: -1,
-        rolls: new Array(players.length).fill(0),
-        laddersHit: new Array(players.length).fill(0),
-        snakesHit: new Array(players.length).fill(0),
-        sixesHit: new Array(players.length).fill(0),
         speed,
         winRule,
-        targetSquare: undefined,
       });
+
+      recordStableSnapshot(nextState);
+      renderBoardLayer();
 
       setLog([]);
       setShowWin(false);
@@ -417,115 +373,86 @@ export function useGame(options: UseGameOptions = {}) {
       showToast(`${p0Name.toUpperCase()} STARTS`, 'Roll the dice to begin!', 'cyan');
       pushLog(`Match started — ${p0Name} has the opening turn!`, 'event');
     },
-    [clearTimers, pushLog, resetGS, showToast, sync],
+    [cancelObsoleteTimers, clearHover, dispatch, pushLog, recordStableSnapshot, renderBoardLayer, showToast],
   );
 
   const backToMenu = useCallback(() => {
-    clearTimers();
-    const g = gs.current;
-    g.mode = 'menu';
-    g.phase = 'idle';
-    g.moving = null;
-    g.sliding = null;
-    g.particles = [];
-    g.emotes = [];
-    g.targetSquare = undefined;
-    sync({ mode: 'menu', phase: 'idle' });
+    cancelObsoleteTimers();
+    clearHover();
+    pendingCheckpoint.current = null;
+    dispatch({ type: 'BACK_TO_MENU' });
     setShowWin(false);
     setToast(null);
     setConfirmAction(null);
     sfx.click();
-  }, [clearTimers, sync]);
+  }, [cancelObsoleteTimers, clearHover, dispatch]);
 
-  /* Apply authoritative checkpoint from host */
+  /* Apply authoritative checkpoint from host (Requirement 3) */
   const applyCheckpoint = useCallback(
-    (checkpoint: {
-      pos: number[];
-      turn: number;
-      phase: string;
-      rolls: number[];
-      laddersHit: number[];
-      snakesHit: number[];
-      sixesHit: number[];
-      winner: number;
-    }) => {
-      const g = gs.current;
-      if (g.mode !== 'playing' && checkpoint.winner < 0) return;
+    (checkpoint: CheckpointData) => {
+      // 1. Cancel obsolete timers when a checkpoint supersedes local state (Requirement 5)
+      cancelObsoleteTimers();
+      pendingCheckpoint.current = null;
 
-      g.pos = [...checkpoint.pos];
-      g.turn = checkpoint.turn;
-      g.rolls = [...checkpoint.rolls];
-      g.laddersHit = [...checkpoint.laddersHit];
-      g.snakesHit = [...checkpoint.snakesHit];
-      g.sixesHit = [...checkpoint.sixesHit];
+      const wasOver = gs.current.mode === 'over';
 
-      const isGameOver = checkpoint.winner >= 0;
-      if (isGameOver) {
-        const wasOver = g.mode === 'over';
-        g.winner = checkpoint.winner;
-        g.mode = 'over';
-        g.phase = 'over';
+      // 2. Apply host checkpoint through the authoritative reducer
+      const nextState = dispatch({
+        type: 'APPLY_CHECKPOINT',
+        checkpoint,
+      });
 
+      if (isStablePhase(nextState.phase)) {
+        recordStableSnapshot(nextState);
+      }
+
+      // 3. Fix winner synchronization so both gs.mode and hud.mode become over (Requirement 7)
+      if (nextState.mode === 'over' && nextState.winner >= 0) {
         if (!wasOver) {
-          pushLog(`🏆 ${playerName(checkpoint.winner)} conquered square 100 and WON THE GAME!`, 'event');
+          pushLog(
+            `🏆 ${playerName(nextState.winner)} conquered square 100 and WON THE GAME!`,
+            'event',
+          );
           sfx.win();
-          spawnConfetti(g.particles);
-          spawnFirework(g.particles, 520, 200);
-          after(500, () => {
-            spawnConfetti(gs.current.particles);
-            spawnFirework(gs.current.particles, 300, 300);
+          spawnConfetti(nextState.particles);
+          spawnFirework(nextState.particles, 520, 200);
+
+          scheduleUiTimer(500, () => {
+            if (gs.current.mode === 'over') {
+              spawnConfetti(gs.current.particles);
+              spawnFirework(gs.current.particles, 300, 300);
+            }
           });
-          after(1100, () => {
-            spawnConfetti(gs.current.particles);
-            spawnFirework(gs.current.particles, 740, 260);
+          scheduleUiTimer(1100, () => {
+            if (gs.current.mode === 'over') {
+              spawnConfetti(gs.current.particles);
+              spawnFirework(gs.current.particles, 740, 260);
+            }
           });
-          after(1500, () => setShowWin(true));
+          scheduleUiTimer(1500, () => {
+            if (gs.current.mode === 'over') {
+              setShowWin(true);
+            }
+          });
         } else {
           setShowWin(true);
         }
       }
-
-      const nextPhase = isGameOver ? 'over' : ((checkpoint.phase as Phase) || 'idle');
-      g.phase = nextPhase;
-
-      sync({
-        mode: isGameOver ? 'over' : g.mode,
-        pos: [...g.pos],
-        turn: g.turn,
-        phase: nextPhase,
-        rolls: [...g.rolls],
-        laddersHit: [...g.laddersHit],
-        snakesHit: [...g.snakesHit],
-        sixesHit: [...g.sixesHit],
-        winner: g.winner,
-      });
     },
-    [after, playerName, pushLog, sync],
+    [cancelObsoleteTimers, dispatch, playerName, pushLog, recordStableSnapshot, scheduleUiTimer],
   );
 
   const switchTurn = useCallback(
     (fromPlayer?: number) => {
-      const g = gs.current;
-      const current = typeof fromPlayer === 'number' ? fromPlayer : g.turn;
-      const next = (current + 1) % g.players.length;
-      g.turn = next;
-      g.phase = 'idle';
-      g.roll = 0;
-      g.targetSquare = undefined;
-      sync({ turn: next, phase: 'idle', roll: 0, targetSquare: undefined });
+      const nextState = dispatch({
+        type: 'SWITCH_TURN',
+        fromPlayer,
+      });
 
+      const snap = recordStableSnapshot(nextState);
       const { isOnline, isHost, onTurnSettled } = optionsRef.current;
       if (isOnline && isHost) {
-        onTurnSettled?.({
-          pos: [...g.pos],
-          turn: next,
-          phase: 'idle',
-          rolls: [...g.rolls],
-          laddersHit: [...g.laddersHit],
-          snakesHit: [...g.snakesHit],
-          sixesHit: [...g.sixesHit],
-          winner: g.winner,
-        });
+        onTurnSettled?.(snap);
       }
 
       // If a checkpoint arrived during this turn's animation, safely reconcile now
@@ -535,78 +462,78 @@ export function useGame(options: UseGameOptions = {}) {
         applyCheckpoint(cp);
       }
     },
-    [applyCheckpoint, sync],
+    [applyCheckpoint, dispatch, recordStableSnapshot],
   );
 
   const finishTurn = useCallback(
-    (player: number, v: number) => {
+    (player: number, v: number, txId: number) => {
       const g = gs.current;
       if (g.mode !== 'playing') return;
 
       if (g.pos[player] === 100) {
-        g.mode = 'over';
-        g.phase = 'over';
-        g.winner = player;
-        sync({ mode: 'over', phase: 'over', winner: player });
+        const nextState = dispatch({
+          type: 'GAME_OVER',
+          winner: player,
+          txId,
+        });
+
         pushLog(`🏆 ${playerName(player)} conquered square 100 and WON THE GAME!`, 'event');
         sfx.win();
+        spawnConfetti(nextState.particles);
+        spawnFirework(nextState.particles, 520, 200);
 
-        spawnConfetti(g.particles);
-        spawnFirework(g.particles, 520, 200);
-        after(500, () => {
-          spawnConfetti(gs.current.particles);
-          spawnFirework(gs.current.particles, 300, 300);
+        scheduleUiTimer(500, () => {
+          if (gs.current.mode === 'over') {
+            spawnConfetti(gs.current.particles);
+            spawnFirework(gs.current.particles, 300, 300);
+          }
         });
-        after(1100, () => {
-          spawnConfetti(gs.current.particles);
-          spawnFirework(gs.current.particles, 740, 260);
+        scheduleUiTimer(1100, () => {
+          if (gs.current.mode === 'over') {
+            spawnConfetti(gs.current.particles);
+            spawnFirework(gs.current.particles, 740, 260);
+          }
         });
-        after(1500, () => setShowWin(true));
+        scheduleUiTimer(1500, () => {
+          if (gs.current.mode === 'over') {
+            setShowWin(true);
+          }
+        });
 
         if (pendingCheckpoint.current) {
           pendingCheckpoint.current = null;
         }
 
+        const snap = recordStableSnapshot(nextState);
         const { isOnline, isHost, onTurnSettled } = optionsRef.current;
         if (isOnline && isHost) {
-          onTurnSettled?.({
-            pos: [...g.pos],
-            turn: player,
-            phase: 'over',
-            rolls: [...g.rolls],
-            laddersHit: [...g.laddersHit],
-            snakesHit: [...g.snakesHit],
-            sixesHit: [...g.sixesHit],
-            winner: g.winner,
-          });
+          onTurnSettled?.(snap);
         }
         return;
       }
 
       if (v === 6) {
-        g.sixesHit[player] += 1;
-        g.turn = player; // Ensure active turn stays with this player
-        g.phase = 'waiting';
-        sync({ turn: player, phase: 'waiting', sixesHit: [...g.sixesHit] });
+        dispatch({
+          type: 'START_LUCKY_SIX_WAIT',
+          txId,
+          player,
+        });
         showToast('LUCKY SIX!', `${playerName(player)} earns an extra roll!`, 'gold');
         sfx.ding();
         const cfg = SPEEDS[g.speed];
-        after(cfg.settleMs + 350, () => {
-          gs.current.phase = 'idle';
-          sync({ phase: 'idle' });
 
+        scheduleGameTimer('waiting', cfg.settleMs + 350, 'waiting', () => {
+          const nextState = dispatch({
+            type: 'FINISH_LUCKY_SIX_WAIT',
+            txId,
+            expectedPhase: 'waiting',
+            player,
+          });
+
+          const snap = recordStableSnapshot(nextState);
           const { isOnline, isHost, onTurnSettled } = optionsRef.current;
           if (isOnline && isHost) {
-            onTurnSettled?.({
-              pos: [...gs.current.pos],
-              turn: gs.current.turn,
-              phase: 'idle',
-              rolls: [...gs.current.rolls],
-              laddersHit: [...gs.current.laddersHit],
-              snakesHit: [...gs.current.snakesHit],
-              sixesHit: [...gs.current.sixesHit],
-              winner: gs.current.winner,
-            });
+            onTurnSettled?.(snap);
           }
 
           if (pendingCheckpoint.current) {
@@ -619,21 +546,30 @@ export function useGame(options: UseGameOptions = {}) {
         switchTurn(player);
       }
     },
-    [after, applyCheckpoint, playerName, pushLog, showToast, switchTurn, sync],
+    [
+      applyCheckpoint,
+      dispatch,
+      playerName,
+      pushLog,
+      recordStableSnapshot,
+      scheduleGameTimer,
+      scheduleUiTimer,
+      showToast,
+      switchTurn,
+    ],
   );
 
   const afterMove = useCallback(
-    (player: number, target: number, v: number) => {
+    (player: number, target: number, v: number, txId: number) => {
       const g = gs.current;
       const portal = PORTALS[target];
       const cfg = SPEEDS[g.speed];
 
       if (portal?.type === 'ladder') {
         const up = portal.to;
-        g.laddersHit[player] += 1;
         const pts = LADDER_PATHS[target];
         const { cum, total } = pathCum(pts);
-        g.sliding = {
+        const sliding: Sliding = {
           player,
           pts,
           cum,
@@ -645,8 +581,12 @@ export function useGame(options: UseGameOptions = {}) {
           to: up,
           roll: v,
         };
-        g.phase = 'sliding';
-        sync({ phase: 'sliding', laddersHit: [...g.laddersHit] });
+        dispatch({
+          type: 'START_SLIDE',
+          txId,
+          player,
+          sliding,
+        });
         showToast('GOLDEN LADDER!', `Climbing ${target} ➔ ${up}!`, 'gold');
         pushLog(
           `🪜 ${playerName(player)} caught a ladder: ${target} ➔ ${up}`,
@@ -655,10 +595,9 @@ export function useGame(options: UseGameOptions = {}) {
         sfx.ladder();
       } else if (portal?.type === 'snake') {
         const down = portal.to;
-        g.snakesHit[player] += 1;
         const pts = SNAKE_PATHS[target];
         const { cum, total } = pathCum(pts);
-        g.sliding = {
+        const sliding: Sliding = {
           player,
           pts,
           cum,
@@ -670,8 +609,12 @@ export function useGame(options: UseGameOptions = {}) {
           to: down,
           roll: v,
         };
-        g.phase = 'sliding';
-        sync({ phase: 'sliding', snakesHit: [...g.snakesHit] });
+        dispatch({
+          type: 'START_SLIDE',
+          txId,
+          player,
+          sliding,
+        });
         showToast('SNAKE BITE!', `Slithering down ${target} ➔ ${down}!`, 'red');
         pushLog(
           `🐍 ${playerName(player)} was bitten by a snake: ${target} ➔ ${down}`,
@@ -680,22 +623,32 @@ export function useGame(options: UseGameOptions = {}) {
         sfx.snake();
       } else {
         // Normal square landing settle phase
-        g.phase = 'settling';
-        sync({ phase: 'settling' });
+        dispatch({
+          type: 'START_SETTLING',
+          txId,
+          player,
+        });
         sfx.land();
         const c = squareCenter(target);
         spawnDust(g.particles, c.x, c.y);
 
-        after(cfg.settleMs, () => {
-          finishTurn(player, v);
+        scheduleGameTimer('settle', cfg.settleMs, 'settling', () => {
+          dispatch({
+            type: 'SETTLE_COMPLETE',
+            txId,
+            expectedPhase: 'settling',
+            player,
+            roll: v,
+          });
+          finishTurn(player, v, txId);
         });
       }
     },
-    [after, finishTurn, playerName, pushLog, showToast, sync],
+    [dispatch, finishTurn, playerName, pushLog, scheduleGameTimer, showToast],
   );
 
   const resolveRoll = useCallback(
-    (player: number, v: number) => {
+    (player: number, v: number, txId: number) => {
       const g = gs.current;
       const pos = g.pos[player];
 
@@ -706,12 +659,9 @@ export function useGame(options: UseGameOptions = {}) {
           const bounceTarget = 100 - overshoot;
           const steps: Pt[] = [];
 
-          // Forward to 100
           for (let s = pos + 1; s <= 100; s++) steps.push(squareCenter(s));
-          // Reverse back from 99 to bounceTarget
           for (let s = 99; s >= bounceTarget; s--) steps.push(squareCenter(s));
 
-          g.targetSquare = bounceTarget;
           showToast('BOUNCED BACK!', `Overshot 100 ➔ bounced to ${bounceTarget}`, 'pink');
           sfx.buzz();
           pushLog(
@@ -719,25 +669,23 @@ export function useGame(options: UseGameOptions = {}) {
             'event',
           );
 
-          g.moving = {
+          dispatch({
+            type: 'START_MOVE',
+            txId,
             player,
             steps,
-            idx: 0,
-            t0: performance.now() + 60,
-            base: pos,
-            finalRoll: v,
-            finalTarget: bounceTarget,
-          };
-          g.phase = 'moving';
-          sync({ phase: 'moving', targetSquare: bounceTarget });
+            target: bounceTarget,
+            roll: v,
+          });
           return;
         } else {
           // Exact roll required
           if (v === 6) {
-            g.sixesHit[player] += 1;
-            g.turn = player; // Turn stays with this player
-            g.phase = 'waiting';
-            sync({ turn: player, phase: 'waiting', sixesHit: [...g.sixesHit] });
+            dispatch({
+              type: 'START_LUCKY_SIX_WAIT',
+              txId,
+              player,
+            });
             showToast('LUCKY SIX!', `Can't move (need ${100 - pos}), but ${playerName(player)} earns an extra roll!`, 'gold');
             pushLog(
               `🎲 ${playerName(player)} rolled a 6 on square ${pos} (needs ${100 - pos}) — earns an extra roll!`,
@@ -745,22 +693,19 @@ export function useGame(options: UseGameOptions = {}) {
             );
             sfx.ding();
             const cfg = SPEEDS[g.speed];
-            after(cfg.settleMs + 650, () => {
-              gs.current.phase = 'idle';
-              sync({ phase: 'idle' });
 
+            scheduleGameTimer('waiting', cfg.settleMs + 650, 'waiting', () => {
+              const nextState = dispatch({
+                type: 'FINISH_LUCKY_SIX_WAIT',
+                txId,
+                expectedPhase: 'waiting',
+                player,
+              });
+
+              const snap = recordStableSnapshot(nextState);
               const { isOnline, isHost, onTurnSettled } = optionsRef.current;
               if (isOnline && isHost) {
-                onTurnSettled?.({
-                  pos: [...gs.current.pos],
-                  turn: gs.current.turn,
-                  phase: 'idle',
-                  rolls: [...gs.current.rolls],
-                  laddersHit: [...gs.current.laddersHit],
-                  snakesHit: [...gs.current.snakesHit],
-                  sixesHit: [...gs.current.sixesHit],
-                  winner: gs.current.winner,
-                });
+                onTurnSettled?.(snap);
               }
 
               if (pendingCheckpoint.current) {
@@ -773,8 +718,11 @@ export function useGame(options: UseGameOptions = {}) {
           }
 
           // Exact roll required (not a 6)
-          g.phase = 'waiting';
-          sync({ phase: 'waiting' });
+          dispatch({
+            type: 'START_PASS_WAIT',
+            txId,
+            player,
+          });
           showToast('NEED EXACT ROLL', `Must land on 100 exactly (need ${100 - pos})`, 'info');
           pushLog(
             `⚠️ ${playerName(player)} needs exactly ${100 - pos} to win — turn passed`,
@@ -782,89 +730,109 @@ export function useGame(options: UseGameOptions = {}) {
           );
           sfx.buzz();
           const cfg = SPEEDS[g.speed];
-          after(cfg.settleMs + 650, () => switchTurn(player));
+
+          scheduleGameTimer('waiting', cfg.settleMs + 650, 'waiting', () => {
+            const nextState = dispatch({
+              type: 'FINISH_PASS_WAIT',
+              txId,
+              expectedPhase: 'waiting',
+              player,
+            });
+
+            const snap = recordStableSnapshot(nextState);
+            const { isOnline, isHost, onTurnSettled } = optionsRef.current;
+            if (isOnline && isHost) {
+              onTurnSettled?.(snap);
+            }
+
+            if (pendingCheckpoint.current) {
+              const cp = pendingCheckpoint.current;
+              pendingCheckpoint.current = null;
+              applyCheckpoint(cp);
+            }
+          });
           return;
         }
       }
 
       const target = pos + v;
-      g.targetSquare = target;
       const steps: Pt[] = [];
       for (let s = pos + 1; s <= target; s++) steps.push(squareCenter(s));
 
-      g.moving = {
+      dispatch({
+        type: 'START_MOVE',
+        txId,
         player,
         steps,
-        idx: 0,
-        t0: performance.now() + 60,
-        base: pos,
-        finalRoll: v,
-        finalTarget: target,
-      };
-      g.phase = 'moving';
-      sync({ phase: 'moving', targetSquare: target });
+        target,
+        roll: v,
+      });
     },
-    [after, applyCheckpoint, playerName, pushLog, showToast, switchTurn, sync],
+    [
+      applyCheckpoint,
+      dispatch,
+      playerName,
+      pushLog,
+      recordStableSnapshot,
+      scheduleGameTimer,
+      showToast,
+    ],
   );
 
   const doRoll = useCallback(
     (isAI = false) => {
       const g = gs.current;
-      if (g.mode !== 'playing' || g.phase !== 'idle' || g.rolling) return;
+      if (g.mode !== 'playing') return;
 
-      const { isOnline, isHost, onlineSlot, onLocalRoll } = optionsRef.current;
+      // Self-heal: If rolling flag is stuck but no roll timer is executing, clear it
+      if (g.rolling && !activeTimers.current.has('roll')) {
+        dispatch({ type: 'CLEAR_ROLLING' });
+      }
+
+      if (g.phase !== 'idle' || g.rolling) return;
+
+      const { isOnline, isOnlineMatch, isPaused, isHost, onlineSlot, onLocalRoll } = optionsRef.current;
+      if (isPaused) return;
+      if (isOnlineMatch && !isOnline) return;
+
       const currPlayer = g.players[g.turn];
       if (currPlayer?.isCpu && !isAI) return;
 
       // In online mode, human player can only roll on their assigned slot
-      if (isOnline && !currPlayer?.isCpu && g.turn !== onlineSlot) return;
+      if (isOnline && !currPlayer?.isCpu && currPlayer?.slotIndex !== onlineSlot) return;
 
       // In online mode, guest asks host for authoritative roll
       if (isOnline && !isHost) {
-        onLocalRoll?.(0, g.turn);
+        onLocalRoll?.(0, currPlayer?.slotIndex ?? g.turn);
         return;
       }
 
-      // Cleanly settle any lingering movement
-      if (g.moving) {
-        g.pos[g.moving.player] = g.moving.finalTarget;
-        g.moving = null;
-      }
-      if (g.sliding) {
-        g.pos[g.sliding.player] = g.sliding.to;
-        g.sliding = null;
-      }
-
       const activeTurn = g.turn;
-      g.rolling = true;
-      g.phase = 'rolling';
       const v = 1 + Math.floor(Math.random() * 6);
-      g.roll = v;
-      g.rolls[activeTurn] += 1;
+
+      // Start roll via reducer (increments txId!)
+      const nextState = dispatch({
+        type: 'START_ROLL',
+        player: activeTurn,
+        roll: v,
+      });
 
       // Broadcast to network if online
       if (isOnline) {
-        onLocalRoll?.(v, activeTurn);
+        onLocalRoll?.(v, currPlayer?.slotIndex ?? activeTurn);
       }
 
-      const projectedTarget = g.pos[activeTurn] + v <= 100 ? g.pos[activeTurn] + v : undefined;
-      g.targetSquare = projectedTarget;
-
-      sync({
-        rolling: true,
-        phase: 'rolling',
-        roll: v,
-        rolls: [...g.rolls],
-        targetSquare: projectedTarget,
-      });
-
       sfx.roll();
-      const cfg = SPEEDS[g.speed];
+      const cfg = SPEEDS[nextState.speed];
 
-      after(cfg.rollMs, () => {
-        const gg = gs.current;
-        gg.rolling = false;
-        sync({ rolling: false, roll: v });
+      scheduleGameTimer('roll', cfg.rollMs, 'rolling', () => {
+        dispatch({
+          type: 'ROLL_LANDED',
+          txId: nextState.txId,
+          expectedPhase: 'rolling',
+          player: activeTurn,
+          roll: v,
+        });
 
         // Log the roll precisely when it lands!
         pushLog(
@@ -872,88 +840,88 @@ export function useGame(options: UseGameOptions = {}) {
           `p${activeTurn}` as any,
         );
 
-        resolveRoll(activeTurn, v);
+        resolveRoll(activeTurn, v, nextState.txId);
       });
     },
-    [after, playerName, pushLog, resolveRoll, sync],
+    [dispatch, playerName, pushLog, resolveRoll, scheduleGameTimer],
   );
 
   /* Trigger roll coming from a remote network peer */
   const doRemoteRoll = useCallback(
-    (v: number, playerIndex?: number) => {
+    (v: number, playerIndexOrSlot?: number) => {
       const g = gs.current;
       if (g.mode !== 'playing') return;
 
-      const activeTurn =
-        typeof playerIndex === 'number' && playerIndex >= 0 && playerIndex < g.players.length
-          ? playerIndex
-          : g.turn;
-
-      // Cleanly settle any lingering movement from prior turn
-      if (g.moving) {
-        g.pos[g.moving.player] = g.moving.finalTarget;
-        g.moving = null;
-      }
-      if (g.sliding) {
-        g.pos[g.sliding.player] = g.sliding.to;
-        g.sliding = null;
+      // Self-heal: If rolling flag is stuck but no roll timer is executing, clear it
+      if (g.rolling && !activeTimers.current.has('roll')) {
+        dispatch({ type: 'CLEAR_ROLLING' });
       }
 
-      g.turn = activeTurn;
-      g.rolling = true;
-      g.phase = 'rolling';
-      g.roll = v;
-      g.rolls[activeTurn] += 1;
+      let activeTurn = g.turn;
+      if (typeof playerIndexOrSlot === 'number') {
+        if (playerIndexOrSlot >= 0 && playerIndexOrSlot < g.players.length) {
+          activeTurn = playerIndexOrSlot;
+        } else {
+          const idx = slotToIndex(playerIndexOrSlot, g.players);
+          if (idx >= 0) activeTurn = idx;
+        }
+      }
 
-      const projectedTarget = g.pos[activeTurn] + v <= 100 ? g.pos[activeTurn] + v : undefined;
-      g.targetSquare = projectedTarget;
-
-      sync({
-        rolling: true,
-        phase: 'rolling',
+      // Start roll via reducer (increments txId!)
+      const nextState = dispatch({
+        type: 'START_ROLL',
+        player: activeTurn,
         roll: v,
-        rolls: [...g.rolls],
-        targetSquare: projectedTarget,
-        turn: activeTurn,
       });
 
       sfx.roll();
-      const cfg = SPEEDS[g.speed];
+      const cfg = SPEEDS[nextState.speed];
 
-      after(cfg.rollMs, () => {
-        const gg = gs.current;
-        gg.rolling = false;
-        sync({ rolling: false, roll: v });
+      scheduleGameTimer('roll', cfg.rollMs, 'rolling', () => {
+        dispatch({
+          type: 'ROLL_LANDED',
+          txId: nextState.txId,
+          expectedPhase: 'rolling',
+          player: activeTurn,
+          roll: v,
+        });
 
         pushLog(
           `🎲 ${playerName(activeTurn)} rolled a ${v}`,
           `p${activeTurn}` as any,
         );
 
-        resolveRoll(activeTurn, v);
+        resolveRoll(activeTurn, v, nextState.txId);
       });
     },
-    [after, playerName, pushLog, resolveRoll, sync],
+    [dispatch, playerName, pushLog, resolveRoll, scheduleGameTimer],
   );
 
   /* Synchronize full game state from authoritative host checkpoint */
   const syncFromCheckpoint = useCallback(
-    (checkpoint: {
-      pos: number[];
-      turn: number;
-      phase: string;
-      rolls: number[];
-      laddersHit: number[];
-      snakesHit: number[];
-      sixesHit: number[];
-      winner: number;
-    }) => {
+    (checkpoint: CheckpointData) => {
       const g = gs.current;
-      if (g.mode !== 'playing' && checkpoint.winner < 0) return;
 
-      // If this client is currently mid-animation, defer until turn finishes to prevent desync
-      if (g.moving || g.sliding || g.rolling) {
-        pendingCheckpoint.current = checkpoint;
+      // 1. Reject duplicate or out-of-order state versions
+      if (
+        checkpoint.stateVersion !== undefined &&
+        g.stateVersion !== undefined &&
+        checkpoint.stateVersion <= g.stateVersion
+      ) {
+        return;
+      }
+
+      const isTerminal = isTerminalCheckpoint(checkpoint);
+      const isStable = isStablePhase(g.phase);
+
+      // 2. Requirement 4: Defer or reject checkpoints during every non-stable phase, including settling and waiting
+      if (!isTerminal && !isStable) {
+        if (
+          !pendingCheckpoint.current ||
+          (checkpoint.stateVersion ?? 0) >= (pendingCheckpoint.current.stateVersion ?? 0)
+        ) {
+          pendingCheckpoint.current = checkpoint;
+        }
         return;
       }
 
@@ -962,13 +930,51 @@ export function useGame(options: UseGameOptions = {}) {
     [applyCheckpoint],
   );
 
+  /* Reconnect safely from stable state (Requirement 9) */
+  const reconnectGame = useCallback(
+    (
+      players: PlayerConfig[],
+      speed: GameSpeed,
+      winRule: WinRule,
+      checkpoint?: CheckpointData,
+    ) => {
+      cancelObsoleteTimers();
+      pendingCheckpoint.current = null;
+
+      const nextState = dispatch({
+        type: 'RECONNECT',
+        players,
+        speed,
+        winRule,
+        checkpoint,
+      });
+
+      recordStableSnapshot(nextState);
+
+      if (nextState.mode === 'over' && nextState.winner >= 0) {
+        setShowWin(true);
+      } else {
+        setShowWin(false);
+      }
+
+      setConfirmAction(null);
+    },
+    [cancelObsoleteTimers, dispatch, recordStableSnapshot],
+  );
+
   /* Trigger floating emoji above player's token */
   const triggerEmote = useCallback((player: number, emoji: string) => {
     const g = gs.current;
-    const p = Math.max(0, Math.min(g.players.length - 1, player));
+    let p = slotToIndex(player, g.players);
+    if (p === -1) {
+      p = Math.max(0, Math.min(g.players.length - 1, player));
+    }
     const pos = g.pos[p] || 0;
-    const c = squareCenter(pos);
+    const c = pos === 0 ? (START_POS[p] || { x: 251, y: 1017 }) : squareCenter(pos);
     sfx.pop();
+    if (g.emotes.length >= 10) {
+      g.emotes.shift();
+    }
     g.emotes.push({
       id: Math.random(),
       player: p,
@@ -992,9 +998,10 @@ export function useGame(options: UseGameOptions = {}) {
     if (isOnline && !isHost) return;
 
     const cfg = SPEEDS[hud.speed];
-    const t = window.setTimeout(() => doRoll(true), cfg.aiDelayMs);
-    return () => window.clearTimeout(t);
-  }, [hud.mode, hud.players, hud.turn, hud.phase, hud.speed, doRoll, isOnline, isHost]);
+    scheduleGameTimer('ai', cfg.aiDelayMs, 'idle', () => {
+      doRoll(true);
+    });
+  }, [hud.mode, hud.players, hud.turn, hud.phase, hud.speed, doRoll, isOnline, isHost, scheduleGameTimer]);
 
   /* ---------- Keyboard Shortcuts ---------- */
 
@@ -1010,18 +1017,43 @@ export function useGame(options: UseGameOptions = {}) {
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.repeat) return;
+      const target = e.target as HTMLElement | null;
+      if (
+        target &&
+        (target.tagName === 'INPUT' ||
+          target.tagName === 'TEXTAREA' ||
+          target.tagName === 'SELECT' ||
+          target.isContentEditable ||
+          target.closest?.('[contenteditable="true"]') ||
+          target.closest?.('[role="dialog"]') ||
+          target.closest?.('dialog'))
+      ) {
+        return;
+      }
+      if (typeof document !== 'undefined' && document.querySelector('[role="dialog"], dialog')) {
+        return;
+      }
+      if (confirmAction !== null) return;
+
       if (e.code === 'Space' || e.code === 'Enter') {
-        e.preventDefault();
         if (gs.current.mode === 'menu') {
-          startRef.current();
-        } else if (gs.current.mode === 'over') {
+          // Handled centrally in App.tsx to honor StartScreen selected settings
+          return;
+        }
+        if (gs.current.mode === 'over') {
+          // Prevent non-host winner screens from restarting through Space
+          if (optionsRef.current.isOnline && !optionsRef.current.isHost) return;
+          e.preventDefault();
           startRef.current(gs.current.players, gs.current.speed, gs.current.winRule);
         } else {
+          e.preventDefault();
           doRollRef.current();
         }
       } else if (e.code === 'KeyM') {
         muteRef.current();
       } else if (e.code === 'KeyS') {
+        // Locked during active online matches
+        if (optionsRef.current.isOnline && gs.current.mode === 'playing') return;
         const nextSpeed: Record<GameSpeed, GameSpeed> = {
           normal: 'fast',
           fast: 'turbo',
@@ -1032,9 +1064,11 @@ export function useGame(options: UseGameOptions = {}) {
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, []);
+  }, [confirmAction]);
 
   /* ---------- Resize + Board Pre-render ---------- */
+
+  const ctxRef = useRef<CanvasRenderingContext2D | null>(null);
 
   useEffect(() => {
     if (hud.mode === 'menu') return;
@@ -1043,6 +1077,7 @@ export function useGame(options: UseGameOptions = {}) {
     if (!wrap || !canvas) return;
 
     let touchTimer = 0;
+    let resizeRaf = 0;
 
     const resize = () => {
       const rect = wrap.getBoundingClientRect();
@@ -1050,7 +1085,11 @@ export function useGame(options: UseGameOptions = {}) {
       const size = Math.floor(Math.min(rect.width, rect.height));
       if (size < 20) return;
 
-      const dpr = Math.min(2.5, window.devicePixelRatio || 1);
+      const MAX_CANVAS_PIXELS = 2048 * 2048; // 4.19M pixels maximum canvas budget
+      let dpr = Math.min(2.5, window.devicePixelRatio || 1);
+      if (size * dpr * size * dpr > MAX_CANVAS_PIXELS) {
+        dpr = Math.sqrt(MAX_CANVAS_PIXELS) / size;
+      }
       const targetPx = Math.round(size * dpr);
       const sizeChanged = sizeRef.current !== size || canvas.width !== targetPx;
 
@@ -1059,14 +1098,20 @@ export function useGame(options: UseGameOptions = {}) {
       canvas.height = targetPx;
       canvas.style.width = `${size}px`;
       canvas.style.height = `${size}px`;
+      ctxRef.current = canvas.getContext('2d');
 
       if (sizeChanged) {
         renderBoardLayer();
       }
     };
 
+    const debouncedResize = () => {
+      if (resizeRaf) cancelAnimationFrame(resizeRaf);
+      resizeRaf = requestAnimationFrame(resize);
+    };
+
     resize();
-    const ro = new ResizeObserver(resize);
+    const ro = new ResizeObserver(debouncedResize);
     ro.observe(wrap);
 
     let alive = true;
@@ -1126,6 +1171,9 @@ export function useGame(options: UseGameOptions = {}) {
     (p: number, now: number): { x: number; y: number; hopRatio: number } => {
       const g = gs.current;
       const cfg = SPEEDS[g.speed];
+      const player = g.players[p];
+      const slotIndex = player ? player.slotIndex : p;
+      const dockPos = START_POS[slotIndex] ?? START_POS[p % START_POS.length];
 
       if ((g.moving && g.moving.player === p) || (g.sliding && g.sliding.player === p)) {
         if (g.moving && g.moving.player === p) {
@@ -1137,7 +1185,7 @@ export function useGame(options: UseGameOptions = {}) {
             const from =
               i === 0
                 ? m.base <= 0
-                  ? START_POS[p]
+                  ? dockPos
                   : squareCenter(m.base)
                 : m.steps[i - 1];
             const to = m.steps[i];
@@ -1151,13 +1199,17 @@ export function useGame(options: UseGameOptions = {}) {
         } else if (g.sliding && g.sliding.player === p) {
           const sl = g.sliding;
           const f = easeInOutCubic(clamp((now - sl.t0) / sl.dur, 0, 1));
+          if (sl.kind === 'snake') {
+            const pt = getSnakeSlidePoint(sl.from, sl.to, f, g.time, true);
+            return { x: pt.x, y: pt.y, hopRatio: 0 };
+          }
           const pt = pointAt(sl.pts, sl.cum, f * sl.total);
           return { x: pt.x, y: pt.y, hopRatio: 0 };
         }
       }
 
       const n = g.pos[p];
-      if (n <= 0) return { x: START_POS[p].x, y: START_POS[p].y, hopRatio: 0 };
+      if (n <= 0) return { x: dockPos.x, y: dockPos.y, hopRatio: 0 };
 
       const c = squareCenter(n);
       // Multi-token arrangement on the same square
@@ -1175,16 +1227,34 @@ export function useGame(options: UseGameOptions = {}) {
   );
 
   useEffect(() => {
+    if (hud.mode === 'menu') return;
     let raf = 0;
     let last = performance.now();
+
+    const onVisibilityChange = () => {
+      if (document.hidden) {
+        if (raf) {
+          cancelAnimationFrame(raf);
+          raf = 0;
+        }
+      } else {
+        last = performance.now();
+        if (!raf) {
+          raf = requestAnimationFrame(step);
+        }
+      }
+    };
+
+    document.addEventListener('visibilitychange', onVisibilityChange);
 
     const draw = () => {
       const canvas = canvasRef.current;
       const bLayer = boardLayer.current;
       const nLayer = numberLayer.current;
       if (!canvas || !bLayer || canvas.width < 10) return;
-      const ctx = canvas.getContext('2d');
+      const ctx = ctxRef.current || canvas.getContext('2d');
       if (!ctx) return;
+      if (!ctxRef.current) ctxRef.current = ctx;
       const g = gs.current;
       const w = canvas.width;
       const s = w / LOGICAL;
@@ -1280,7 +1350,8 @@ export function useGame(options: UseGameOptions = {}) {
             : 0;
         const r = 22 * (1 + 0.22 * tp.hopRatio);
         const pal = PLAYER_COLORS[g.players[p]?.colorId ?? p];
-        drawToken(ctx, tp.x, tp.y + idleBob, r, pal, String(p + 1), tp.hopRatio);
+        const slotIndex = g.players[p]?.slotIndex ?? p;
+        drawToken(ctx, tp.x, tp.y + idleBob, r, pal, String(slotIndex + 1), tp.hopRatio);
       }
 
       drawParticles(ctx, g.particles);
@@ -1315,19 +1386,31 @@ export function useGame(options: UseGameOptions = {}) {
         const el = now - m.t0;
         if (el >= 0) {
           const idx = Math.min(m.steps.length, Math.floor(el / cfg.hopMs));
+          const missedHops = idx - m.idx;
+          let played = 0;
           while (m.idx < idx) {
             m.idx += 1;
             // Intermediate pos for HUD
             const curStep = m.steps[m.idx - 1];
-            sfx.hop(m.idx - 1);
+            // Only play hop sound if not catching up excessively from a background tab
+            if (missedHops <= 2 || played < 1 || m.idx === idx) {
+              sfx.hop(m.idx - 1);
+              played++;
+            }
             spawnDust(g.particles, curStep.x, curStep.y);
           }
           if (m.idx >= m.steps.length) {
             const movingPlayer = m.player;
-            g.moving = null;
-            g.pos[movingPlayer] = m.finalTarget;
-            sync({ pos: [...g.pos] });
-            afterMove(movingPlayer, m.finalTarget, m.finalRoll);
+            const target = m.finalTarget;
+            const roll = m.finalRoll;
+            const txId = g.txId;
+            dispatch({
+              type: 'FINISH_MOVE',
+              txId,
+              player: movingPlayer,
+              target,
+            });
+            afterMove(movingPlayer, target, roll, txId);
           }
         }
       }
@@ -1338,9 +1421,15 @@ export function useGame(options: UseGameOptions = {}) {
         const f = (now - sl.t0) / sl.dur;
         if (f >= 1) {
           const slidingPlayer = sl.player;
-          g.pos[slidingPlayer] = sl.to;
-          g.sliding = null;
-          sync({ pos: [...g.pos] });
+          const to = sl.to;
+          const roll = sl.roll;
+          const txId = g.txId;
+          dispatch({
+            type: 'FINISH_SLIDE',
+            txId,
+            player: slidingPlayer,
+            to,
+          });
           if (sl.kind === 'snake') {
             g.shake = 14;
             sfx.hit();
@@ -1352,19 +1441,28 @@ export function useGame(options: UseGameOptions = {}) {
             const c = squareCenter(sl.to);
             for (let i = 0; i < 9; i++) spawnSpark(g.particles, c.x, c.y, '#fde047');
           }
-          finishTurn(slidingPlayer, sl.roll);
+          finishTurn(slidingPlayer, roll, txId);
         } else if (f > 0) {
           const f2 = easeInOutCubic(clamp(f, 0, 1));
-          const pt = pointAt(sl.pts, sl.cum, f2 * sl.total);
+          const pt = sl.kind === 'snake'
+            ? getSnakeSlidePoint(sl.from, sl.to, f2, g.time, true)
+            : pointAt(sl.pts, sl.cum, f2 * sl.total);
           if (Math.random() < 0.65) {
             spawnSpark(g.particles, pt.x, pt.y, sl.kind === 'ladder' ? '#ffd75e' : '#f87171');
           }
         }
       }
 
+      // Bound particles to avoid unbounded memory growth
+      if (g.particles.length > 60) {
+        g.particles.splice(0, g.particles.length - 60);
+      }
       updateParticles(g.particles, dt / 1000);
 
-      // Update floating emotes
+      // Bound and update floating emotes
+      if (g.emotes.length > 10) {
+        g.emotes.splice(0, g.emotes.length - 10);
+      }
       for (let i = g.emotes.length - 1; i >= 0; i--) {
         const em = g.emotes[i];
         em.life -= dt / 1000;
@@ -1378,27 +1476,36 @@ export function useGame(options: UseGameOptions = {}) {
       if (g.shake < 0.4) g.shake = 0;
 
       draw();
-      raf = requestAnimationFrame(step);
+
+      if (!document.hidden && gs.current.mode !== 'menu') {
+        raf = requestAnimationFrame(step);
+      }
     };
 
     raf = requestAnimationFrame(step);
-    return () => cancelAnimationFrame(raf);
-  }, [afterMove, finishTurn, sync, tokenPoint]);
+    return () => {
+      document.removeEventListener('visibilitychange', onVisibilityChange);
+      if (raf) cancelAnimationFrame(raf);
+    };
+  }, [afterMove, dispatch, finishTurn, hud.mode, tokenPoint]);
 
-  const canRoll =
+  const canRoll: boolean =
     hud.mode === 'playing' &&
-    hud.phase === 'idle' &&
-    !hud.rolling &&
-    (isOnline ? hud.turn === onlineSlot : true) &&
+    (hud.phase === 'idle' || (hud.phase === 'rolling' && !activeTimers.current.has('roll'))) &&
+    (!hud.rolling || !activeTimers.current.has('roll')) &&
+    !optionsRef.current.isPaused &&
+    (!optionsRef.current.isOnlineMatch || !!optionsRef.current.isOnline) &&
+    (isOnline ? hud.players[hud.turn]?.slotIndex === onlineSlot : true) &&
     !hud.players[hud.turn]?.isCpu;
 
   const requestRestart = useCallback(() => {
+    clearHover();
     if (hud.mode === 'playing') {
       setConfirmAction('restart');
     } else {
       startGame(hud.players, hud.speed, hud.winRule);
     }
-  }, [hud.mode, hud.players, hud.speed, hud.winRule, startGame]);
+  }, [clearHover, hud.mode, hud.players, hud.speed, hud.winRule, startGame]);
 
   const requestMenu = useCallback(() => {
     if (hud.mode === 'playing') {
@@ -1421,12 +1528,26 @@ export function useGame(options: UseGameOptions = {}) {
     setConfirmAction(null);
   }, []);
 
-  const getSnapshot = useCallback(() => {
+  const getSnapshot = useCallback((): GameStateSnapshot => {
     const s = gs.current;
+    if (lastStableSnapshot.current && isNonStablePhase(s.phase)) {
+      return { ...lastStableSnapshot.current };
+    }
+
+    const checkpointMode: CheckpointMode =
+      s.winner >= 0 || s.mode === 'over'
+        ? 'over'
+        : s.mode === 'playing'
+        ? 'playing'
+        : 'idle';
+
+    const stablePhase = s.winner >= 0 || s.mode === 'over' ? 'over' : 'idle';
+
     return {
+      mode: checkpointMode,
       pos: [...s.pos],
       turn: s.turn,
-      phase: s.phase,
+      phase: isStablePhase(s.phase) ? s.phase : stablePhase,
       rolls: [...s.rolls],
       laddersHit: [...s.laddersHit],
       snakesHit: [...s.snakesHit],
@@ -1437,8 +1558,23 @@ export function useGame(options: UseGameOptions = {}) {
   }, []);
 
   const updatePlayers = useCallback((players: PlayerConfig[]) => {
-    gs.current.players = players;
-    setHud((h) => ({ ...h, players }));
+    dispatch({ type: 'UPDATE_PLAYERS', players });
+  }, [dispatch]);
+
+  const cpuTakeover = useCallback((slotIndex: number, name?: string) => {
+    dispatch({ type: 'CPU_TAKEOVER', slotIndex, name });
+  }, [dispatch]);
+
+  const reconnectPlayer = useCallback((slotIndex: number, name?: string) => {
+    dispatch({ type: 'PLAYER_RECONNECT', slotIndex, name });
+  }, [dispatch]);
+
+  const removePlayer = useCallback((slotIndex: number) => {
+    dispatch({ type: 'REMOVE_PLAYER', slotIndex });
+  }, [dispatch]);
+
+  const getSlotRosterIndex = useCallback((slotIndex: number) => {
+    return slotToIndex(slotIndex, gs.current.players);
   }, []);
 
   return {
@@ -1458,7 +1594,12 @@ export function useGame(options: UseGameOptions = {}) {
     playerName,
     playerPalette,
     startGame,
+    reconnectGame,
     updatePlayers,
+    cpuTakeover,
+    reconnectPlayer,
+    removePlayer,
+    getSlotRosterIndex,
     doRoll,
     doRemoteRoll,
     syncFromCheckpoint,

@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import type { NetworkPlayer } from '../game/network/types';
 import { getShareUrl } from '../game/network/sessionStorage';
+import { copyToClipboard } from '../utils/clipboard';
 
 interface OnlineHudBarProps {
   roomCode: string;
@@ -18,21 +19,21 @@ export default function OnlineHudBar({
   roomCode,
   mySlot,
   currentTurn,
+  players,
   ping,
   onSendEmote,
   onLeaveRoom,
 }: OnlineHudBarProps) {
   const [copied, setCopied] = useState(false);
-  const isMyTurn = currentTurn === mySlot;
+  const activePlayer = players[currentTurn];
+  const isMyTurn = activePlayer ? activePlayer.slotIndex === mySlot : currentTurn === mySlot;
 
   const handleCopyLink = async () => {
-    try {
-      const url = getShareUrl(roomCode);
-      await navigator.clipboard.writeText(url);
+    const url = getShareUrl(roomCode);
+    const ok = await copyToClipboard(url);
+    if (ok) {
       setCopied(true);
       setTimeout(() => setCopied(false), 2000);
-    } catch {
-      // Fallback
     }
   };
 
@@ -43,8 +44,9 @@ export default function OnlineHudBar({
         <button
           type="button"
           onClick={handleCopyLink}
+          aria-label="Copy room invite link"
           title="Click to copy invite link"
-          className="flex items-center gap-1 px-2 py-0.5 rounded-lg bg-amber-400/15 border border-amber-400/40 text-amber-300 text-[11px] font-black tracking-wider hover:bg-amber-400/25 transition-all cursor-pointer"
+          className="min-h-[36px] flex items-center gap-1 px-2.5 py-1 rounded-lg bg-amber-400/15 border border-amber-400/40 text-amber-300 text-[11px] font-black tracking-wider hover:bg-amber-400/25 transition-all cursor-pointer"
         >
           <span>{copied ? '✓ COPIED' : `ROOM ${roomCode}`}</span>
         </button>
@@ -60,26 +62,27 @@ export default function OnlineHudBar({
       <div className="flex-1 min-w-0 flex items-center justify-center px-1">
         {isMyTurn ? (
           <div className="flex items-center gap-1 px-2.5 py-0.5 rounded-full bg-amber-400/20 border border-amber-400 text-amber-300 text-[11px] font-black animate-pulse truncate shadow-[0_0_12px_rgba(251,191,36,0.3)]">
-            <span className="w-1.5 h-1.5 rounded-full bg-amber-400 shrink-0" />
+            <span className="w-1.5 h-1.5 rounded-full bg-amber-400 shrink-0" aria-hidden="true" />
             <span className="truncate">YOUR TURN!</span>
           </div>
         ) : (
           <div className="text-[11px] font-bold text-emerald-200/80 truncate text-center">
-            Player {currentTurn + 1}&apos;s turn...
+            {activePlayer?.name || `Player ${(activePlayer?.slotIndex ?? currentTurn) + 1}`}&apos;s turn...
           </div>
         )}
       </div>
 
       {/* Right: Quick Emote Bar & Exit */}
       <div className="flex items-center gap-1 shrink-0">
-        <div className="flex items-center gap-0.5 bg-emerald-900/40 p-0.5 rounded-lg border border-emerald-700/30 max-w-[110px] sm:max-w-none overflow-x-auto">
+        <div className="flex items-center gap-0.5 bg-emerald-900/40 p-0.5 rounded-lg border border-emerald-700/30 max-w-[110px] sm:max-w-none overflow-x-auto" role="group" aria-label="Quick reactions">
           {REACTION_EMOJIS.map((emoji) => (
             <button
               key={emoji}
               type="button"
               onClick={() => onSendEmote(emoji)}
+              aria-label={`Send ${emoji} reaction`}
               title={`React with ${emoji}`}
-              className="text-sm sm:text-base hover:scale-125 active:scale-95 transition-transform cursor-pointer p-0.5 leading-none shrink-0"
+              className="min-w-[32px] min-h-[32px] flex items-center justify-center text-sm sm:text-base hover:scale-125 active:scale-95 transition-transform cursor-pointer p-0.5 leading-none shrink-0"
             >
               {emoji}
             </button>
@@ -89,8 +92,9 @@ export default function OnlineHudBar({
         <button
           type="button"
           onClick={onLeaveRoom}
+          aria-label="Exit room"
           title="Exit Room"
-          className="text-[11px] font-black text-rose-300/80 hover:text-rose-200 bg-rose-950/40 px-1.5 py-1 rounded-lg border border-rose-800/40 hover:bg-rose-900/40 transition-all cursor-pointer shrink-0"
+          className="min-h-[36px] text-[11px] font-black text-rose-300/80 hover:text-rose-200 bg-rose-950/40 px-2 py-1 rounded-lg border border-rose-800/40 hover:bg-rose-900/40 transition-all cursor-pointer shrink-0"
         >
           Exit
         </button>

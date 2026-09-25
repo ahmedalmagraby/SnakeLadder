@@ -13,11 +13,13 @@ import {
   type NetworkPlayer,
   type Packet,
   type PacketType,
+  type CheckpointMode,
 } from './types';
 import type { GameSpeed, WinRule } from '../constants';
 
 const VALID_SPEEDS = new Set<string>(['normal', 'fast', 'turbo']);
 const VALID_WIN_RULES = new Set<string>(['exact', 'bounce']);
+const VALID_CHECKPOINT_MODES = new Set<string>(['idle', 'playing', 'over']);
 const VALID_PHASES = new Set<string>([
   'idle',
   'rolling',
@@ -27,6 +29,10 @@ const VALID_PHASES = new Set<string>([
   'waiting',
   'over',
 ]);
+
+export function isValidCheckpointMode(val: unknown): val is CheckpointMode {
+  return typeof val === 'string' && VALID_CHECKPOINT_MODES.has(val);
+}
 
 const ALLOWED_EMOJI_SET = new Set<string>(ALLOWED_EMOJIS);
 
@@ -95,12 +101,74 @@ export function isValidPlayerName(val: unknown): val is string {
 
 export function isValidRequestId(val: unknown): val is string {
   if (!isSafeString(val, 1, MAX_REQUEST_ID_LEN)) return false;
-  return /^[a-zA-Z0-9_\-.:]+$/.test(val);
+  return /^[a-zA-Z0-9_.:-]+$/.test(val);
 }
 
 export function isValidReconnectToken(val: unknown): val is string {
   if (!isSafeString(val, 16, MAX_TOKEN_LEN)) return false;
-  return /^[a-zA-Z0-9_\-]+$/.test(val);
+  return /^[a-zA-Z0-9_-]+$/.test(val);
+}
+
+export function isValidIpv4(ip: string): boolean {
+  if (!isSafeString(ip, 7, 15)) return false;
+  const parts = ip.trim().split('.');
+  if (parts.length !== 4) return false;
+  for (const p of parts) {
+    if (!/^\d{1,3}$/.test(p)) return false;
+    const n = Number(p);
+    if (n < 0 || n > 255) return false;
+    if (p.length > 1 && p.startsWith('0')) return false; // Reject leading zeroes like 01.02.03.04
+  }
+  return true;
+}
+
+export function isValidIpv6(ip: string): boolean {
+  if (!isSafeString(ip, 2, 45)) return false;
+  const trimmed = ip.trim();
+  // Basic IPv6 check allowing colons and hex digits
+  return /^[0-9a-fA-F:]+$/.test(trimmed) && trimmed.includes(':') && !trimmed.includes(':::');
+}
+
+export function isValidHostname(host: string): boolean {
+  if (!isSafeString(host, 1, 253)) return false;
+  const trimmed = host.trim().toLowerCase();
+  if (trimmed === 'localhost') return true;
+  // RFC 1123 hostname validation
+  const labels = trimmed.split('.');
+  for (const label of labels) {
+    if (label.length === 0 || label.length > 63) return false;
+    if (!/^[a-z0-9]([a-z0-9-]*[a-z0-9])?$/.test(label)) return false;
+  }
+  return true;
+}
+
+export function isValidPort(port: number): boolean {
+  return isFiniteInteger(port, 1, 65535);
+}
+
+export function isValidLanAddress(addr: string): boolean {
+  if (!isSafeString(addr, 1, 253)) return false;
+  const trimmed = addr.trim();
+  // Check if port is attached e.g. 192.168.1.15:5173 or myhost:8080
+  if (trimmed.includes(':') && !trimmed.includes('::')) {
+    const colonIdx = trimmed.lastIndexOf(':');
+    const hostPart = trimmed.slice(0, colonIdx);
+    const portPart = trimmed.slice(colonIdx + 1);
+    const portNum = Number(portPart);
+    if (!isValidPort(portNum)) return false;
+    return isValidIpv4(hostPart) || isValidHostname(hostPart);
+  }
+  return isValidIpv4(trimmed) || isValidIpv6(trimmed) || isValidHostname(trimmed);
+}
+
+export function isValidUrl(urlStr: string): boolean {
+  if (!isSafeString(urlStr, 1, 2048)) return false;
+  try {
+    const parsed = new URL(urlStr);
+    return parsed.protocol === 'http:' || parsed.protocol === 'https:' || parsed.protocol === 'ws:' || parsed.protocol === 'wss:';
+  } catch {
+    return false;
+  }
 }
 
 export function isValidSlotIndex(val: unknown): val is number {
@@ -158,10 +226,24 @@ export function isValidNetworkPlayer(p: unknown): p is NetworkPlayer {
   return true;
 }
 
+export function isValidRosterSlots(players: NetworkPlayer[], maxPlayers: number): boolean {
+  if (!Array.isArray(players) || players.length === 0 || players.length > maxPlayers) return false;
+  const seen = new Set<number>();
+  for (const player of players) {
+    if (typeof player.slotIndex !== 'number' || !Number.isInteger(player.slotIndex)) return false;
+    if (player.slotIndex < 0 || player.slotIndex >= maxPlayers) return false;
+    if (seen.has(player.slotIndex)) return false;
+    seen.add(player.slotIndex);
+  }
+  return true;
+}
+
 export function isValidGameStateSnapshot(s: unknown): s is GameStateSnapshot {
   if (!s || typeof s !== 'object' || Array.isArray(s)) return false;
   if (hasDangerousKeys(s)) return false;
   const snap = s as Record<string, unknown>;
+
+  if (!isValidCheckpointMode(snap.mode)) return false;
 
   if (!Array.isArray(snap.pos) || snap.pos.length > MAX_PLAYERS) return false;
   if (!snap.pos.every((x) => isFiniteInteger(x, 0, 100))) return false;
@@ -279,17 +361,26 @@ export function validatePacket(raw: unknown): ValidationResult {
       if (!isValidWinRule(p.winRule)) {
         return { valid: false, error: 'Invalid winRule' };
       }
-      if (!Array.isArray(p.players) || p.players.length === 0 || p.players.length > MAX_PLAYERS) {
+      if (!isFiniteInteger(p.maxPlayers, 2, MAX_PLAYERS)) {
+        return { valid: false, error: 'Invalid maxPlayers' };
+      }
+      if (!Array.isArray(p.players) || p.players.length === 0 || p.players.length > (p.maxPlayers as number)) {
         return { valid: false, error: 'Invalid players list' };
       }
       if (!p.players.every(isValidNetworkPlayer)) {
         return { valid: false, error: 'Invalid player record in players list' };
+      }
+      if (!isValidRosterSlots(p.players as NetworkPlayer[], p.maxPlayers as number)) {
+        return { valid: false, error: 'Duplicate or out-of-range slotIndex in players list' };
       }
       if (!isFiniteInteger(p.stateVersion, 1)) {
         return { valid: false, error: 'Invalid stateVersion' };
       }
       if (!isFiniteInteger(p.turnId, 1)) {
         return { valid: false, error: 'Invalid turnId' };
+      }
+      if (p.gameState !== undefined && !isValidGameStateSnapshot(p.gameState)) {
+        return { valid: false, error: 'Invalid gameState snapshot' };
       }
       return {
         valid: true,
@@ -304,6 +395,8 @@ export function validatePacket(raw: unknown): ValidationResult {
           players: p.players,
           stateVersion: p.stateVersion,
           turnId: p.turnId,
+          maxPlayers: p.maxPlayers as number,
+          gameState: p.gameState as GameStateSnapshot | undefined,
         },
       };
     }
@@ -369,11 +462,17 @@ export function validatePacket(raw: unknown): ValidationResult {
       if (!isValidWinRule(p.winRule)) {
         return { valid: false, error: 'Invalid winRule' };
       }
-      if (!Array.isArray(p.players) || p.players.length === 0 || p.players.length > MAX_PLAYERS) {
+      if (!isFiniteInteger(p.maxPlayers, 2, MAX_PLAYERS)) {
+        return { valid: false, error: 'Invalid maxPlayers' };
+      }
+      if (!Array.isArray(p.players) || p.players.length === 0 || p.players.length > (p.maxPlayers as number)) {
         return { valid: false, error: 'Invalid players array' };
       }
       if (!p.players.every(isValidNetworkPlayer)) {
         return { valid: false, error: 'Invalid player record' };
+      }
+      if (!isValidRosterSlots(p.players as NetworkPlayer[], p.maxPlayers as number)) {
+        return { valid: false, error: 'Duplicate or out-of-range slotIndex in players list' };
       }
       if (!isFiniteInteger(p.stateVersion, 1)) {
         return { valid: false, error: 'Invalid stateVersion' };
@@ -397,6 +496,7 @@ export function validatePacket(raw: unknown): ValidationResult {
           players: p.players,
           stateVersion: p.stateVersion,
           turnId: p.turnId,
+          maxPlayers: p.maxPlayers as number,
           gameState: p.gameState as GameStateSnapshot | undefined,
         },
       };
@@ -441,11 +541,17 @@ export function validatePacket(raw: unknown): ValidationResult {
     }
 
     case 'LOBBY_UPDATE': {
-      if (!Array.isArray(p.players) || p.players.length === 0 || p.players.length > MAX_PLAYERS) {
+      if (!isFiniteInteger(p.maxPlayers, 2, MAX_PLAYERS)) {
+        return { valid: false, error: 'Invalid maxPlayers in LOBBY_UPDATE' };
+      }
+      if (!Array.isArray(p.players) || p.players.length === 0 || p.players.length > (p.maxPlayers as number)) {
         return { valid: false, error: 'Invalid players array in LOBBY_UPDATE' };
       }
       if (!p.players.every(isValidNetworkPlayer)) {
         return { valid: false, error: 'Invalid player in LOBBY_UPDATE' };
+      }
+      if (!isValidRosterSlots(p.players as NetworkPlayer[], p.maxPlayers as number)) {
+        return { valid: false, error: 'Duplicate or out-of-range slotIndex in players list' };
       }
       if (!isValidGameSpeed(p.speed)) {
         return { valid: false, error: 'Invalid speed' };
@@ -464,6 +570,7 @@ export function validatePacket(raw: unknown): ValidationResult {
           speed: p.speed,
           winRule: p.winRule,
           stateVersion: p.stateVersion,
+          maxPlayers: p.maxPlayers as number,
         },
       };
     }
@@ -474,6 +581,9 @@ export function validatePacket(raw: unknown): ValidationResult {
       }
       if (!p.players.every(isValidNetworkPlayer)) {
         return { valid: false, error: 'Invalid player in GAME_START' };
+      }
+      if (!isValidRosterSlots(p.players as NetworkPlayer[], MAX_PLAYERS)) {
+        return { valid: false, error: 'Duplicate or out-of-range slotIndex in GAME_START players list' };
       }
       if (!isValidGameSpeed(p.speed)) {
         return { valid: false, error: 'Invalid speed' };
@@ -551,6 +661,9 @@ export function validatePacket(raw: unknown): ValidationResult {
     }
 
     case 'SYNC_CHECKPOINT': {
+      if (!isValidCheckpointMode(p.mode)) {
+        return { valid: false, error: 'Invalid mode in SYNC_CHECKPOINT' };
+      }
       if (!Array.isArray(p.pos) || p.pos.length > MAX_PLAYERS) {
         return { valid: false, error: 'Invalid pos in SYNC_CHECKPOINT' };
       }
@@ -588,6 +701,7 @@ export function validatePacket(raw: unknown): ValidationResult {
         valid: true,
         packet: {
           type: 'SYNC_CHECKPOINT',
+          mode: p.mode,
           pos: p.pos as number[],
           turn: p.turn as number,
           phase: p.phase as string,
