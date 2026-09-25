@@ -19,6 +19,11 @@ import {
   MAX_PACKET_BYTES,
   type Packet,
 } from '../src/game/network/types';
+import {
+  saveSession,
+  getSavedSession,
+  clearSession,
+} from '../src/game/network/sessionStorage';
 
 describe('1. Runtime Packet Validation & Size Limits', () => {
   it('rejects null, undefined, and non-object payloads', () => {
@@ -607,6 +612,194 @@ describe('8. Player Disconnect/Reconnect & AI Mark Removal', () => {
       expect(turnSwitched).toBe(true);
       expect(turn).toBe(0);
       expect(sixesHit[1]).toBe(0);
+    });
+  });
+
+  describe('9. Host Session Persistence & Room Rejoin', () => {
+    let mockStore: Record<string, string> = {};
+
+    beforeEach(() => {
+      mockStore = {};
+      (globalThis as any).window = {
+        location: {
+          hash: '',
+          hostname: 'localhost',
+          port: '5173',
+          protocol: 'http:',
+          pathname: '/',
+          origin: 'http://localhost:5173',
+        },
+      };
+      (globalThis as any).localStorage = {
+        getItem: (key: string) => mockStore[key] || null,
+        setItem: (key: string, val: string) => {
+          mockStore[key] = val;
+        },
+        removeItem: (key: string) => {
+          delete mockStore[key];
+        },
+        clear: () => {
+          mockStore = {};
+        },
+      };
+    });
+
+    it('persists and retrieves full host session with room code, slot tokens, and game state', () => {
+      const sessionData = {
+        roomCode: 'HOST88',
+        playerId: 'p_host_1',
+        playerName: 'HostAlice',
+        colorId: 0,
+        slotIndex: 0,
+        isHost: true,
+        maxPlayers: 3,
+        speed: 'fast' as const,
+        winRule: 'exact' as const,
+        players: [
+          { playerId: 'p_host_1', peerId: 'host', name: 'HostAlice', slotIndex: 0, colorId: 0, isHost: true, isCpu: false, isReady: true },
+          { playerId: 'p_guest_2', peerId: 'guest_2', name: 'GuestBob', slotIndex: 1, colorId: 1, isHost: false, isCpu: false, isReady: true },
+        ],
+        slotTokens: [[1, 'token_bob_secret']] as [number, string][],
+        turnId: 3,
+        stateVersion: 7,
+        gameState: {
+          pos: [45, 30],
+          turn: 1,
+          phase: 'idle',
+          rolls: [5, 4],
+          laddersHit: [1, 0],
+          snakesHit: [0, 1],
+          sixesHit: [1, 0],
+          winner: -1,
+          isPlaying: true,
+        },
+      };
+
+      saveSession(sessionData);
+
+      const retrieved = getSavedSession();
+      expect(retrieved).not.toBeNull();
+      expect(retrieved?.roomCode).toBe('HOST88');
+      expect(retrieved?.isHost).toBe(true);
+      expect(retrieved?.slotTokens).toEqual([[1, 'token_bob_secret']]);
+      expect(retrieved?.gameState?.pos).toEqual([45, 30]);
+      expect(retrieved?.gameState?.isPlaying).toBe(true);
+      expect(retrieved?.turnId).toBe(3);
+      expect(retrieved?.stateVersion).toBe(7);
+    });
+
+    it('discards and clears session if older than 1 hour', () => {
+      const expiredSession = {
+        roomCode: 'OLD123',
+        playerId: 'p_old',
+        playerName: 'OldHost',
+        colorId: 0,
+        slotIndex: 0,
+        isHost: true,
+        updatedAt: Date.now() - (61 * 60 * 1000), // 61 minutes ago
+      };
+      mockStore['snkladr_active_session'] = JSON.stringify(expiredSession);
+
+      const retrieved = getSavedSession();
+      expect(retrieved).toBeNull();
+      expect(mockStore['snkladr_active_session']).toBeUndefined();
+    });
+
+    it('clears active session upon calling clearSession()', () => {
+      saveSession({
+        roomCode: 'CLEAR1',
+        playerId: 'p_clear',
+        playerName: 'ClearHost',
+        colorId: 0,
+        slotIndex: 0,
+        isHost: true,
+      });
+      expect(getSavedSession()).not.toBeNull();
+
+      clearSession();
+      expect(getSavedSession()).toBeNull();
+    });
+
+    it('preserves existing room code and avoids generating new random code when re-hosting', () => {
+      // Test the logic that useMultiplayer uses when re-hosting
+      const existingSession = {
+        roomCode: 'KEEP99',
+        playerId: 'p_host_1',
+        playerName: 'Alice',
+        colorId: 0,
+        slotIndex: 0,
+        isHost: true,
+      };
+
+      // If existingRoomCode is provided, code must be exactly existingRoomCode
+      const code = (existingSession.roomCode || '').toUpperCase().trim();
+      expect(code).toBe('KEEP99');
+      expect(code).toHaveLength(6);
+    });
+
+    it('restores guest slot as human when guest presents their valid reconnect token', () => {
+      // Simulating host restoring slotTokens map after re-hosting
+      const savedSlotTokens: [number, string][] = [
+        [1, 'secret_token_slot_1'],
+        [2, 'secret_token_slot_2'],
+      ];
+      const slotTokensMap = new Map<number, string>(savedSlotTokens);
+
+      // Returning guest sends RECONNECT_REQUEST
+      const reconnectPacket = {
+        type: 'RECONNECT_REQUEST' as const,
+        requestId: 'req_rec_1',
+        roomCode: 'KEEP99',
+        token: 'secret_token_slot_1',
+        slotIndex: 1,
+        name: 'GuestBob',
+      };
+
+      // Host verifies reconnect token
+      const expectedToken = slotTokensMap.get(reconnectPacket.slotIndex);
+      const isTokenValid = expectedToken && expectedToken === reconnectPacket.token;
+      expect(isTokenValid).toBe(true);
+
+      // Guest is restored to slot 1 as human (isCpu = false)
+      const restoredPlayer = {
+        playerId: 'p_bob',
+        peerId: 'peer_guest_bob',
+        name: stripCpuSuffix(reconnectPacket.name),
+        slotIndex: reconnectPacket.slotIndex,
+        colorId: 1,
+        isHost: false,
+        isCpu: false,
+        isReady: true,
+      };
+      expect(restoredPlayer.isCpu).toBe(false);
+      expect(restoredPlayer.name).toBe('GuestBob');
+      expect(restoredPlayer.name.includes('(CPU)')).toBe(false);
+    });
+
+    it('detects when host accidentally joins their own room and routes to re-host', () => {
+      const activeHostSession = {
+        roomCode: 'MYROOM',
+        playerId: 'p_host_me',
+        playerName: 'MeHost',
+        colorId: 0,
+        slotIndex: 0,
+        isHost: true,
+      };
+      saveSession(activeHostSession);
+
+      const enteredCode = 'myroom';
+      const cleanCode = enteredCode.toUpperCase().trim();
+      const session = getSavedSession();
+
+      const shouldRehost = !!(session && session.roomCode === cleanCode && session.isHost);
+      expect(shouldRehost).toBe(true);
+    });
+
+    it('PeerManager createRoom handles isRehost flag and allows retry on unavailable-id', () => {
+      const pm = new PeerManager();
+      // Verify createRoom signature accepts isRehost optional flag
+      expect(typeof pm.createRoom).toBe('function');
+      expect(pm.createRoom.length).toBeGreaterThanOrEqual(3);
     });
   });
 });

@@ -1,3 +1,18 @@
+import type { GameSpeed, WinRule } from '../constants';
+import type { NetworkPlayer } from './types';
+
+export interface SavedGameState {
+  pos: number[];
+  turn: number;
+  phase: string;
+  rolls: number[];
+  laddersHit: number[];
+  snakesHit: number[];
+  sixesHit: number[];
+  winner: number;
+  isPlaying: boolean;
+}
+
 export interface SavedSession {
   roomCode: string;
   playerId: string;
@@ -6,6 +21,14 @@ export interface SavedSession {
   colorId: number;
   slotIndex: number;
   isHost: boolean;
+  maxPlayers?: number;
+  speed?: GameSpeed;
+  winRule?: WinRule;
+  players?: NetworkPlayer[];
+  slotTokens?: [number, string][];
+  gameState?: SavedGameState;
+  turnId?: number;
+  stateVersion?: number;
   updatedAt: number;
 }
 

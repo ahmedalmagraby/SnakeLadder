@@ -149,6 +149,7 @@ export class PeerManager {
     roomCode: string,
     hostName: string,
     colorId: number,
+    isRehost = false,
   ): Promise<string> {
     this.cleanup();
     this.isHost = true;
@@ -156,51 +157,73 @@ export class PeerManager {
     this.mySlotIndex = 0;
     this.myPlayerName = hostName;
     this.myColorId = colorId;
-    this.emitStatus('creating', 'Setting up room on peer network...');
+    this.emitStatus(
+      'creating',
+      isRehost ? `Re-hosting room ${this.roomCode}...` : 'Setting up room on peer network...',
+    );
 
-    return new Promise((resolve, reject) => {
-      const peerId = `${PEER_PREFIX}${this.roomCode.toLowerCase()}`;
-      const peer = new Peer(peerId, {
-        config: {
-          iceServers: [
-            { urls: 'stun:stun.l.google.com:19302' },
-            { urls: 'stun:stun1.l.google.com:19302' },
-            { urls: 'stun:global.stun.twilio.com:3478' },
-          ],
-        },
+    const setupPeer = (retryCount = 0): Promise<string> => {
+      return new Promise((resolve, reject) => {
+        const peerId = `${PEER_PREFIX}${this.roomCode.toLowerCase()}`;
+        const peer = new Peer(peerId, {
+          config: {
+            iceServers: [
+              { urls: 'stun:stun.l.google.com:19302' },
+              { urls: 'stun:stun1.l.google.com:19302' },
+              { urls: 'stun:global.stun.twilio.com:3478' },
+            ],
+          },
+        });
+
+        this.peer = peer;
+
+        peer.on('open', () => {
+          this.emitStatus('connected');
+          this.startPingMonitor();
+          resolve(this.roomCode);
+        });
+
+        peer.on('connection', (conn) => {
+          this.handleIncomingConnection(conn);
+        });
+
+        peer.on('error', (err: any) => {
+          if (err.type === 'unavailable-id') {
+            if (isRehost && retryCount < 2) {
+              this.emitStatus(
+                'reconnecting',
+                `Releasing prior connection for room ${this.roomCode}... (attempt ${retryCount + 1})`,
+              );
+              try {
+                peer.destroy();
+              } catch {
+                // Ignore
+              }
+              setTimeout(() => {
+                setupPeer(retryCount + 1).then(resolve).catch(reject);
+              }, 1200);
+              return;
+            }
+            this.emitStatus('error', `Room code ${this.roomCode} is already active.`);
+          } else {
+            this.emitStatus('error', err.message || 'Connection error');
+          }
+          reject(err);
+        });
+
+        peer.on('disconnected', () => {
+          this.emitStatus('reconnecting', 'Attempting to reconnect...');
+          peer.reconnect();
+        });
+
+        peer.on('close', () => {
+          this.emitStatus('disconnected', 'Room closed');
+          this.cleanup();
+        });
       });
+    };
 
-      this.peer = peer;
-
-      peer.on('open', () => {
-        this.emitStatus('connected');
-        this.startPingMonitor();
-        resolve(this.roomCode);
-      });
-
-      peer.on('connection', (conn) => {
-        this.handleIncomingConnection(conn);
-      });
-
-      peer.on('error', (err: any) => {
-        if (err.type === 'unavailable-id') {
-          this.emitStatus('error', `Room code ${this.roomCode} is already active.`);
-        } else {
-          this.emitStatus('error', err.message || 'Connection error');
-        }
-        reject(err);
-      });
-
-      peer.on('disconnected', () => {
-        this.emitStatus('reconnecting', 'Attempting to reconnect...');
-        peer.reconnect();
-      });
-
-      peer.on('close', () => {
-        this.emitStatus('disconnected', 'Room closed');
-        this.cleanup();
-      });
-    });
+    return setupPeer();
   }
 
   /* ---------- GUEST: Join Room ---------- */

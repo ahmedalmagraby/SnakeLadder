@@ -294,6 +294,24 @@ export function useMultiplayer({
               winRule: s.winRule,
               stateVersion: stateVersionRef.current,
             });
+
+            saveSession({
+              roomCode: s.roomCode,
+              playerId: s.players[0]?.playerId || getOrCreatePlayerId(),
+              playerName: s.players[0]?.name || 'Host',
+              colorId: s.players[0]?.colorId || 0,
+              slotIndex: 0,
+              isHost: true,
+              maxPlayers: s.maxPlayers,
+              speed: s.speed,
+              winRule: s.winRule,
+              players: updatedPlayers,
+              slotTokens: Array.from(slotTokensRef.current.entries()),
+              gameState: callbacksRef.current.getGameStateSnapshot?.(),
+              turnId: turnIdRef.current,
+              stateVersion: stateVersionRef.current,
+            });
+            refreshSavedSession();
             break;
           }
 
@@ -383,6 +401,24 @@ export function useMultiplayer({
               winRule: s.winRule,
               stateVersion: stateVersionRef.current,
             });
+
+            saveSession({
+              roomCode: s.roomCode,
+              playerId: s.players[0]?.playerId || getOrCreatePlayerId(),
+              playerName: s.players[0]?.name || 'Host',
+              colorId: s.players[0]?.colorId || 0,
+              slotIndex: 0,
+              isHost: true,
+              maxPlayers: s.maxPlayers,
+              speed: s.speed,
+              winRule: s.winRule,
+              players: updated,
+              slotTokens: Array.from(slotTokensRef.current.entries()),
+              gameState: callbacksRef.current.getGameStateSnapshot?.(),
+              turnId: turnIdRef.current,
+              stateVersion: stateVersionRef.current,
+            });
+            refreshSavedSession();
             break;
           }
 
@@ -512,6 +548,24 @@ export function useMultiplayer({
                 }));
                 callbacksRef.current.onPlayersUpdated?.(configs);
                 callbacksRef.current.onPlayerDisconnected?.(dcPlayer.slotIndex, cleanName);
+
+                saveSession({
+                  roomCode: s.roomCode,
+                  playerId: s.players[0]?.playerId || getOrCreatePlayerId(),
+                  playerName: s.players[0]?.name || 'Host',
+                  colorId: s.players[0]?.colorId || 0,
+                  slotIndex: 0,
+                  isHost: true,
+                  maxPlayers: s.maxPlayers,
+                  speed: s.speed,
+                  winRule: s.winRule,
+                  players: converted,
+                  slotTokens: Array.from(slotTokensRef.current.entries()),
+                  gameState: callbacksRef.current.getGameStateSnapshot?.(),
+                  turnId: turnIdRef.current,
+                  stateVersion: stateVersionRef.current,
+                });
+                refreshSavedSession();
               }
             }
             break;
@@ -668,7 +722,7 @@ export function useMultiplayer({
     };
   }, [refreshSavedSession]);
 
-  /* Host creates room */
+  /* Host creates or re-hosts room */
   const createRoom = useCallback(
     async (
       hostName: string,
@@ -676,46 +730,97 @@ export function useMultiplayer({
       capacity = 4,
       initialSpeed: GameSpeed = 'normal',
       initialRule: WinRule = 'exact',
+      existingRoomCode?: string,
+      isRehost = false,
     ) => {
-      const code = generateRoomCode();
+      const session = isRehost ? getSavedSession() : null;
+      const code = (existingRoomCode || session?.roomCode || generateRoomCode()).toUpperCase().trim();
       const myPlayerId = getOrCreatePlayerId();
+
+      const finalCapacity = session?.maxPlayers || capacity;
+      const finalSpeed = session?.speed || initialSpeed;
+      const finalRule = session?.winRule || initialRule;
+
       setIsHost(true);
       setRoomCode(code);
       setMySlot(0);
-      setMaxPlayers(capacity);
-      setSpeed(initialSpeed);
-      setWinRule(initialRule);
-      stateVersionRef.current = 1;
-      turnIdRef.current = 1;
+      setMaxPlayers(finalCapacity);
+      setSpeed(finalSpeed);
+      setWinRule(finalRule);
+
+      stateVersionRef.current = session?.stateVersion || 1;
+      turnIdRef.current = session?.turnId || 1;
       hasRolledForCurrentTurnRef.current = false;
-      slotTokensRef.current.clear();
       processedRequestIdsRef.current.clear();
+
+      if (session?.slotTokens && session.slotTokens.length > 0) {
+        slotTokensRef.current = new Map(session.slotTokens);
+      } else {
+        slotTokensRef.current.clear();
+      }
 
       const hostPlayer: NetworkPlayer = {
         playerId: myPlayerId,
         peerId: 'host',
-        name: hostName.trim() || 'Host',
+        name: hostName.trim() || session?.playerName || 'Host',
         slotIndex: 0,
-        colorId,
+        colorId: session?.colorId ?? colorId,
         isHost: true,
         isCpu: false,
         isReady: true,
       };
 
-      setPlayers([hostPlayer]);
+      let restoredPlayers: NetworkPlayer[] = [hostPlayer];
+      if (session?.players && session.players.length > 1) {
+        restoredPlayers = session.players.map((p) =>
+          p.slotIndex === 0
+            ? hostPlayer
+            : {
+                ...p,
+                isCpu: true,
+                peerId: '',
+              },
+        );
+      }
+
+      setPlayers(restoredPlayers);
       saveSession({
         roomCode: code,
         playerId: myPlayerId,
         playerName: hostPlayer.name,
-        colorId,
+        colorId: hostPlayer.colorId,
         slotIndex: 0,
         isHost: true,
+        maxPlayers: finalCapacity,
+        speed: finalSpeed,
+        winRule: finalRule,
+        players: restoredPlayers,
+        slotTokens: Array.from(slotTokensRef.current.entries()),
+        gameState: session?.gameState,
+        turnId: turnIdRef.current,
+        stateVersion: stateVersionRef.current,
       });
       refreshSavedSession();
 
       try {
-        await peerManager.createRoom(code, hostPlayer.name, colorId);
+        await peerManager.createRoom(code, hostPlayer.name, hostPlayer.colorId, isRehost);
         window.location.hash = `room=${code}`;
+
+        if (isRehost && session?.gameState?.isPlaying) {
+          const configs: PlayerConfig[] = restoredPlayers.map((p) => ({
+            id: p.slotIndex,
+            name: p.name,
+            isCpu: p.isCpu,
+            colorId: p.colorId,
+          }));
+          callbacksRef.current.onReconnected?.(
+            configs,
+            finalSpeed,
+            finalRule,
+            session.gameState,
+          );
+        }
+
         return code;
       } catch (err) {
         setIsHost(false);
@@ -727,15 +832,56 @@ export function useMultiplayer({
     [refreshSavedSession],
   );
 
+  /* Reconnect using host-issued reconnect token or re-host as host */
+  const reconnectRoom = useCallback(
+    async (targetRoomCode?: string) => {
+      const session = getSavedSession();
+      const code = (targetRoomCode || session?.roomCode || '').toUpperCase().trim();
+      if (!code) return;
+
+      if (session?.isHost) {
+        return createRoom(
+          session.playerName,
+          session.colorId,
+          session.maxPlayers || maxPlayers,
+          session.speed || speed,
+          session.winRule || winRule,
+          code,
+          true,
+        );
+      } else {
+        setIsHost(false);
+        setRoomCode(code);
+        lastSeenStateVersionRef.current = 0;
+
+        return peerManager.joinRoom(
+          code,
+          session?.playerName || 'Player',
+          session?.colorId ?? 1,
+          true,
+          session?.slotIndex ?? 0,
+          session?.reconnectToken || '',
+        );
+      }
+    },
+    [createRoom, maxPlayers, speed, winRule],
+  );
+
   /* Guest joins room */
   const joinRoom = useCallback(
     async (code: string, guestName: string, colorId = 1) => {
       const cleanCode = code.toUpperCase().trim();
+      const session = getSavedSession();
+
+      // If user is already the host of this exact room code, re-host/rejoin as host!
+      if (session && session.roomCode === cleanCode && session.isHost) {
+        return reconnectRoom(cleanCode);
+      }
+
       setIsHost(false);
       setRoomCode(cleanCode);
       lastSeenStateVersionRef.current = 0;
 
-      const session = getSavedSession();
       // If we have an active saved session with a reconnect token for this room, automatically reconnect
       if (session && session.roomCode === cleanCode && session.reconnectToken) {
         try {
@@ -763,34 +909,7 @@ export function useMultiplayer({
         throw err;
       }
     },
-    [refreshSavedSession],
-  );
-
-  /* Reconnect using host-issued reconnect token */
-  const reconnectRoom = useCallback(
-    async (targetRoomCode?: string) => {
-      const session = getSavedSession();
-      const code = (targetRoomCode || session?.roomCode || '').toUpperCase().trim();
-      if (!code) return;
-
-      if (session?.isHost) {
-        return createRoom(session.playerName, session.colorId, maxPlayers, speed, winRule);
-      } else {
-        setIsHost(false);
-        setRoomCode(code);
-        lastSeenStateVersionRef.current = 0;
-
-        return peerManager.joinRoom(
-          code,
-          session?.playerName || 'Player',
-          session?.colorId ?? 1,
-          true,
-          session?.slotIndex ?? 0,
-          session?.reconnectToken || '',
-        );
-      }
-    },
-    [createRoom, maxPlayers, speed, winRule],
+    [reconnectRoom, refreshSavedSession],
   );
 
   /* Change color */
@@ -917,8 +1036,36 @@ export function useMultiplayer({
       colorId: p.colorId,
     }));
 
+    saveSession({
+      roomCode,
+      playerId: players[0]?.playerId || getOrCreatePlayerId(),
+      playerName: players[0]?.name || 'Host',
+      colorId: players[0]?.colorId || 0,
+      slotIndex: 0,
+      isHost: true,
+      maxPlayers,
+      speed,
+      winRule,
+      players,
+      slotTokens: Array.from(slotTokensRef.current.entries()),
+      turnId: turnIdRef.current,
+      stateVersion: stateVersionRef.current,
+      gameState: {
+        pos: configs.map(() => 0),
+        turn: 0,
+        phase: 'idle',
+        rolls: configs.map(() => 0),
+        laddersHit: configs.map(() => 0),
+        snakesHit: configs.map(() => 0),
+        sixesHit: configs.map(() => 0),
+        winner: -1,
+        isPlaying: true,
+      },
+    });
+    refreshSavedSession();
+
     callbacksRef.current.onGameStart?.(configs, speed, winRule);
-  }, [isHost, players, speed, winRule]);
+  }, [isHost, maxPlayers, players, refreshSavedSession, roomCode, speed, winRule]);
 
   /* Broadcast roll result (Host) or send roll request (Guest) */
   const broadcastRoll = useCallback(
@@ -972,8 +1119,31 @@ export function useMultiplayer({
         turnId: turnIdRef.current,
         stateVersion: stateVersionRef.current,
       });
+
+      // Continuously persist active match state into host's session storage
+      const s = stateRef.current;
+      saveSession({
+        roomCode,
+        playerId: s.players[0]?.playerId || getOrCreatePlayerId(),
+        playerName: s.players[0]?.name || 'Host',
+        colorId: s.players[0]?.colorId || 0,
+        slotIndex: 0,
+        isHost: true,
+        maxPlayers,
+        speed,
+        winRule,
+        players,
+        slotTokens: Array.from(slotTokensRef.current.entries()),
+        gameState: {
+          ...checkpoint,
+          isPlaying: checkpoint.winner < 0,
+        },
+        turnId: turnIdRef.current,
+        stateVersion: stateVersionRef.current,
+      });
+      refreshSavedSession();
     },
-    [isHost],
+    [isHost, maxPlayers, players, refreshSavedSession, roomCode, speed, winRule],
   );
 
   /* Broadcast reaction emoji */

@@ -1,7 +1,7 @@
 # 🎲 Snake & Ladder — Modern Cross-Device Web Game
 
 [![Live Demo](https://img.shields.io/badge/Live_Demo-Play_Now-emerald?style=for-the-badge&logo=googlechrome)](https://ahmedalmagraby.github.io/SnakeLadder/)
-[![Tests](https://img.shields.io/badge/Tests-32%20Passing-brightgreen?style=for-the-badge&logo=vitest&logoColor=white)](tests/multiplayer.test.ts)
+[![Tests](https://img.shields.io/badge/Tests-39%20Passing-brightgreen?style=for-the-badge&logo=vitest&logoColor=white)](tests/multiplayer.test.ts)
 [![React](https://img.shields.io/badge/React_19-20232A?style=for-the-badge&logo=react&logoColor=61DAFB)](https://react.dev/)
 [![TypeScript](https://img.shields.io/badge/TypeScript_5.9-3178C6?style=for-the-badge&logo=typescript&logoColor=white)](https://www.typescriptlang.org/)
 [![Vite](https://img.shields.io/badge/Vite_7-646CFF?style=for-the-badge&logo=vite&logoColor=FFD62E)](https://vitejs.dev/)
@@ -24,6 +24,7 @@ Play directly in your browser without any installation:
 - **Real-Time P2P WebRTC**: Connect directly between devices (PC, Mac, iPhone, Android, iPad) using low-latency WebRTC DataChannels via PeerJS.
 - **Connection Admission State Machine**: Enforces a strict 4-stage lifecycle (`pending` ➔ `authenticated` ➔ `joined` ➔ `closed`) with 10-second unauthenticated timeouts and zero broadcast leakage to unadmitted peers.
 - **Host-Authoritative Dice Rolling**: Dice outcomes are calculated and broadcast authoritatively by the host (`ROLL_REQUEST` ➔ `ROLL_RESULT`) with turn-bound deduplication, eliminating client-side roll manipulation or duplicate rolls.
+- **Host Session Persistence & Room Rejoin**: If the host refreshes or leaves the game, the existing room code identity, game state, player roster, and guest reconnect tokens are preserved in session storage. When the host returns or inputs the room code, the original room is restored instead of spawning a new code.
 - **Cryptographic Reconnection Tokens**: On joining, the host issues a 32-character cryptographically secure token stored in session storage. Reconnecting verifies the token directly, preventing impersonation or seat hijacking.
 - **Strict Runtime Validation & Sanitization**: Comprehensive validation engine protecting against prototype pollution attacks (`__proto__`, `constructor`, `prototype`), packet size flooding (>16KB), oversized fields, and invalid numeric/enum payloads.
 - **Role Permission Enforcement**: Guests are strictly confined to permitted actions (`JOIN_REQUEST`, `RECONNECT_REQUEST`, `COLOR_CHANGE_REQUEST`, `ROLL_REQUEST`, `EMOTE`, `PING`, `PONG`). Forged or unauthorized host-only packets immediately terminate the offending connection.
