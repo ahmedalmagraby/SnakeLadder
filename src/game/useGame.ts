@@ -141,12 +141,21 @@ export function useGame(options: UseGameOptions = {}) {
   const [toast, setToast] = useState<Toast | null>(null);
   const [log, setLog] = useState<LogEntry[]>([]);
   const [muted, setMuted] = useState(false);
+  // Guest-only: true between sending ROLL_REQUEST and receiving the host's
+  // authoritative ROLL_RESULT. Prevents spamming the host with roll requests.
+  const [awaitingRemoteRoll, setAwaitingRemoteRoll] = useState(false);
+  const awaitingRemoteRollRef = useRef(false);
   const [showWin, setShowWin] = useState(false);
   const [confirmAction, setConfirmAction] = useState<'restart' | 'menu' | null>(null);
   const [hoveredSquare, setHoveredSquare] = useState<number | undefined>(undefined);
   const [themeId, setThemeIdState] = useState<ThemeId>(() => getSavedTheme());
   const themeRef = useRef<BoardTheme>(THEMES[themeId] || THEMES.jungle);
   themeRef.current = THEMES[themeId] || THEMES.jungle;
+
+  const setAwaitingRoll = useCallback((v: boolean) => {
+    awaitingRemoteRollRef.current = v;
+    setAwaitingRemoteRoll(v);
+  }, []);
 
   const setTheme = useCallback((id: ThemeId) => {
     if (!THEMES[id]) return;
@@ -353,6 +362,7 @@ export function useGame(options: UseGameOptions = {}) {
       cancelObsoleteTimers();
       clearHover();
       pendingCheckpoint.current = null;
+      setAwaitingRoll(false);
 
       const nextState = dispatch({
         type: 'START_GAME',
@@ -373,19 +383,20 @@ export function useGame(options: UseGameOptions = {}) {
       showToast(`${p0Name.toUpperCase()} STARTS`, 'Roll the dice to begin!', 'cyan');
       pushLog(`Match started — ${p0Name} has the opening turn!`, 'event');
     },
-    [cancelObsoleteTimers, clearHover, dispatch, pushLog, recordStableSnapshot, renderBoardLayer, showToast],
+    [cancelObsoleteTimers, clearHover, dispatch, pushLog, recordStableSnapshot, renderBoardLayer, setAwaitingRoll, showToast],
   );
 
   const backToMenu = useCallback(() => {
     cancelObsoleteTimers();
     clearHover();
     pendingCheckpoint.current = null;
+    setAwaitingRoll(false);
     dispatch({ type: 'BACK_TO_MENU' });
     setShowWin(false);
     setToast(null);
     setConfirmAction(null);
     sfx.click();
-  }, [cancelObsoleteTimers, clearHover, dispatch]);
+  }, [cancelObsoleteTimers, clearHover, dispatch, setAwaitingRoll]);
 
   /* Apply authoritative checkpoint from host (Requirement 3) */
   const applyCheckpoint = useCallback(
@@ -393,6 +404,8 @@ export function useGame(options: UseGameOptions = {}) {
       // 1. Cancel obsolete timers when a checkpoint supersedes local state (Requirement 5)
       cancelObsoleteTimers();
       pendingCheckpoint.current = null;
+      // An authoritative checkpoint supersedes any outstanding roll request.
+      setAwaitingRoll(false);
 
       const wasOver = gs.current.mode === 'over';
 
@@ -439,7 +452,7 @@ export function useGame(options: UseGameOptions = {}) {
         }
       }
     },
-    [cancelObsoleteTimers, dispatch, playerName, pushLog, recordStableSnapshot, scheduleUiTimer],
+    [cancelObsoleteTimers, dispatch, playerName, pushLog, recordStableSnapshot, scheduleUiTimer, setAwaitingRoll],
   );
 
   const switchTurn = useCallback(
@@ -781,14 +794,17 @@ export function useGame(options: UseGameOptions = {}) {
 
   const doRoll = useCallback(
     (isAI = false) => {
-      const g = gs.current;
-      if (g.mode !== 'playing') return;
+      if (gs.current.mode !== 'playing') return;
 
-      // Self-heal: If rolling flag is stuck but no roll timer is executing, clear it
-      if (g.rolling && !activeTimers.current.has('roll')) {
+      // Self-heal: If rolling flag is stuck but no roll timer is executing, clear it.
+      // NOTE: `dispatch` replaces `gs.current` with a NEW object, so the live state
+      // must be re-read afterwards — otherwise the guard below reads the pre-heal
+      // snapshot and bails out, leaving the roll button permanently dead.
+      if (gs.current.rolling && !activeTimers.current.has('roll')) {
         dispatch({ type: 'CLEAR_ROLLING' });
       }
 
+      const g = gs.current;
       if (g.phase !== 'idle' || g.rolling) return;
 
       const { isOnline, isOnlineMatch, isPaused, isHost, onlineSlot, onLocalRoll } = optionsRef.current;
@@ -801,8 +817,11 @@ export function useGame(options: UseGameOptions = {}) {
       // In online mode, human player can only roll on their assigned slot
       if (isOnline && !currPlayer?.isCpu && currPlayer?.slotIndex !== onlineSlot) return;
 
-      // In online mode, guest asks host for authoritative roll
+      // In online mode, guest asks host for authoritative roll.
+      // Guard against spamming the host while a request is already in flight.
       if (isOnline && !isHost) {
+        if (awaitingRemoteRollRef.current) return;
+        setAwaitingRoll(true);
         onLocalRoll?.(0, currPlayer?.slotIndex ?? g.turn);
         return;
       }
@@ -843,29 +862,35 @@ export function useGame(options: UseGameOptions = {}) {
         resolveRoll(activeTurn, v, nextState.txId);
       });
     },
-    [dispatch, playerName, pushLog, resolveRoll, scheduleGameTimer],
+    [dispatch, playerName, pushLog, resolveRoll, scheduleGameTimer, setAwaitingRoll],
   );
 
   /* Trigger roll coming from a remote network peer */
   const doRemoteRoll = useCallback(
-    (v: number, playerIndexOrSlot?: number) => {
-      const g = gs.current;
-      if (g.mode !== 'playing') return;
+    (v: number, playerSlotIndex?: number) => {
+      if (gs.current.mode !== 'playing') return;
 
-      // Self-heal: If rolling flag is stuck but no roll timer is executing, clear it
-      if (g.rolling && !activeTimers.current.has('roll')) {
+      // Self-heal: clear a stuck rolling flag (re-read live state after dispatch)
+      if (gs.current.rolling && !activeTimers.current.has('roll')) {
         dispatch({ type: 'CLEAR_ROLLING' });
       }
 
+      const g = gs.current;
+      // The host broadcasts slot indexes, never dense roster indexes. Resolving via
+      // `slotToIndex` only avoids moving the wrong token for sparse rosters
+      // (e.g. slots [0,2,3] where slot 2 must not be read as roster index 2).
       let activeTurn = g.turn;
-      if (typeof playerIndexOrSlot === 'number') {
-        if (playerIndexOrSlot >= 0 && playerIndexOrSlot < g.players.length) {
-          activeTurn = playerIndexOrSlot;
-        } else {
-          const idx = slotToIndex(playerIndexOrSlot, g.players);
-          if (idx >= 0) activeTurn = idx;
+      if (typeof playerSlotIndex === 'number') {
+        const idx = slotToIndex(playerSlotIndex, g.players);
+        if (idx >= 0) {
+          activeTurn = idx;
+        } else if (playerSlotIndex >= 0 && playerSlotIndex < g.players.length) {
+          activeTurn = playerSlotIndex;
         }
       }
+
+      // The authoritative roll arrived: stop waiting on the host.
+      setAwaitingRoll(false);
 
       // Start roll via reducer (increments txId!)
       const nextState = dispatch({
@@ -894,8 +919,27 @@ export function useGame(options: UseGameOptions = {}) {
         resolveRoll(activeTurn, v, nextState.txId);
       });
     },
-    [dispatch, playerName, pushLog, resolveRoll, scheduleGameTimer],
+    [dispatch, playerName, pushLog, resolveRoll, scheduleGameTimer, setAwaitingRoll],
   );
+
+  /**
+   * Live roll authority for the host.
+   *
+   * `getSnapshot()` intentionally reports the last *stable* checkpoint (so
+   * reconnecting peers never observe half-finished animations), which means its
+   * `phase` reads `idle` even while a turn is still resolving. The host must
+   * therefore use this live view to reject duplicate / out-of-turn ROLL_REQUESTs.
+   */
+  const getRollAuthority = useCallback(() => {
+    const g = gs.current;
+    const activePlayer = g.players[g.turn];
+    if (!activePlayer) return undefined;
+    return {
+      turnSlot: activePlayer.slotIndex,
+      isPlaying: g.mode === 'playing',
+      isAwaitingRoll: g.mode === 'playing' && g.phase === 'idle' && !g.rolling,
+    };
+  }, []);
 
   /* Synchronize full game state from authoritative host checkpoint */
   const syncFromCheckpoint = useCallback(
@@ -940,6 +984,7 @@ export function useGame(options: UseGameOptions = {}) {
     ) => {
       cancelObsoleteTimers();
       pendingCheckpoint.current = null;
+      setAwaitingRoll(false);
 
       const nextState = dispatch({
         type: 'RECONNECT',
@@ -959,7 +1004,7 @@ export function useGame(options: UseGameOptions = {}) {
 
       setConfirmAction(null);
     },
-    [cancelObsoleteTimers, dispatch, recordStableSnapshot],
+    [cancelObsoleteTimers, dispatch, recordStableSnapshot, setAwaitingRoll],
   );
 
   /* Trigger floating emoji above player's token */
@@ -1493,6 +1538,7 @@ export function useGame(options: UseGameOptions = {}) {
     hud.mode === 'playing' &&
     (hud.phase === 'idle' || (hud.phase === 'rolling' && !activeTimers.current.has('roll'))) &&
     (!hud.rolling || !activeTimers.current.has('roll')) &&
+    !awaitingRemoteRoll &&
     !optionsRef.current.isPaused &&
     (!optionsRef.current.isOnlineMatch || !!optionsRef.current.isOnline) &&
     (isOnline ? hud.players[hud.turn]?.slotIndex === onlineSlot : true) &&
@@ -1586,6 +1632,7 @@ export function useGame(options: UseGameOptions = {}) {
     muted,
     showWin,
     canRoll,
+    awaitingRemoteRoll,
     confirmAction,
     hoveredSquare,
     theme: THEMES[themeId] || THEMES.jungle,
@@ -1600,6 +1647,7 @@ export function useGame(options: UseGameOptions = {}) {
     reconnectPlayer,
     removePlayer,
     getSlotRosterIndex,
+    getRollAuthority,
     doRoll,
     doRemoteRoll,
     syncFromCheckpoint,

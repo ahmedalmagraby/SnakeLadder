@@ -977,6 +977,11 @@ export default function App() {
     getGameStateSnapshot: () => {
       return gameRef.current?.getSnapshot();
     },
+    // Live turn/phase view. `getGameStateSnapshot` intentionally reports the last
+    // stable checkpoint, so the host needs this to reject duplicate/out-of-turn rolls.
+    getRollAuthority: () => {
+      return gameRef.current?.getRollAuthority();
+    },
   });
 
   const game = useGame({
@@ -1150,6 +1155,7 @@ export default function App() {
     if (multiplayer.isPaused) return 'MATCH PAUSED (RECONNECTING...)';
     if (multiplayer.isOnlineMatch && !multiplayer.isOnline) return 'DISCONNECTED...';
     if (hud.mode === 'over') return 'GAME FINISHED';
+    if (game.awaitingRemoteRoll) return 'AWAITING HOST...';
     if (hud.rolling) return 'ROLLING...';
     if (hud.phase === 'moving') return 'MOVING...';
     if (hud.phase === 'sliding') return 'SLIDING...';

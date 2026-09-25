@@ -23,7 +23,7 @@ import {
   type RoomMembership,
   type TransportStatus,
 } from './types';
-import { isValidEmoji, stripCpuSuffix } from './validation';
+import { isValidEmoji, isValidNetworkPlayer, stripCpuSuffix } from './validation';
 
 function generateSecureToken(): string {
   if (typeof crypto !== 'undefined') {
@@ -70,6 +70,12 @@ export interface UseMultiplayerProps {
     gameState?: GameStateSnapshot,
   ) => void;
   getGameStateSnapshot?: () => GameStateSnapshot | undefined;
+  /**
+   * Live view of whose turn it is and whether the local game is actually waiting
+   * for a roll. Required for correct host-side duplicate/out-of-turn rejection,
+   * because `getGameStateSnapshot` intentionally reports the last *stable* state.
+   */
+  getRollAuthority?: () => { turnSlot: number; isPlaying: boolean; isAwaitingRoll: boolean } | undefined;
 }
 
 export function useMultiplayer({
@@ -82,6 +88,7 @@ export function useMultiplayer({
   onPlayersUpdated,
   onReconnected,
   getGameStateSnapshot,
+  getRollAuthority,
 }: UseMultiplayerProps = {}) {
   const [isOnline, setIsOnline] = useState(false);
   const [isHost, setIsHost] = useState(false);
@@ -163,11 +170,29 @@ export function useMultiplayer({
     onPlayersUpdated,
     onReconnected,
     getGameStateSnapshot,
+    getRollAuthority,
   });
+
+  /* Synchronous mirror of the roster.
+   * Packet handlers run outside React, so reading the `players` state captured on
+   * the last render lets two near-simultaneous JOIN_REQUESTs allocate the SAME
+   * slot. Every roster mutation must go through `commitPlayers`. */
+  const playersRef = useRef<NetworkPlayer[]>([]);
+  const commitPlayers = useCallback(
+    (
+      next: NetworkPlayer[] | ((curr: NetworkPlayer[]) => NetworkPlayer[]),
+    ): NetworkPlayer[] => {
+      const resolved = typeof next === 'function' ? next(playersRef.current) : next;
+      playersRef.current = resolved;
+      setPlayers(resolved);
+      return resolved;
+    },
+    [],
+  );
 
   stateRef.current = {
     isHost,
-    players,
+    players: playersRef.current,
     maxPlayers,
     speed,
     winRule,
@@ -185,6 +210,7 @@ export function useMultiplayer({
     onPlayersUpdated,
     onReconnected,
     getGameStateSnapshot,
+    getRollAuthority,
   };
 
   // Sync saved session state
@@ -245,6 +271,11 @@ export function useMultiplayer({
             const delays = [1000, 2000, 4000, 8000];
             const attempt = reconnectAttemptRef.current;
             if (attempt < 4) {
+              // Never stack retry timers: a second 'disconnected' event would
+              // otherwise orphan the previous timer and fire overlapping joins.
+              if (reconnectRetryTimerRef.current !== null) {
+                clearTimeout(reconnectRetryTimerRef.current);
+              }
               const delay = delays[attempt];
               reconnectAttemptRef.current = attempt + 1;
               reconnectRetryTimerRef.current = setTimeout(async () => {
@@ -296,6 +327,9 @@ export function useMultiplayer({
 
       const s = stateRef.current;
       const peerId = fromPeerId ?? '';
+      // Always read the live roster mirror: two packets processed before React
+      // re-renders must not observe the same roster.
+      const roster = playersRef.current;
 
       // Host packet handler
       if (s.isHost) {
@@ -327,7 +361,7 @@ export function useMultiplayer({
             }
 
             // Check if room is full
-            const humanCount = s.players.filter((p) => !p.isCpu).length;
+            const humanCount = roster.filter((p) => !p.isCpu).length;
             if (humanCount >= s.maxPlayers) {
               peerManager.sendToPeer(peerId, {
                 type: 'JOIN_REJECTED',
@@ -339,7 +373,7 @@ export function useMultiplayer({
             }
 
             // Find next available slot
-            const occupiedSlots = new Set(s.players.map((p) => p.slotIndex));
+            const occupiedSlots = new Set(roster.map((p) => p.slotIndex));
             let assignedSlot = -1;
             for (let i = 0; i < s.maxPlayers; i++) {
               if (!occupiedSlots.has(i)) {
@@ -359,7 +393,7 @@ export function useMultiplayer({
             }
 
             // Ensure unique color
-            const takenColors = new Set(s.players.map((p) => p.colorId));
+            const takenColors = new Set(roster.map((p) => p.colorId));
             let finalColorId = packet.colorId;
             if (takenColors.has(finalColorId) || finalColorId < 0 || finalColorId > 3) {
               finalColorId = [0, 1, 2, 3].find((c) => !takenColors.has(c)) ?? assignedSlot;
@@ -383,12 +417,11 @@ export function useMultiplayer({
               isReady: true,
             };
 
-            const updatedPlayers = [...s.players, newPlayer].sort(
+            const updatedPlayers = commitPlayers([...roster, newPlayer].sort(
               (a, b) => a.slotIndex - b.slotIndex,
-            );
+            ));
 
             stateVersionRef.current += 1;
-            setPlayers(updatedPlayers);
 
             const currentSnap = callbacksRef.current.getGameStateSnapshot?.();
             const isMatchInProgress = currentSnap?.isPlaying ?? false;
@@ -430,9 +463,9 @@ export function useMultiplayer({
 
             saveSession({
               roomCode: s.roomCode,
-              playerId: s.players[0]?.playerId || getOrCreatePlayerId(),
-              playerName: s.players[0]?.name || 'Host',
-              colorId: s.players[0]?.colorId || 0,
+              playerId: roster[0]?.playerId || getOrCreatePlayerId(),
+              playerName: roster[0]?.name || 'Host',
+              colorId: roster[0]?.colorId || 0,
               slotIndex: 0,
               isHost: true,
               maxPlayers: s.maxPlayers,
@@ -472,7 +505,7 @@ export function useMultiplayer({
               return;
             }
 
-            const targetPlayer = s.players.find((p) => p.slotIndex === packet.slotIndex);
+            const targetPlayer = roster.find((p) => p.slotIndex === packet.slotIndex);
             if (!targetPlayer) {
               peerManager.sendToPeer(peerId, {
                 type: 'RECONNECT_REJECTED',
@@ -495,13 +528,12 @@ export function useMultiplayer({
               name: cleanName,
             };
 
-            const updated = s.players.map((p) =>
-              p.slotIndex === packet.slotIndex ? restored : p,
+            const updated = commitPlayers(
+              roster.map((p) => (p.slotIndex === packet.slotIndex ? restored : p)),
             );
 
             stateVersionRef.current += 1;
             hasRolledForCurrentTurnRef.current = false;
-            setPlayers(updated);
 
             const configs: PlayerConfig[] = updated.map((p) => ({
               id: p.playerId || `p_${p.slotIndex}`,
@@ -541,9 +573,9 @@ export function useMultiplayer({
 
             saveSession({
               roomCode: s.roomCode,
-              playerId: s.players[0]?.playerId || getOrCreatePlayerId(),
-              playerName: s.players[0]?.name || 'Host',
-              colorId: s.players[0]?.colorId || 0,
+              playerId: roster[0]?.playerId || getOrCreatePlayerId(),
+              playerName: roster[0]?.name || 'Host',
+              colorId: roster[0]?.colorId || 0,
               slotIndex: 0,
               isHost: true,
               maxPlayers: s.maxPlayers,
@@ -565,16 +597,17 @@ export function useMultiplayer({
             if (admission !== 'joined') return;
 
             // Reject if color taken by someone else
-            const isTaken = s.players.some(
+            const isTaken = roster.some(
               (p) => p.slotIndex !== packet.slotIndex && p.colorId === packet.colorId,
             );
             if (isTaken) return;
 
-            const updated = s.players.map((p) =>
-              p.slotIndex === packet.slotIndex ? { ...p, colorId: packet.colorId } : p,
+            const updated = commitPlayers(
+              roster.map((p) =>
+                p.slotIndex === packet.slotIndex ? { ...p, colorId: packet.colorId } : p,
+              ),
             );
             stateVersionRef.current += 1;
-            setPlayers(updated);
 
             peerManager.broadcast({
               type: 'LOBBY_UPDATE',
@@ -584,6 +617,25 @@ export function useMultiplayer({
               stateVersion: stateVersionRef.current,
               maxPlayers: s.maxPlayers,
             });
+
+            // Persist the new palette so a host refresh restores it.
+            saveSession({
+              roomCode: s.roomCode,
+              playerId: roster[0]?.playerId || getOrCreatePlayerId(),
+              playerName: roster[0]?.name || 'Host',
+              colorId: roster[0]?.colorId || 0,
+              slotIndex: 0,
+              isHost: true,
+              maxPlayers: s.maxPlayers,
+              speed: s.speed,
+              winRule: s.winRule,
+              players: updated,
+              slotTokens: Array.from(slotTokensRef.current.entries()),
+              gameState: callbacksRef.current.getGameStateSnapshot?.(),
+              turnId: turnIdRef.current,
+              stateVersion: stateVersionRef.current,
+            });
+            refreshSavedSession();
             break;
           }
 
@@ -595,39 +647,36 @@ export function useMultiplayer({
               return;
             }
 
-            // Check if current turn actually belongs to this player's slot
+            /*
+             * Authoritative turn/phase validation.
+             *
+             * `getGameStateSnapshot()` deliberately reports the last *stable*
+             * checkpoint, so its `phase` reads 'idle' for the whole duration of a
+             * turn's animation. Guarding on it therefore let duplicate ROLL_REQUESTs
+             * through and produced a second authoritative roll per turn (desyncing
+             * the guest). Prefer the live view when the host supplies one.
+             */
+            const authority = callbacksRef.current.getRollAuthority?.();
             const snapshot = callbacksRef.current.getGameStateSnapshot?.();
-            const currentTurnIdx = snapshot ? snapshot.turn : 0;
-            const activePlayer = s.players[currentTurnIdx];
-            if (packet.slotIndex !== activePlayer?.slotIndex) {
-              // Out-of-turn request
-              return;
+
+            if (authority) {
+              if (!authority.isPlaying) return;
+              if (packet.slotIndex !== authority.turnSlot) return; // out of turn
+              if (!authority.isAwaitingRoll) return; // mid-animation or already rolled
+            } else {
+              // Fallback for headless use without a live authority source.
+              const currentTurnIdx = snapshot ? snapshot.turn : 0;
+              const activePlayer = roster[currentTurnIdx];
+              if (packet.slotIndex !== activePlayer?.slotIndex) return;
+              if (snapshot && snapshot.phase !== 'idle') return;
             }
 
-            // Only allow rolling if game state is in idle phase
-            if (snapshot && snapshot.phase !== 'idle') {
-              return;
-            }
+            // Reject stale or future turn requests. `turnId` is bumped by the host on
+            // every authoritative checkpoint, so a mismatch means the guest is behind.
+            if (packet.turnId !== turnIdRef.current) return;
 
-            // If game is idle and it is active player's turn, reconcile turnId
-            if (packet.turnId !== turnIdRef.current) {
-              if (snapshot?.phase === 'idle') {
-                hasRolledForCurrentTurnRef.current = false;
-              } else {
-                // Stale or future turn request
-                return;
-              }
-            }
-
-            // Check if roll already generated for current turn
-            if (hasRolledForCurrentTurnRef.current) {
-              if (snapshot?.phase === 'idle') {
-                hasRolledForCurrentTurnRef.current = false;
-              } else {
-                // Reject duplicate roll
-                return;
-              }
-            }
+            // Belt-and-braces duplicate guard for this exact turn.
+            if (hasRolledForCurrentTurnRef.current) return;
 
             // Host generates authoritative roll 1..6
             const roll = 1 + Math.floor(Math.random() * 6);
@@ -672,17 +721,18 @@ export function useMultiplayer({
             // Internal disconnect notification emitted by peerManager
             const dcSlot = packet.slotIndex;
             if (dcSlot >= 0) {
-              const dcPlayer = s.players.find((p) => p.slotIndex === dcSlot);
+              const dcPlayer = roster.find((p) => p.slotIndex === dcSlot);
               if (dcPlayer && !dcPlayer.isCpu) {
                 const cleanName = stripCpuSuffix(dcPlayer.name);
                 // Do NOT convert to CPU bot; keep isCpu: false, mark isReady: false
-                const updated = s.players.map((p) =>
-                  p.slotIndex === dcSlot
-                    ? { ...p, isCpu: false, isReady: false, name: cleanName }
-                    : p,
+                const updated = commitPlayers(
+                  roster.map((p) =>
+                    p.slotIndex === dcSlot
+                      ? { ...p, isCpu: false, isReady: false, name: cleanName }
+                      : p,
+                  ),
                 );
                 stateVersionRef.current += 1;
-                setPlayers(updated);
 
                 peerManager.broadcast({
                   type: 'LOBBY_UPDATE',
@@ -712,9 +762,9 @@ export function useMultiplayer({
 
                 saveSession({
                   roomCode: s.roomCode,
-                  playerId: s.players[0]?.playerId || getOrCreatePlayerId(),
-                  playerName: s.players[0]?.name || 'Host',
-                  colorId: s.players[0]?.colorId || 0,
+                  playerId: roster[0]?.playerId || getOrCreatePlayerId(),
+                  playerName: roster[0]?.name || 'Host',
+                  colorId: roster[0]?.colorId || 0,
                   slotIndex: 0,
                   isHost: true,
                   maxPlayers: s.maxPlayers,
@@ -753,7 +803,7 @@ export function useMultiplayer({
             setRoomCode(packet.roomCode);
             setSpeed(packet.speed);
             setWinRule(packet.winRule);
-            setPlayers(packet.players);
+            commitPlayers(packet.players);
             setMaxPlayers(packet.maxPlayers);
             turnIdRef.current = packet.turnId;
             setStatus('connected');
@@ -788,7 +838,10 @@ export function useMultiplayer({
             }));
             callbacksRef.current.onPlayersUpdated?.(configs);
 
-            if (packet.gameState) {
+            // Only resume the match locally when the host reports a LIVE match.
+            // A pre-match snapshot (`isPlaying: false`) would otherwise drag the
+            // guest onto the board before the host has pressed Start.
+            if (packet.gameState?.isPlaying) {
               callbacksRef.current.onReconnected?.(
                 configs,
                 packet.speed,
@@ -804,7 +857,7 @@ export function useMultiplayer({
             setRoomCode(packet.roomCode);
             setSpeed(packet.speed);
             setWinRule(packet.winRule);
-            setPlayers(packet.players);
+            commitPlayers(packet.players);
             setMaxPlayers(packet.maxPlayers);
             turnIdRef.current = packet.turnId;
             setStatus('connected');
@@ -812,10 +865,12 @@ export function useMultiplayer({
             setTransportStatus('connected');
             setAuthStatus('authenticated');
             setRoomMembership('joined');
-            setGameStatus('playing');
+            // Mirror JOIN_ACCEPTED: a reconnect into a lobby is still a lobby.
+            const isLiveMatch = packet.gameState?.isPlaying ?? false;
+            setGameStatus(isLiveMatch ? 'playing' : 'lobby');
             setIsPaused(false);
             clearRetryTimers();
-            setStatusDetail('Reconnected to match!');
+            setStatusDetail(isLiveMatch ? 'Reconnected to match!' : 'Rejoined the room lobby!');
 
             const me = packet.players.find((x) => x.slotIndex === packet.slotIndex);
             saveSession({
@@ -839,12 +894,16 @@ export function useMultiplayer({
             }));
 
             callbacksRef.current.onPlayersUpdated?.(configs);
-            callbacksRef.current.onReconnected?.(
-              configs,
-              packet.speed,
-              packet.winRule,
-              packet.gameState,
-            );
+
+            // Lobby rejoin: stay in the lobby and wait for the host to launch.
+            if (isLiveMatch) {
+              callbacksRef.current.onReconnected?.(
+                configs,
+                packet.speed,
+                packet.winRule,
+                packet.gameState,
+              );
+            }
             break;
           }
 
@@ -865,7 +924,7 @@ export function useMultiplayer({
           }
 
           case 'LOBBY_UPDATE': {
-            setPlayers(packet.players);
+            commitPlayers(packet.players);
             setSpeed(packet.speed);
             setWinRule(packet.winRule);
             setMaxPlayers(packet.maxPlayers);
@@ -882,7 +941,7 @@ export function useMultiplayer({
           }
 
           case 'GAME_START': {
-            setPlayers(packet.players);
+            commitPlayers(packet.players);
             setSpeed(packet.speed);
             setWinRule(packet.winRule);
             turnIdRef.current = packet.turnId;
@@ -991,20 +1050,41 @@ export function useMultiplayer({
         isReady: true,
       };
 
+      /*
+       * Re-hosts keep guest seats RESERVED so their reconnect tokens stay valid.
+       *
+       * A reserved seat is deliberately NOT converted into a CPU bot: if a player
+       * drops out, the match waits for that human to return rather than letting an
+       * AI play on their behalf. Their token stays bound to the slot so the
+       * original player - and only the original player - can reclaim it.
+       *
+       * `peerId` MUST stay a non-empty safe string: `isValidNetworkPlayer` rejects
+       * empty ids, so an empty placeholder would make every LOBBY_UPDATE /
+       * GAME_START / RECONNECT_ACCEPTED broadcast fail validation and cause
+       * `peerManager` to disconnect all guests. Use a stable offline sentinel until
+       * the real peer reconnects and overwrites it.
+       */
       let restoredPlayers: NetworkPlayer[] = [hostPlayer];
-      if (session?.players && session.players.length > 1) {
-        restoredPlayers = session.players.map((p) =>
+      const savedRoster = Array.isArray(session?.players) ? session.players : [];
+      const validSavedRoster = savedRoster.filter(
+        (p): p is NetworkPlayer => isValidNetworkPlayer(p),
+      );
+      if (validSavedRoster.length > 1) {
+        restoredPlayers = validSavedRoster.map((p) =>
           p.slotIndex === 0
             ? hostPlayer
             : {
                 ...p,
-                isCpu: true,
-                peerId: '',
+                // Never reuse a stale live peer id from a previous session.
+                peerId: p.isCpu ? `cpu-${p.slotIndex}` : `offline-${p.slotIndex}`,
+                // Human seats stay human; only genuine lobby bots stay bots.
+                isCpu: p.isCpu,
+                isReady: p.isCpu,
               },
         );
       }
 
-      setPlayers(restoredPlayers);
+      commitPlayers(restoredPlayers);
       saveSession({
         roomCode: code,
         playerId: myPlayerId,
@@ -1167,11 +1247,12 @@ export function useMultiplayer({
       if (isTaken) return;
 
       if (s.isHost) {
-        const updated = s.players.map((p) =>
-          p.slotIndex === slotIdx ? { ...p, colorId: newColorId } : p,
+        const updated = commitPlayers(
+          playersRef.current.map((p) =>
+            p.slotIndex === slotIdx ? { ...p, colorId: newColorId } : p,
+          ),
         );
         stateVersionRef.current += 1;
-        setPlayers(updated);
         peerManager.broadcast({
           type: 'LOBBY_UPDATE',
           players: updated,
@@ -1190,54 +1271,109 @@ export function useMultiplayer({
         });
       }
     },
-    [],
+    [commitPlayers],
   );
 
-  /* Toggle a slot to CPU bot (Host only) */
+  /*
+   * Add/remove a CPU bot in a slot, or kick a connected human (Host only).
+   *
+   * All work happens synchronously against `playersRef` and the result is pushed
+   * in one shot. Doing this inside a `setPlayers` updater was a bug: React may
+   * invoke updaters more than once, which would broadcast duplicate
+   * LOBBY_UPDATEs and bump `stateVersionRef` twice, desyncing every guest.
+   */
   const toggleCpuSlot = useCallback(
     (slotIdx: number) => {
-      if (!isHost) return;
-      setPlayers((curr) => {
-        const exists = curr.find((p) => p.slotIndex === slotIdx);
-        let updated: NetworkPlayer[];
-        if (exists) {
-          if (exists.isCpu) {
-            updated = curr.filter((p) => p.slotIndex !== slotIdx);
-            slotTokensRef.current.delete(slotIdx);
-          } else {
-            return curr;
-          }
+      const s = stateRef.current;
+      if (!s.isHost) return;
+
+      const curr = playersRef.current;
+      const exists = curr.find((p) => p.slotIndex === slotIdx);
+      let updated: NetworkPlayer[];
+
+      if (exists) {
+        if (exists.isCpu) {
+          updated = curr.filter((p) => p.slotIndex !== slotIdx);
+          slotTokensRef.current.delete(slotIdx);
         } else {
-          const takenColors = new Set(curr.map((p) => p.colorId));
-          const botColor = [0, 1, 2, 3].find((c) => !takenColors.has(c)) ?? slotIdx;
-
-          const cpuBot: NetworkPlayer = {
-            playerId: `bot_${slotIdx}`,
-            peerId: `cpu-${slotIdx}`,
-            name: `CPU ${slotIdx}`,
-            slotIndex: slotIdx,
-            colorId: botColor,
-            isHost: false,
-            isCpu: true,
-            isReady: true,
-          };
-          updated = [...curr, cpuBot].sort((a, b) => a.slotIndex - b.slotIndex);
+          // Kick a human: drop the seat, revoke the token, and drop the transport
+          // so the removed guest can no longer send ROLL_REQUEST / receive rosters.
+          updated = curr.filter((p) => p.slotIndex !== slotIdx);
+          slotTokensRef.current.delete(slotIdx);
+          if (exists.peerId) {
+            peerManager.closeConnection(exists.peerId, 'Removed from room by host');
+          }
         }
+      } else {
+        const takenColors = new Set(curr.map((p) => p.colorId));
+        const botColor = [0, 1, 2, 3].find((c) => !takenColors.has(c)) ?? slotIdx;
 
-        stateVersionRef.current += 1;
-        peerManager.broadcast({
-          type: 'LOBBY_UPDATE',
-          players: updated,
-          speed,
-          winRule,
-          stateVersion: stateVersionRef.current,
-          maxPlayers,
-        });
+        const cpuBot: NetworkPlayer = {
+          playerId: `bot_${slotIdx}`,
+          peerId: `cpu-${slotIdx}`,
+          name: `CPU ${slotIdx}`,
+          slotIndex: slotIdx,
+          colorId: botColor,
+          isHost: false,
+          isCpu: true,
+          isReady: true,
+        };
+        updated = [...curr, cpuBot].sort((a, b) => a.slotIndex - b.slotIndex);
+      }
 
-        return updated;
+      commitPlayers(updated);
+      stateVersionRef.current += 1;
+
+      peerManager.broadcast({
+        type: 'LOBBY_UPDATE',
+        players: updated,
+        speed: s.speed,
+        winRule: s.winRule,
+        stateVersion: stateVersionRef.current,
+        maxPlayers: s.maxPlayers,
       });
+
+      if (exists && !exists.isCpu) {
+        peerManager.broadcast({
+          type: 'PLAYER_DISCONNECTED',
+          slotIndex: slotIdx,
+          name: stripCpuSuffix(exists.name),
+          stateVersion: stateVersionRef.current,
+        });
+        callbacksRef.current.onPlayerDisconnected?.(
+          slotIdx,
+          stripCpuSuffix(exists.name),
+        );
+      }
+
+      const configs: PlayerConfig[] = updated.map((p) => ({
+        id: p.playerId || `p_${p.slotIndex}`,
+        slotIndex: p.slotIndex,
+        name: p.name,
+        isCpu: p.isCpu,
+        colorId: p.colorId,
+      }));
+      callbacksRef.current.onPlayersUpdated?.(configs);
+
+      saveSession({
+        roomCode: s.roomCode,
+        playerId: updated[0]?.playerId || getOrCreatePlayerId(),
+        playerName: updated[0]?.name || 'Host',
+        colorId: updated[0]?.colorId || 0,
+        slotIndex: 0,
+        isHost: true,
+        maxPlayers: s.maxPlayers,
+        speed: s.speed,
+        winRule: s.winRule,
+        players: updated,
+        slotTokens: Array.from(slotTokensRef.current.entries()),
+        gameState: callbacksRef.current.getGameStateSnapshot?.(),
+        turnId: turnIdRef.current,
+        stateVersion: stateVersionRef.current,
+      });
+      refreshSavedSession();
     },
-    [isHost, maxPlayers, speed, winRule],
+    [commitPlayers, refreshSavedSession],
   );
 
   /* Update room rules (Host only) */
@@ -1249,20 +1385,21 @@ export function useMultiplayer({
       stateVersionRef.current += 1;
       peerManager.broadcast({
         type: 'LOBBY_UPDATE',
-        players,
+        players: playersRef.current,
         speed: newSpeed,
         winRule: newRule,
         stateVersion: stateVersionRef.current,
         maxPlayers,
       });
     },
-    [isHost, maxPlayers, players],
+    [isHost, maxPlayers],
   );
 
   /* Host starts the game */
   const startGame = useCallback(() => {
     if (!isHost) return;
-    if (players.length < 2) return;
+    const roster = playersRef.current;
+    if (roster.length < 2) return;
 
     turnIdRef.current = 1;
     hasRolledForCurrentTurnRef.current = false;
@@ -1272,14 +1409,14 @@ export function useMultiplayer({
 
     peerManager.broadcast({
       type: 'GAME_START',
-      players,
+      players: roster,
       speed,
       winRule,
       stateVersion: stateVersionRef.current,
       turnId: turnIdRef.current,
     });
 
-    const configs: PlayerConfig[] = players.map((p) => ({
+    const configs: PlayerConfig[] = roster.map((p) => ({
       id: p.playerId || `p_${p.slotIndex}`,
       slotIndex: p.slotIndex,
       name: p.name,
@@ -1289,15 +1426,15 @@ export function useMultiplayer({
 
     saveSession({
       roomCode,
-      playerId: players[0]?.playerId || getOrCreatePlayerId(),
-      playerName: players[0]?.name || 'Host',
-      colorId: players[0]?.colorId || 0,
+      playerId: roster[0]?.playerId || getOrCreatePlayerId(),
+      playerName: roster[0]?.name || 'Host',
+      colorId: roster[0]?.colorId || 0,
       slotIndex: 0,
       isHost: true,
       maxPlayers,
       speed,
       winRule,
-      players,
+      players: roster,
       slotTokens: Array.from(slotTokensRef.current.entries()),
       turnId: turnIdRef.current,
       stateVersion: stateVersionRef.current,
@@ -1317,7 +1454,7 @@ export function useMultiplayer({
     refreshSavedSession();
 
     callbacksRef.current.onGameStart?.(configs, speed, winRule);
-  }, [isHost, maxPlayers, players, refreshSavedSession, roomCode, speed, winRule]);
+  }, [isHost, maxPlayers, refreshSavedSession, roomCode, speed, winRule]);
 
   /* Broadcast roll result (Host) or send roll request (Guest) */
   const broadcastRoll = useCallback(
@@ -1397,7 +1534,7 @@ export function useMultiplayer({
         maxPlayers,
         speed,
         winRule,
-        players,
+        players: playersRef.current,
         slotTokens: Array.from(slotTokensRef.current.entries()),
         gameState: {
           ...checkpoint,
@@ -1409,7 +1546,7 @@ export function useMultiplayer({
       });
       refreshSavedSession();
     },
-    [isHost, maxPlayers, players, refreshSavedSession, roomCode, speed, winRule],
+    [isHost, maxPlayers, refreshSavedSession, roomCode, speed, winRule],
   );
 
   /* Broadcast reaction emoji */
@@ -1454,13 +1591,15 @@ export function useMultiplayer({
     setIsHost(false);
     setIsPaused(false);
     setRoomCode('');
-    setPlayers([]);
+    commitPlayers([]);
     setTransportStatus('disconnected');
     setAuthStatus('unauthenticated');
     setRoomMembership('none');
     setGameStatus('none');
     setStatus('idle');
     setStatusDetail('');
+    setMySlot(0);
+    setMaxPlayers(4);
     stateVersionRef.current = 1;
     turnIdRef.current = 1;
     lastSeenStateVersionRef.current = 0;
@@ -1471,7 +1610,7 @@ export function useMultiplayer({
     if (window.location.hash.startsWith('#room=')) {
       window.history.replaceState(null, '', window.location.pathname);
     }
-  }, [clearRetryTimers, refreshSavedSession]);
+  }, [clearRetryTimers, commitPlayers, refreshSavedSession]);
 
   const isOnlineMatch =
     roomMembership === 'joined' ||
