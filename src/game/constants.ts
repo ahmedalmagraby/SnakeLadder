@@ -131,10 +131,26 @@ export function squareCenter(n: number): Pt {
 
 /* Convert logical board coordinates into square number 1..100 */
 export function squareFromPoint(lx: number, ly: number): number | null {
-  const c = Math.floor((lx - ORIGIN) / CELL);
-  const rowFromTop = Math.floor((ly - ORIGIN) / CELL);
+  /* (P2) The hit test now covers each cell's full span, edge to edge.
+   *
+   * The old form floored `(lx - ORIGIN) / CELL` and range-checked the *column
+   * index* rather than the coordinate, which left a 1px sliver at every cell
+   * boundary mapped to no square at all: `lx = 139.9999` gave column -1
+   * (rejected) while `lx = 140` gave column 0 (square 1). Tapping exactly on a
+   * grid line - which is where a player's finger naturally lands when they aim
+   * for the line between two tiles - did nothing at all.
+   *
+   * Checking the coordinate against the cell bounds first means the test is a
+   * true inverse of `squareCenter`: every point inside the 10x10 grid maps to
+   * exactly one square, and every point outside it maps to none. */
+  if (!Number.isFinite(lx) || !Number.isFinite(ly)) return null;
+  const fx = lx - ORIGIN;
+  const fy = ly - ORIGIN;
+  if (fx < 0 || fy < 0 || fx >= CELL * 10 || fy >= CELL * 10) return null;
+
+  const c = Math.floor(fx / CELL);
+  const rowFromTop = Math.floor(fy / CELL);
   const r = 9 - rowFromTop;
-  if (c < 0 || c > 9 || r < 0 || r > 9) return null;
   const colInRow = r % 2 === 0 ? c : 9 - c;
   const n = r * 10 + colInRow + 1;
   return n >= 1 && n <= 100 ? n : null;
@@ -247,6 +263,20 @@ Object.keys(SNAKES).forEach((headStr, idx) => {
  * unchanged. It must never be 0 while a token is *sliding* along the spine,
  * because `getSnakeSlidePoint` reads positions straight off this geometry.
  */
+/**
+ * (P2) Compute the animated spine of a snake as a polyline of `n + 1` points.
+ *
+ * Pass `out` to reuse a caller-owned buffer. Without it this allocates a fresh
+ * array of fresh point objects on every call, and the render loop calls it once
+ * per snake per frame - around 800 short-lived objects per frame, ~48k per
+ * second at 60fps. That is pure GC pressure on the main thread during the one
+ * animation the whole board depends on reading correctly.
+ *
+ * The points are only ever read within the frame that produced them (the
+ * renderer strokes straight from them), so mutating a reused buffer is safe.
+ * Note the returned array must not be retained across frames by callers that
+ * pass `out`.
+ */
 export function getSnakeSpine(
   head: number,
   tail: number,
@@ -254,6 +284,7 @@ export function getSnakeSpine(
   isActive = false,
   customN?: number,
   ampScale = 1,
+  out?: Pt[],
 ): Pt[] {
   const a = squareCenter(head);
   const b = squareCenter(tail);
@@ -279,7 +310,15 @@ export function getSnakeSpine(
     : Math.sin(time * 2.6 + params.phase) * 1.6;
 
   const n = customN ?? Math.max(28, Math.round(len / 5.5));
-  const pts: Pt[] = [];
+  /* (P2) Reuse the caller's buffer when given one, growing it only if this
+   * snake needs more points than last frame. See the doc comment. */
+  const pts = out ?? [];
+  if (out) {
+    while (pts.length < n + 1) pts.push({ x: 0, y: 0 });
+    pts.length = n + 1;
+  } else {
+    pts.length = 0;
+  }
 
   for (let i = 0; i <= n; i++) {
     const f = i / n;
@@ -292,10 +331,16 @@ export function getSnakeSpine(
     // Small head micro-motion along spine vector
     const bobOffset = headBob * Math.pow(1 - f, 2.5);
 
-    pts.push({
-      x: a.x + dx * f + px * wob + nx * bobOffset,
-      y: a.y + dy * f + py * wob + ny * bobOffset,
-    });
+    const x = a.x + dx * f + px * wob + nx * bobOffset;
+    const y = a.y + dy * f + py * wob + ny * bobOffset;
+
+    if (out) {
+      const slot = pts[i];
+      slot.x = x;
+      slot.y = y;
+    } else {
+      pts.push({ x, y });
+    }
   }
 
   return pts;

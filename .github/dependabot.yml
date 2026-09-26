@@ -1,0 +1,31 @@
+version: 2
+updates:
+  # (P3) Dependency security updates. `npm audit` is a release gate for this
+  # project - a transitive advisory in a build tool is still a real risk, and
+  # the previous audit found two (esbuild + vite) that a version bump fixed.
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    labels:
+      - dependencies
+      - security
+    commit-message:
+      prefix: "deps"
+    groups:
+      # One PR for the whole dev toolchain instead of a dozen tiny ones.
+      dev-dependencies:
+        applies-to: version-updates
+        dependency-type: production
+        patterns:
+          - "*"
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly
+    labels:
+      - dependencies
+      - ci
+    commit-message:
+      prefix: "ci"

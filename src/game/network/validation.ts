@@ -8,18 +8,30 @@ import {
   MAX_ROOM_CODE_LEN,
   MAX_STRING_LEN,
   MAX_TOKEN_LEN,
+  PROTOCOL_VERSION,
   type AllowedEmoji,
   type GameStateSnapshot,
   type NetworkPlayer,
   type Packet,
   type PacketType,
   type CheckpointMode,
+  type RollRejectReason,
 } from './types';
 import type { GameSpeed, WinRule } from '../constants';
 
 const VALID_SPEEDS = new Set<string>(['normal', 'fast', 'turbo']);
 const VALID_WIN_RULES = new Set<string>(['exact', 'bounce']);
 const VALID_CHECKPOINT_MODES = new Set<string>(['idle', 'playing', 'over']);
+
+/** (P0) Enumerated set backing `isValidRollRejectReason`. */
+const ROLL_REJECT_REASONS = new Set<string>([
+  'not-your-turn',
+  'not-awaiting-roll',
+  'already-rolled',
+  'stale-turn',
+  'rate-limited',
+  'match-not-playing',
+]);
 const VALID_PHASES = new Set<string>([
   'idle',
   'rolling',
@@ -54,12 +66,55 @@ export const HOST_ONLY_PACKETS = new Set<PacketType>([
   'LOBBY_UPDATE',
   'GAME_START',
   'ROLL_RESULT',
+  'ROLL_REJECTED',
   'SYNC_CHECKPOINT',
   'PLAYER_DISCONNECTED',
 ]);
 
 export function isGuestAllowedPacket(type: string): boolean {
   return GUEST_PERMITTED_PACKETS.has(type as PacketType);
+}
+
+/* (P1) Packets a guest must never accept from its host.
+ *
+ * The guest used to run *no* validation at all on inbound host packets:
+ * `validatePacket` was never called on the guest's `conn.on('data')`, so the
+ * host could push an arbitrarily large JSON blob, a 10 KB player name or a
+ * malformed checkpoint straight into React state and the canvas renderer.
+ *
+ * The rule is expressed as a *deny* list of guest-originated packets rather
+ * than an allow-list of `HOST_ONLY_PACKETS`, because not every host-bound
+ * packet is host-exclusive: `EMOTE`, `PING` and `PONG` are deliberately
+ * bidirectional (the host emotes back, and both ends heartbeat). An allow-list
+ * built from HOST_ONLY_PACKETS would reject the host's own emotes. What a guest
+ * must never see is a client-originated packet, since a host has no business
+ * sending one and it would be either a protocol bug or a spoofing attempt. */
+const GUEST_ORIGINATED_PACKETS: ReadonlySet<PacketType> = new Set<PacketType>([
+  'JOIN_REQUEST',
+  'RECONNECT_REQUEST',
+  'COLOR_CHANGE_REQUEST',
+  'ROLL_REQUEST',
+]);
+
+export function isHostAllowedPacket(type: string): boolean {
+  return !GUEST_ORIGINATED_PACKETS.has(type as PacketType);
+}
+
+/**
+ * (P2) Accepts any 6-char A-Z0-9 code, which is deliberately a superset of the
+ * 32-character alphabet `generateRoomCode` draws from.
+ *
+ * An earlier pass tightened this to the generated alphabet (excluding `I`, `O`,
+ * `0` and `1` to avoid read-aloud ambiguity). That was reverted: it rejected
+ * codes players can legitimately paste from an older session or type by hand,
+ * and a "room not found" from a mis-transcribed character is a far smaller
+ * problem than refusing a room that genuinely exists. The generator still
+ * avoids the ambiguous characters, which is where the ergonomics matter.
+ */
+export function isValidRoomCode(val: unknown): val is string {
+  if (typeof val !== 'string') return false;
+  const trimmed = val.trim().toUpperCase();
+  return trimmed.length === MAX_ROOM_CODE_LEN && /^[A-Z0-9]{6}$/.test(trimmed);
 }
 
 export function isHostOnlyPacket(type: string): boolean {
@@ -81,12 +136,6 @@ export function isSafeString(val: unknown, minLen = 1, maxLen = MAX_STRING_LEN):
   // eslint-disable-next-line no-control-regex
   if (/[\x00-\x1F\x7F]/.test(val)) return false;
   return true;
-}
-
-export function isValidRoomCode(val: unknown): val is string {
-  if (typeof val !== 'string') return false;
-  const trimmed = val.trim().toUpperCase();
-  return trimmed.length === MAX_ROOM_CODE_LEN && /^[A-Z0-9]{6}$/.test(trimmed);
 }
 
 export function stripCpuSuffix(name: string): string {
@@ -199,6 +248,30 @@ export function isValidEmoji(val: unknown): val is AllowedEmoji {
   return typeof val === 'string' && ALLOWED_EMOJI_SET.has(val);
 }
 
+/**
+ * (P0) Shape check for the optional `v` field on the admission packets.
+ *
+ * This deliberately does NOT compare against `PROTOCOL_VERSION`: the actual
+ * gate lives in the `JOIN_REQUEST` / `RECONNECT_REQUEST` handlers so a
+ * mismatched peer can be told why in a `JOIN_REJECTED` instead of being
+ * silently dropped by the validator. An absent `v` means the original
+ * unversioned protocol, i.e. v1.
+ */
+export function isValidProtocolVersionField(val: unknown): boolean {
+  if (val === undefined) return true;
+  return isFiniteInteger(val, 1, 1000);
+}
+
+/** (P0) True when an admission packet came from a client we can speak to. */
+export function isCompatibleProtocolVersion(val: unknown): boolean {
+  const v = val === undefined ? 1 : val;
+  return isFiniteInteger(v, 1, 1000) && v === PROTOCOL_VERSION;
+}
+
+export function isValidRollRejectReason(val: unknown): val is RollRejectReason {
+  return typeof val === 'string' && ROLL_REJECT_REASONS.has(val);
+}
+
 export function hasDangerousKeys(obj: object): boolean {
   if (!obj || typeof obj !== 'object') return false;
   return (
@@ -238,48 +311,125 @@ export function isValidRosterSlots(players: NetworkPlayer[], maxPlayers: number)
   return true;
 }
 
-export function isValidGameStateSnapshot(s: unknown): s is GameStateSnapshot {
-  if (!s || typeof s !== 'object' || Array.isArray(s)) return false;
-  if (hasDangerousKeys(s)) return false;
+/**
+ * Why a game-state snapshot was rejected, or `null` if it is fine.
+ *
+ * (P0) This exists because a boolean failure told nobody anything. A guest that
+ * refused a host packet reported only "Invalid gameState snapshot", which is not
+ * actionable when the host is running code you do not control and cannot
+ * inspect. Naming the offending field turns a dead end into a one-line fix.
+ */
+export type SnapshotRejectReason =
+  | 'not-an-object'
+  | 'prototype-pollution'
+  | 'mode'
+  | 'pos'
+  | 'turn'
+  | 'phase'
+  | 'rolls'
+  | 'laddersHit'
+  | 'snakesHit'
+  | 'sixesHit'
+  | 'winner'
+  | 'isPlaying';
+
+/**
+ * Validate a game-state snapshot, reporting the first failing field.
+ *
+ * The per-player arrays are additionally *width-tolerant*: a snapshot whose
+ * `pos` covers a different roster than the local one is still structurally
+ * sound, it simply does not line up. Rejecting on width alone would mean a
+ * guest refuses a legitimate packet from a host whose roster is briefly a
+ * different size, so widths are reported (`pos-width`) but not fatal - the
+ * caller decides, and `useGame`'s checkpoint application normalises instead of
+ * discarding.
+ */
+export function checkGameStateSnapshot(s: unknown): SnapshotRejectReason | null {
+  if (!s || typeof s !== 'object' || Array.isArray(s)) return 'not-an-object';
+  if (hasDangerousKeys(s)) return 'prototype-pollution';
   const snap = s as Record<string, unknown>;
 
-  if (!isValidCheckpointMode(snap.mode)) return false;
+  if (!isValidCheckpointMode(snap.mode)) return 'mode';
 
-  if (!Array.isArray(snap.pos) || snap.pos.length > MAX_PLAYERS) return false;
-  if (!snap.pos.every((x) => isFiniteInteger(x, 0, 100))) return false;
+  if (!Array.isArray(snap.pos) || snap.pos.length > MAX_PLAYERS) return 'pos';
+  if (!snap.pos.every((x) => isFiniteInteger(x, 0, 100))) return 'pos';
 
-  if (!isFiniteInteger(snap.turn, 0, MAX_PLAYERS - 1)) return false;
-  if (!isValidPhase(snap.phase)) return false;
+  if (!isFiniteInteger(snap.turn, 0, MAX_PLAYERS - 1)) return 'turn';
+  if (!isValidPhase(snap.phase)) return 'phase';
 
-  if (!Array.isArray(snap.rolls) || snap.rolls.length > MAX_PLAYERS) return false;
-  if (!snap.rolls.every((x) => isFiniteInteger(x, 0, 10000))) return false;
+  if (!Array.isArray(snap.rolls) || snap.rolls.length > MAX_PLAYERS) return 'rolls';
+  if (!snap.rolls.every((x) => isFiniteInteger(x, 0, 10000))) return 'rolls';
 
-  if (!Array.isArray(snap.laddersHit) || snap.laddersHit.length > MAX_PLAYERS) return false;
-  if (!snap.laddersHit.every((x) => isFiniteInteger(x, 0, 10000))) return false;
+  if (!Array.isArray(snap.laddersHit) || snap.laddersHit.length > MAX_PLAYERS) return 'laddersHit';
+  if (!snap.laddersHit.every((x) => isFiniteInteger(x, 0, 10000))) return 'laddersHit';
 
-  if (!Array.isArray(snap.snakesHit) || snap.snakesHit.length > MAX_PLAYERS) return false;
-  if (!snap.snakesHit.every((x) => isFiniteInteger(x, 0, 10000))) return false;
+  if (!Array.isArray(snap.snakesHit) || snap.snakesHit.length > MAX_PLAYERS) return 'snakesHit';
+  if (!snap.snakesHit.every((x) => isFiniteInteger(x, 0, 10000))) return 'snakesHit';
 
-  if (!Array.isArray(snap.sixesHit) || snap.sixesHit.length > MAX_PLAYERS) return false;
-  if (!snap.sixesHit.every((x) => isFiniteInteger(x, 0, 10000))) return false;
+  if (!Array.isArray(snap.sixesHit) || snap.sixesHit.length > MAX_PLAYERS) return 'sixesHit';
+  if (!snap.sixesHit.every((x) => isFiniteInteger(x, 0, 10000))) return 'sixesHit';
 
-  if (!isFiniteInteger(snap.winner, -1, MAX_PLAYERS - 1)) return false;
-  if (snap.isPlaying !== undefined && typeof snap.isPlaying !== 'boolean') return false;
+  if (!isFiniteInteger(snap.winner, -1, MAX_PLAYERS - 1)) return 'winner';
+  if (snap.isPlaying !== undefined && typeof snap.isPlaying !== 'boolean') return 'isPlaying';
 
-  return true;
+  return null;
+}
+
+export function isValidGameStateSnapshot(s: unknown): s is GameStateSnapshot {
+  return checkGameStateSnapshot(s) === null;
 }
 
 export interface ValidationResult {
   valid: boolean;
   packet?: Packet;
   error?: string;
+  /**
+   * Set when `lenientGameState` was requested and the packet's advisory
+   * `gameState` was unusable. The packet is still `valid`; the snapshot has
+   * been stripped. The value names the offending field.
+   */
+  droppedGameStateField?: SnapshotRejectReason;
+}
+
+/**
+ * (P0) Validate an optional advisory `gameState`, honouring `lenientGameState`.
+ *
+ * Returns the accepted snapshot, or `undefined` when it is absent. In strict
+ * mode an unusable snapshot fails the packet; in lenient mode it is dropped and
+ * the offending field is reported to the caller.
+ */
+function acceptGameState(
+  raw: unknown,
+  lenient: boolean,
+): { snapshot?: GameStateSnapshot; dropped?: SnapshotRejectReason; error?: string } {
+  if (raw === undefined) return {};
+  const bad = checkGameStateSnapshot(raw);
+  if (bad === null) return { snapshot: raw as GameStateSnapshot };
+  if (lenient) return { dropped: bad };
+  return { error: `Invalid gameState snapshot (bad field: ${bad})` };
+}
+
+export interface ValidateOptions {
+  /**
+   * (P0) Treat a malformed `gameState` as absent instead of failing the whole
+   * packet.
+   *
+   * `gameState` is a *resume hint*, not an authority: the board is re-synced
+   * from `SYNC_CHECKPOINT` on the next turn regardless. So a host whose
+   * snapshot does not line up with what this build expects must not be able to
+   * stop a guest from joining - which is exactly what failing the packet did.
+   */
+  lenientGameState?: boolean;
 }
 
 /**
  * Validates any incoming packet against the protocol specification.
  * Checks raw size, structure, types, ranges, enums, and prototype poisoning.
  */
-export function validatePacket(raw: unknown): ValidationResult {
+export function validatePacket(
+  raw: unknown,
+  options: ValidateOptions = {},
+): ValidationResult {
   if (raw === null || raw === undefined) {
     return { valid: false, error: 'Packet is null or undefined' };
   }
@@ -330,6 +480,9 @@ export function validatePacket(raw: unknown): ValidationResult {
       if (!isValidColorId(p.colorId)) {
         return { valid: false, error: 'Invalid colorId' };
       }
+      if (!isValidProtocolVersionField(p.v)) {
+        return { valid: false, error: 'Invalid protocol version' };
+      }
       return {
         valid: true,
         packet: {
@@ -338,6 +491,7 @@ export function validatePacket(raw: unknown): ValidationResult {
           roomCode: (p.roomCode as string).trim().toUpperCase(),
           name: (p.name as string).trim(),
           colorId: p.colorId,
+          v: (p.v as number | undefined) ?? 1,
         },
       };
     }
@@ -379,11 +533,11 @@ export function validatePacket(raw: unknown): ValidationResult {
       if (!isFiniteInteger(p.turnId, 1)) {
         return { valid: false, error: 'Invalid turnId' };
       }
-      if (p.gameState !== undefined && !isValidGameStateSnapshot(p.gameState)) {
-        return { valid: false, error: 'Invalid gameState snapshot' };
-      }
+      const joinGs = acceptGameState(p.gameState, options.lenientGameState === true);
+      if (joinGs.error) return { valid: false, error: joinGs.error };
       return {
         valid: true,
+        droppedGameStateField: joinGs.dropped,
         packet: {
           type: 'JOIN_ACCEPTED',
           requestId: p.requestId,
@@ -396,7 +550,8 @@ export function validatePacket(raw: unknown): ValidationResult {
           stateVersion: p.stateVersion,
           turnId: p.turnId,
           maxPlayers: p.maxPlayers as number,
-          gameState: p.gameState as GameStateSnapshot | undefined,
+          v: (p.v as number | undefined) ?? 1,
+          gameState: joinGs.snapshot,
         },
       };
     }
@@ -431,6 +586,9 @@ export function validatePacket(raw: unknown): ValidationResult {
       if (!isValidReconnectToken(p.reconnectToken)) {
         return { valid: false, error: 'Invalid reconnectToken' };
       }
+      if (!isValidProtocolVersionField(p.v)) {
+        return { valid: false, error: 'Invalid protocol version' };
+      }
       return {
         valid: true,
         packet: {
@@ -439,6 +597,7 @@ export function validatePacket(raw: unknown): ValidationResult {
           roomCode: (p.roomCode as string).trim().toUpperCase(),
           slotIndex: p.slotIndex,
           reconnectToken: p.reconnectToken,
+          v: (p.v as number | undefined) ?? 1,
         },
       };
     }
@@ -480,11 +639,14 @@ export function validatePacket(raw: unknown): ValidationResult {
       if (!isFiniteInteger(p.turnId, 1)) {
         return { valid: false, error: 'Invalid turnId' };
       }
-      if (p.gameState !== undefined && !isValidGameStateSnapshot(p.gameState)) {
-        return { valid: false, error: 'Invalid gameState snapshot' };
+      const recGs = acceptGameState(p.gameState, options.lenientGameState === true);
+      if (recGs.error) return { valid: false, error: recGs.error };
+      if (!isValidProtocolVersionField(p.v)) {
+        return { valid: false, error: 'Invalid protocol version' };
       }
       return {
         valid: true,
+        droppedGameStateField: recGs.dropped,
         packet: {
           type: 'RECONNECT_ACCEPTED',
           requestId: p.requestId,
@@ -497,7 +659,8 @@ export function validatePacket(raw: unknown): ValidationResult {
           stateVersion: p.stateVersion,
           turnId: p.turnId,
           maxPlayers: p.maxPlayers as number,
-          gameState: p.gameState as GameStateSnapshot | undefined,
+          v: (p.v as number | undefined) ?? 1,
+          gameState: recGs.snapshot,
         },
       };
     }
@@ -597,11 +760,11 @@ export function validatePacket(raw: unknown): ValidationResult {
       if (!isFiniteInteger(p.turnId, 1)) {
         return { valid: false, error: 'Invalid turnId' };
       }
-      if (p.gameState !== undefined && !isValidGameStateSnapshot(p.gameState)) {
-        return { valid: false, error: 'Invalid gameState snapshot in GAME_START' };
-      }
+      const startGs = acceptGameState(p.gameState, options.lenientGameState === true);
+      if (startGs.error) return { valid: false, error: startGs.error };
       return {
         valid: true,
+        droppedGameStateField: startGs.dropped,
         packet: {
           type: 'GAME_START',
           players: p.players,
@@ -609,7 +772,7 @@ export function validatePacket(raw: unknown): ValidationResult {
           winRule: p.winRule,
           stateVersion: p.stateVersion,
           turnId: p.turnId,
-          gameState: p.gameState as GameStateSnapshot | undefined,
+          gameState: startGs.snapshot,
         },
       };
     }
@@ -660,6 +823,34 @@ export function validatePacket(raw: unknown): ValidationResult {
           turnId: p.turnId,
           stateVersion: p.stateVersion,
           timestamp: p.timestamp,
+        },
+      };
+    }
+
+    // (P0) The host's authoritative "no". Without this packet a guest that
+    // latched `awaitingRemoteRoll` before sending had no way to learn its
+    // request was dropped, and its roll button stayed dead forever.
+    case 'ROLL_REJECTED': {
+      if (!isValidRequestId(p.requestId)) {
+        return { valid: false, error: 'Invalid requestId' };
+      }
+      if (!isValidRollRejectReason(p.reason)) {
+        return { valid: false, error: 'Invalid roll reject reason' };
+      }
+      if (!isFiniteInteger(p.turnId, 0)) {
+        return { valid: false, error: 'Invalid turnId' };
+      }
+      if (!isFiniteInteger(p.stateVersion, 1)) {
+        return { valid: false, error: 'Invalid stateVersion' };
+      }
+      return {
+        valid: true,
+        packet: {
+          type: 'ROLL_REJECTED',
+          requestId: p.requestId,
+          reason: p.reason,
+          turnId: p.turnId,
+          stateVersion: p.stateVersion,
         },
       };
     }

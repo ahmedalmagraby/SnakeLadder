@@ -10,6 +10,7 @@ import {
   hasResumableMatch,
   canRejoinRoom,
 } from '../src/game/network/sessionStorage';
+import { PROTOCOL_VERSION } from '../src/game/network/types';
 import type {
   Packet,
   NetworkPlayer,
@@ -324,7 +325,7 @@ describe('Connection & Room Lifecycle Handling', () => {
   describe('4. Reconnect While Lobby', () => {
     it('resolves joinRoom on RECONNECT_ACCEPTED and adopts assigned slot', async () => {
       const pm = new PeerManager();
-      const joinPromise = pm.joinRoom('LOBBY1', 'Alice', 1, true, 2, 'tok_secret_lobby');
+      const joinPromise = pm.joinRoom('LOBBY1', 'Alice', 1, true, 2, 'tok_secret_lobby_01');
 
       const peerInstance = (pm as any).peer;
       peerInstance._trigger('open');
@@ -358,7 +359,7 @@ describe('Connection & Room Lifecycle Handling', () => {
         type: 'RECONNECT_ACCEPTED',
         requestId: hostConn.sentPackets[0].requestId,
         slotIndex: 2,
-        reconnectToken: 'tok_secret_lobby',
+        reconnectToken: 'tok_secret_lobby_01',
         roomCode: 'LOBBY1',
         speed: 'normal',
         winRule: 'exact',
@@ -366,6 +367,7 @@ describe('Connection & Room Lifecycle Handling', () => {
         turnId: 1,
         stateVersion: 2,
         maxPlayers: 4,
+        v: PROTOCOL_VERSION,
       });
 
       await expect(joinPromise).resolves.toBeUndefined();
@@ -384,7 +386,7 @@ describe('Connection & Room Lifecycle Handling', () => {
         receivedPacket = p;
       });
 
-      const joinPromise = pm.joinRoom('PLAY01', 'Bob', 2, true, 1, 'tok_secret_play');
+      const joinPromise = pm.joinRoom('PLAY01', 'Bob', 2, true, 1, 'tok_secret_play_01');
       const peerInstance = (pm as any).peer;
       peerInstance._trigger('open');
       const hostConn = (pm as any).hostConn as MockDataConnection;
@@ -430,7 +432,7 @@ describe('Connection & Room Lifecycle Handling', () => {
         type: 'RECONNECT_ACCEPTED',
         requestId: hostConn.sentPackets[0].requestId,
         slotIndex: 1,
-        reconnectToken: 'tok_secret_play',
+        reconnectToken: 'tok_secret_play_01',
         roomCode: 'PLAY01',
         speed: 'fast',
         winRule: 'exact',
@@ -438,6 +440,7 @@ describe('Connection & Room Lifecycle Handling', () => {
         turnId: 6,
         stateVersion: 12,
         maxPlayers: 4,
+        v: PROTOCOL_VERSION,
         gameState,
       });
 

@@ -95,10 +95,28 @@ export interface Toast {
   kind: 'gold' | 'red' | 'cyan' | 'pink' | 'lime' | 'info';
 }
 
+/** (P2) The palette slot a log bullet is tinted with, or `event` for
+ *  match-level messages that belong to nobody's turn. */
+export type LogEntryKind = 'p0' | 'p1' | 'p2' | 'p3' | 'event';
+
 export interface LogEntry {
   id: number;
   text: string;
-  kind: 'p0' | 'p1' | 'p2' | 'p3' | 'event';
+  /**
+   * (P2) Which palette slot tints this entry's bullet in the sidebar log.
+   *
+   * This is a *colour* index, not a roster index. It used to be built as
+   * `` `p${player}` `` from the dense roster position, which meant that in any
+   * roster with a gap - slots [0, 2, 3], which is exactly what an online room
+   * looks like after someone leaves - every player's bullets were tinted with
+   * the wrong player's colour, directly contradicting the stated intent that a
+   * log dot is "exactly the colour of that player's token".
+   *
+   * Keying on `colorId` makes it correct for sparse rosters, and makes the
+   * `as any` casts unnecessary: a colour outside the palette now falls back to
+   * `event` instead of producing an invisible bullet.
+   */
+  kind: LogEntryKind;
   /**
    * (G3) Wall-clock time the entry was created, for the sidebar log.
    * Kept separate from `text` on purpose: `text` feeds the screen-reader live
@@ -122,6 +140,45 @@ export interface UseGameOptions {
  * same value has to reach the renderer and the slide sampler in the same frame,
  * or a sliding token would visibly detach from the body it is riding. */
 const REDUCED_SNAKE_AMP = 0.35;
+
+/* (P0) How long a guest waits for the host to answer a ROLL_REQUEST before
+ * releasing its own latch. Generous enough to cover a slow-but-alive link and
+ * a briefly backgrounded tab, tight enough that a dropped packet does not leave
+ * a player staring at a dead button. The host now always *replies*
+ * (ROLL_REJECTED), so this only fires when the reply itself is lost. */
+const ROLL_REQUEST_TIMEOUT_MS = 8000;
+
+/* (P0) Grace period added to a phase's expected duration before the watchdog
+ * declares its timer lost and re-drives the completion.
+ *
+ * The slowest legitimate `settling` is turbo (120ms settle) and the slowest
+ * `waiting` is normal-speed blocked-roll (320 + 650 = 970ms), so 2500ms is
+ * comfortably more than 2x the worst case while still turning an infinite
+ * freeze into a ~3s hiccup. */
+const PHASE_WATCHDOG_GRACE_MS = 2500;
+
+/* (P2) Beat of silence after a turn resolves before the next phase begins.
+ *
+ * These were bare `350` / `650` literals at their call sites. The two paths
+ * differ on purpose: a lucky six that *moved* already had a full move or slide
+ * animation to read, while a blocked roll (cannot move at 100 under the exact
+ * rule) played nothing at all, so it gets a longer beat to make the "you stay
+ * on the board" moment legible. Naming them makes the intent checkable, and
+ * keeps them out of the arithmetic at the call sites. */
+const LUCKY_SIX_EXTRA_PAUSE_MS = 350;
+const BLOCKED_ROLL_EXTRA_PAUSE_MS = 650;
+
+/**
+ * (P0) A timer-driven turn completion in flight.
+ *
+ * `settle`  - a normal landing settled and owes `finishTurn(player, roll)`.
+ * `lucky`   - a rolled 6 granted a bonus turn and owes `FINISH_LUCKY_SIX_WAIT`.
+ * `pass`    - an exact-rule block owes `FINISH_PASS_WAIT`.
+ */
+type PendingTurn =
+  | { kind: 'settle'; player: number; roll: number; txId: number; dueAt: number }
+  | { kind: 'lucky'; player: number; txId: number; dueAt: number }
+  | { kind: 'pass'; player: number; txId: number; dueAt: number };
 
 function snakeAmpScale(): number {
   return prefersReducedMotion() ? REDUCED_SNAKE_AMP : 1;
@@ -173,6 +230,31 @@ export function useGame(options: UseGameOptions = {}) {
   // authoritative ROLL_RESULT. Prevents spamming the host with roll requests.
   const [awaitingRemoteRoll, setAwaitingRemoteRoll] = useState(false);
   const awaitingRemoteRollRef = useRef(false);
+  /* (P0) Watchdog for the latch above.
+   *
+   * This flag is what disables the roll button, and it used to be cleared in
+   * exactly one place: receiving the host's ROLL_RESULT. The protocol had no
+   * NACK, so if the host dropped the request for any reason - out of turn,
+   * mid-animation, duplicate-suppressed, or a stale `turnId` because the guest
+   * was a checkpoint behind - the guest set this to `true` and nothing ever
+   * cleared it. The button stayed dead for the rest of the match, with no
+   * timeout and no recovery short of a page reload.
+   *
+   * The host now answers every rejection with ROLL_REJECTED (see
+   * `useMultiplayer`), but a reliable answer on an unreliable transport is not
+   * a guarantee: a ROLL_REJECTED can itself be dropped. This timer makes the
+   * latch self-healing regardless of what the host does or fails to do. */
+  const rollRequestTimerRef = useRef<number | null>(null);
+  /* (P0) Describes the timer-driven turn completion currently in flight.
+   *
+   * `settling` and `waiting` are each advanced by exactly one `setTimeout`. If
+   * that timer is lost - cancelled by `cancelObsoleteTimers`, swallowed by a
+   * tab that was throttled past its own deadline, or dropped because a
+   * checkpoint reordered `applyCheckpoint` - the phase had no second advancer
+   * and no watchdog, so the match froze on that turn permanently. The closure
+   * arguments of the lost timer are the only record of what it was going to do,
+   * so they are mirrored here where a watchdog can re-drive them. */
+  const pendingTurnRef = useRef<PendingTurn | null>(null);
   const [showWin, setShowWin] = useState(false);
   const [confirmAction, setConfirmAction] = useState<'restart' | 'menu' | null>(null);
   const [hoveredSquare, setHoveredSquare] = useState<number | undefined>(undefined);
@@ -180,10 +262,21 @@ export function useGame(options: UseGameOptions = {}) {
   const themeRef = useRef<BoardTheme>(THEMES[themeId] || THEMES.jungle);
   themeRef.current = THEMES[themeId] || THEMES.jungle;
 
-  const setAwaitingRoll = useCallback((v: boolean) => {
-    awaitingRemoteRollRef.current = v;
-    setAwaitingRemoteRoll(v);
-  }, []);
+  const setAwaitingRoll = useCallback(
+    (v: boolean) => {
+      awaitingRemoteRollRef.current = v;
+      setAwaitingRemoteRoll(v);
+      /* (P0) Every release of the latch also disarms the watchdog, so the timer
+       * can never fire against a latch that has already been cleared. This is
+       * the single choke point: startGame, backToMenu, applyCheckpoint,
+       * reconnectGame, doRemoteRoll and the NACK handler all go through it. */
+      if (!v && rollRequestTimerRef.current !== null) {
+        window.clearTimeout(rollRequestTimerRef.current);
+        rollRequestTimerRef.current = null;
+      }
+    },
+    [],
+  );
 
   const setTheme = useCallback((id: ThemeId) => {
     if (!THEMES[id]) return;
@@ -204,6 +297,21 @@ export function useGame(options: UseGameOptions = {}) {
     spawnFirework(ps, cx, cy, themeRef.current.ui.celebrate);
   }, []);
 
+  /* (P2) Cancel game timers.
+   *
+   * Called with no argument on teardown paths (start / menu / reconnect / an
+   * incoming checkpoint), which cancels everything - that is the intent, since
+   * a new match or an authoritative state must not leave an old turn's timer
+   * running.
+   *
+   * The `currentTxId` parameter was previously accepted and then never passed
+   * by any caller, so its selective branch was dead code that read as if
+   * per-turn timers were being protected. The parameter is kept because
+   * `scheduleGameTimer` already stamps every timer with a `txId` and the
+   * selective form is the correct thing to reach for when cancelling on behalf
+   * of a *specific* in-flight transaction; the call sites below simply do not
+   * have such a case. Deleting an unused-but-meaningful parameter would be
+   * worse than documenting it. */
   const cancelObsoleteTimers = useCallback((currentTxId?: number) => {
     activeTimers.current.forEach((val, name) => {
       if (currentTxId === undefined || val.txId !== currentTxId) {
@@ -316,17 +424,62 @@ export function useGame(options: UseGameOptions = {}) {
     return g.players[p]?.name ?? `Player ${p + 1}`;
   }, []);
 
+  /* (P2) The single safe palette accessor.
+   *
+   * The draw loop used to index `PLAYER_COLORS` raw in four places
+   * (`PLAYER_COLORS[colorId]`) while this helper correctly used a modulo. A
+   * `colorId` of 4 or more - reachable via a session blob, a peer roster or a
+   * future call that lifts the 4-player cap - would return `undefined` and then
+   * throw on `.base` *inside the rAF loop*, which kills the render loop for the
+   * rest of the session: a frozen board with no way to recover short of a
+   * reload. `render.ts` already used the modulo form; this makes the engine
+   * match, and the modulo is the last line of defence for a bad `colorId`. */
   const playerPalette = useCallback((p: number): PlayerPalette => {
     const g = gs.current;
-    const colorId = g.players[p]?.colorId ?? p;
-    return PLAYER_COLORS[colorId % PLAYER_COLORS.length];
+    const raw = g.players[p]?.colorId;
+    const colorId =
+      typeof raw === 'number' && Number.isFinite(raw) && raw >= 0
+        ? Math.floor(raw) % PLAYER_COLORS.length
+        : p % PLAYER_COLORS.length;
+    return PLAYER_COLORS[colorId];
   }, []);
 
-  const pushLog = useCallback((text: string, kind: LogEntry['kind']) => {
+  /* (P2) Resolve a roster index to the log bullet colour for that player.
+   *
+   * Uses the player's `colorId` (their actual palette) rather than their
+   * position in the roster, so a sparse online roster tints every bullet with
+   * the right colour. An out-of-range or missing player degrades to `event`
+   * instead of producing an invisible bullet from an `undefined` lookup. */
+  const logKindFor = useCallback((player: number): LogEntryKind => {
+    const g = gs.current;
+    const colorId = g.players[player]?.colorId;
+    if (typeof colorId !== 'number' || colorId < 0 || colorId > 3) return 'event';
+    return `p${colorId}` as LogEntryKind;
+  }, []);
+
+  const pushLog = useCallback((text: string, kind: LogEntryKind) => {
     logId.current += 1;
     const id = logId.current;
     setLog((l) => [{ id, text, kind, at: Date.now() }, ...l].slice(0, 20));
   }, []);
+
+  /** Arm the guest's roll-request watchdog. Cleared on any ROLL_RESULT,
+   *  ROLL_REJECTED, checkpoint, disconnect or local teardown. */
+  const armRollRequestWatchdog = useCallback(() => {
+    if (rollRequestTimerRef.current !== null) {
+      window.clearTimeout(rollRequestTimerRef.current);
+    }
+    rollRequestTimerRef.current = window.setTimeout(() => {
+      rollRequestTimerRef.current = null;
+      if (!awaitingRemoteRollRef.current) return;
+      /* The host did not answer in time. Release the latch so the player can
+       * try again rather than staring at a dead button, and say so - a silent
+       * release would look like the app ignored the tap. */
+      awaitingRemoteRollRef.current = false;
+      setAwaitingRemoteRoll(false);
+      pushLog('⚠️ The host did not answer that roll in time — tap Roll to try again.', 'event');
+    }, ROLL_REQUEST_TIMEOUT_MS);
+  }, [pushLog]);
 
   const showToast = useCallback(
     (title: string, sub: string | undefined, kind: Toast['kind']) => {
@@ -369,6 +522,19 @@ export function useGame(options: UseGameOptions = {}) {
     const cssSize = sizeRef.current || 640;
     const fontScale = Math.max(1, Math.min(1.12, cssSize / 780));
 
+    /* (P2) Build the new layers, swap them in, then release the old ones.
+     *
+     * Each layer is a full-resolution offscreen canvas - ~16.8 MB at the pixel
+     * budget - and a re-bake replaces both. Zeroing the outgoing canvases'
+     * dimensions after the swap frees those buffers immediately instead of
+     * leaving two of them to the collector on every bake.
+     *
+     * Order matters: the references are replaced *before* the old canvases are
+     * resized, so the draw loop can never observe a null layer even for a
+     * single frame. */
+    const prevBoard = boardLayer.current;
+    const prevNumber = numberLayer.current;
+
     // 1. Static base board layer
     const c1 = document.createElement('canvas');
     c1.width = canvas.width;
@@ -391,6 +557,16 @@ export function useGame(options: UseGameOptions = {}) {
       ctx2.setTransform(s, 0, 0, s, 0, 0);
       drawBoardBadgesAndNumbers(ctx2, currentTheme, fontScale);
       numberLayer.current = c2;
+    }
+
+    // Release the outgoing buffers only once the replacements are live.
+    if (prevBoard && prevBoard !== c1) {
+      prevBoard.width = 0;
+      prevBoard.height = 0;
+    }
+    if (prevNumber && prevNumber !== c2) {
+      prevNumber.width = 0;
+      prevNumber.height = 0;
     }
   }, []);
 
@@ -431,6 +607,7 @@ export function useGame(options: UseGameOptions = {}) {
       cancelObsoleteTimers();
       clearHover();
       pendingCheckpoint.current = null;
+      pendingTurnRef.current = null;
       setAwaitingRoll(false);
 
       const nextState = dispatch({
@@ -459,6 +636,7 @@ export function useGame(options: UseGameOptions = {}) {
     cancelObsoleteTimers();
     clearHover();
     pendingCheckpoint.current = null;
+    pendingTurnRef.current = null;
     setAwaitingRoll(false);
     dispatch({ type: 'BACK_TO_MENU' });
     setShowWin(false);
@@ -470,7 +648,16 @@ export function useGame(options: UseGameOptions = {}) {
   /* Apply authoritative checkpoint from host (Requirement 3) */
   const applyCheckpoint = useCallback(
     (checkpoint: CheckpointData) => {
-      // 1. Cancel obsolete timers when a checkpoint supersedes local state (Requirement 5)
+      /* 1. Cancel obsolete timers when a checkpoint supersedes local state (Requirement 5)
+       *
+       * (P0) `pendingTurnRef` is cleared *before* the dispatch, not after.
+       *
+       * `APPLY_CHECKPOINT` rejects non-stable phases and returns the state
+       * unchanged. Clearing the timers first therefore meant a checkpoint that
+       * arrived mid-`settling` destroyed the turn's only advancer and left the
+       * phase exactly where it was - a permanent freeze with no error. Now the
+       * descriptor is dropped only once we know the checkpoint was actually
+       * applied, and the phase watchdog covers the gap if it was not. */
       cancelObsoleteTimers();
       pendingCheckpoint.current = null;
       // An authoritative checkpoint supersedes any outstanding roll request.
@@ -483,6 +670,10 @@ export function useGame(options: UseGameOptions = {}) {
         type: 'APPLY_CHECKPOINT',
         checkpoint,
       });
+
+      if (nextState.phase !== 'settling' && nextState.phase !== 'waiting') {
+        pendingTurnRef.current = null;
+      }
 
       if (isStablePhase(nextState.phase)) {
         recordStableSnapshot(nextState);
@@ -598,13 +789,15 @@ export function useGame(options: UseGameOptions = {}) {
         sfx.ding();
         const cfg = SPEEDS[g.speed];
 
-        scheduleGameTimer('waiting', cfg.settleMs + 350, 'waiting', () => {
+        scheduleGameTimer('waiting', cfg.settleMs + LUCKY_SIX_EXTRA_PAUSE_MS, 'waiting', () => {
           const nextState = dispatch({
             type: 'FINISH_LUCKY_SIX_WAIT',
             txId,
             expectedPhase: 'waiting',
             player,
           });
+
+          pendingTurnRef.current = null;
 
           const snap = recordStableSnapshot(nextState);
           const { isOnline, isHost, onTurnSettled } = optionsRef.current;
@@ -618,6 +811,14 @@ export function useGame(options: UseGameOptions = {}) {
             applyCheckpoint(cp);
           }
         });
+
+        /* (P0) Mirror the closure for `phaseWatchdog`. */
+        pendingTurnRef.current = {
+          kind: 'lucky',
+          player,
+          txId,
+          dueAt: performance.now() + cfg.settleMs + LUCKY_SIX_EXTRA_PAUSE_MS + PHASE_WATCHDOG_GRACE_MS,
+        };
       } else {
         switchTurn(player);
       }
@@ -667,7 +868,7 @@ export function useGame(options: UseGameOptions = {}) {
         showToast('GOLDEN LADDER!', `Climbing ${target} ➔ ${up}!`, 'gold');
         pushLog(
           `🪜 ${playerName(player)} caught a ladder: ${target} ➔ ${up}`,
-          `p${player}` as any,
+          logKindFor(player),
         );
         sfx.ladder();
       } else if (portal?.type === 'snake') {
@@ -695,7 +896,7 @@ export function useGame(options: UseGameOptions = {}) {
         showToast('SNAKE BITE!', `Slithering down ${target} ➔ ${down}!`, 'red');
         pushLog(
           `🐍 ${playerName(player)} was bitten by a snake: ${target} ➔ ${down}`,
-          `p${player}` as any,
+          logKindFor(player),
         );
         sfx.snake();
       } else {
@@ -717,8 +918,18 @@ export function useGame(options: UseGameOptions = {}) {
             player,
             roll: v,
           });
+          pendingTurnRef.current = null;
           finishTurn(player, v, txId);
         });
+        /* (P0) Mirror the closure so `phaseWatchdog` can re-drive this if the
+         * timer is ever lost. */
+        pendingTurnRef.current = {
+          kind: 'settle',
+          player,
+          roll: v,
+          txId,
+          dueAt: performance.now() + cfg.settleMs + PHASE_WATCHDOG_GRACE_MS,
+        };
       }
     },
     [dispatch, finishTurn, playerName, pushLog, scheduleGameTimer, showToast],
@@ -771,13 +982,15 @@ export function useGame(options: UseGameOptions = {}) {
             sfx.ding();
             const cfg = SPEEDS[g.speed];
 
-            scheduleGameTimer('waiting', cfg.settleMs + 650, 'waiting', () => {
+            scheduleGameTimer('waiting', cfg.settleMs + BLOCKED_ROLL_EXTRA_PAUSE_MS, 'waiting', () => {
               const nextState = dispatch({
                 type: 'FINISH_LUCKY_SIX_WAIT',
                 txId,
                 expectedPhase: 'waiting',
                 player,
               });
+
+              pendingTurnRef.current = null;
 
               const snap = recordStableSnapshot(nextState);
               const { isOnline, isHost, onTurnSettled } = optionsRef.current;
@@ -791,6 +1004,18 @@ export function useGame(options: UseGameOptions = {}) {
                 applyCheckpoint(cp);
               }
             });
+
+            /* (P0) Mirror the closure for `phaseWatchdog`. */
+            pendingTurnRef.current = {
+              kind: 'lucky',
+              player,
+              txId,
+              dueAt:
+                performance.now() +
+                cfg.settleMs +
+                BLOCKED_ROLL_EXTRA_PAUSE_MS +
+                PHASE_WATCHDOG_GRACE_MS,
+            };
             return;
           }
 
@@ -808,13 +1033,15 @@ export function useGame(options: UseGameOptions = {}) {
           sfx.buzz();
           const cfg = SPEEDS[g.speed];
 
-          scheduleGameTimer('waiting', cfg.settleMs + 650, 'waiting', () => {
+          scheduleGameTimer('waiting', cfg.settleMs + BLOCKED_ROLL_EXTRA_PAUSE_MS, 'waiting', () => {
             const nextState = dispatch({
               type: 'FINISH_PASS_WAIT',
               txId,
               expectedPhase: 'waiting',
               player,
             });
+
+            pendingTurnRef.current = null;
 
             const snap = recordStableSnapshot(nextState);
             const { isOnline, isHost, onTurnSettled } = optionsRef.current;
@@ -828,6 +1055,18 @@ export function useGame(options: UseGameOptions = {}) {
               applyCheckpoint(cp);
             }
           });
+
+          /* (P0) Mirror the closure for `phaseWatchdog`. */
+          pendingTurnRef.current = {
+            kind: 'pass',
+            player,
+            txId,
+            dueAt:
+              performance.now() +
+              cfg.settleMs +
+              BLOCKED_ROLL_EXTRA_PAUSE_MS +
+              PHASE_WATCHDOG_GRACE_MS,
+          };
           return;
         }
       }
@@ -855,6 +1094,126 @@ export function useGame(options: UseGameOptions = {}) {
       showToast,
     ],
   );
+
+  /* ---------- (P0) Phase watchdog ----------
+   *
+   * `settling` and `waiting` are the only two phases advanced by a single
+   * `setTimeout` with no second path out. If that timer is lost the match is
+   * frozen on that turn forever: `canRoll` requires `idle`, and the CPU driver
+   * is gated on `idle` too, so nothing - human or bot - can advance it.
+   *
+   * The realistic way to lose it is ordering, not bad luck. `applyCheckpoint`
+   * calls `cancelObsoleteTimers()` *before* dispatching `APPLY_CHECKPOINT`, and
+   * the reducer then rejects the checkpoint for any non-stable phase and
+   * returns the state unchanged. Net result: timer destroyed, phase unchanged,
+   * no way out. Today every `applyCheckpoint` call site happens to be
+   * phase-stable, so this is a latent trap rather than a live freeze - but it
+   * is a one-line-ordering mistake away from ending a match, and a frozen
+   * board is indistinguishable from a hung app to a player.
+   *
+   * This effect watches for exactly that condition and re-drives the completion
+   * from the mirrored `PendingTurn` descriptor. It is a safety net, not the
+   * normal path: a healthy turn clears `pendingTurnRef` and the watchdog never
+   * fires.
+   */
+  useEffect(() => {
+    const phase = hud.phase;
+    if (hud.mode !== 'playing' || (phase !== 'settling' && phase !== 'waiting')) {
+      // Not a watchdog-guarded phase: drop any stale descriptor.
+      if (phase !== 'settling' && phase !== 'waiting') pendingTurnRef.current = null;
+      return;
+    }
+
+    const pending = pendingTurnRef.current;
+    if (!pending) return;
+
+    const fire = () => {
+      const current = pendingTurnRef.current;
+      // Already completed normally, or superseded by a newer turn.
+      if (!current || current !== pending) return;
+      const g = gs.current;
+      // A newer transaction or a different phase means real progress.
+      if (g.txId !== pending.txId) {
+        pendingTurnRef.current = null;
+        return;
+      }
+      if (g.phase !== phase) {
+        pendingTurnRef.current = null;
+        return;
+      }
+      if (g.mode !== 'playing') {
+        pendingTurnRef.current = null;
+        return;
+      }
+
+      pendingTurnRef.current = null;
+      console.warn(
+        `[useGame] (P0) phase watchdog recovered a stuck "${phase}" turn for ${g.players[pending.player]?.name ?? 'player'}`,
+      );
+      pushLog('⏱️ Recovered a stalled turn — play continues.', 'event');
+
+      if (pending.kind === 'settle') {
+        dispatch({
+          type: 'SETTLE_COMPLETE',
+          txId: pending.txId,
+          expectedPhase: 'settling',
+          player: pending.player,
+          roll: pending.roll,
+        });
+        finishTurn(pending.player, pending.roll, pending.txId);
+        return;
+      }
+
+      if (pending.kind === 'lucky') {
+        const nextState = dispatch({
+          type: 'FINISH_LUCKY_SIX_WAIT',
+          txId: pending.txId,
+          expectedPhase: 'waiting',
+          player: pending.player,
+        });
+        const snap = recordStableSnapshot(nextState);
+        const { isOnline, isHost, onTurnSettled } = optionsRef.current;
+        if (isOnline && isHost) onTurnSettled?.(snap);
+        return;
+      }
+
+      const nextState = dispatch({
+        type: 'FINISH_PASS_WAIT',
+        txId: pending.txId,
+        expectedPhase: 'waiting',
+        player: pending.player,
+      });
+      const snap = recordStableSnapshot(nextState);
+      const { isOnline, isHost, onTurnSettled } = optionsRef.current;
+      if (isOnline && isHost) onTurnSettled?.(snap);
+    };
+
+    /* Never judge a hidden tab. Browsers clamp timers in background tabs, so
+     * both the real completion timer and this one would be deferred together
+     * and their relative order is not guaranteed. Suspend while hidden and
+     * re-check the moment the player comes back. */
+    if (typeof document !== 'undefined' && document.hidden) {
+      const onVisible = () => {
+        if (document.hidden) return;
+        // The elapsed time is what matters, not the timer: if the deadline has
+        // already passed, recover immediately.
+        if (performance.now() >= pending.dueAt) fire();
+      };
+      document.addEventListener('visibilitychange', onVisible);
+      return () => document.removeEventListener('visibilitychange', onVisible);
+    }
+
+    const remaining = Math.max(0, pending.dueAt - performance.now());
+    const id = window.setTimeout(fire, remaining);
+    return () => window.clearTimeout(id);
+  }, [
+    hud.phase,
+    hud.mode,
+    dispatch,
+    finishTurn,
+    pushLog,
+    recordStableSnapshot,
+  ]);
 
   const doRoll = useCallback(
     (isAI = false) => {
@@ -886,6 +1245,10 @@ export function useGame(options: UseGameOptions = {}) {
       if (isOnline && !isHost) {
         if (awaitingRemoteRollRef.current) return;
         setAwaitingRoll(true);
+        /* (P0) Arm the watchdog: if the host never answers - for any reason,
+         * including a lost ROLL_REJECTED - the latch releases itself instead of
+         * leaving the roll button permanently dead. */
+        armRollRequestWatchdog();
         onLocalRoll?.(0, currPlayer?.slotIndex ?? g.turn);
         return;
       }
@@ -920,7 +1283,7 @@ export function useGame(options: UseGameOptions = {}) {
         // Log the roll precisely when it lands!
         pushLog(
           `🎲 ${playerName(activeTurn)} rolled a ${v}`,
-          `p${activeTurn}` as any,
+          logKindFor(activeTurn),
         );
 
         resolveRoll(activeTurn, v, nextState.txId);
@@ -977,13 +1340,13 @@ export function useGame(options: UseGameOptions = {}) {
 
         pushLog(
           `🎲 ${playerName(activeTurn)} rolled a ${v}`,
-          `p${activeTurn}` as any,
+          logKindFor(activeTurn),
         );
 
         resolveRoll(activeTurn, v, nextState.txId);
       });
     },
-    [dispatch, playerName, pushLog, resolveRoll, scheduleGameTimer, setAwaitingRoll],
+    [dispatch, logKindFor, playerName, pushLog, resolveRoll, scheduleGameTimer, setAwaitingRoll],
   );
 
   /**
@@ -1048,6 +1411,7 @@ export function useGame(options: UseGameOptions = {}) {
     ) => {
       cancelObsoleteTimers();
       pendingCheckpoint.current = null;
+      pendingTurnRef.current = null;
       setAwaitingRoll(false);
 
       const nextState = dispatch({
@@ -1107,10 +1471,55 @@ export function useGame(options: UseGameOptions = {}) {
     if (isOnline && !isHost) return;
 
     const cfg = SPEEDS[hud.speed];
-    scheduleGameTimer('ai', cfg.aiDelayMs, 'idle', () => {
-      doRoll(true);
-    });
-  }, [hud.mode, hud.players, hud.turn, hud.phase, hud.speed, doRoll, isOnline, isHost, scheduleGameTimer]);
+
+    /* (P0) Do not arm the timer at all when `doRoll` would refuse.
+     *
+     * The effect used to arm unconditionally, so a CPU turn could be scheduled
+     * while the link was down or the match was paused. `doRoll` then bailed at
+     * its `isPaused` / `isOnlineMatch && !isOnline` guards, the timer was
+     * consumed, and - because nothing else in the dependency list changed - the
+     * bot's turn never resolved and the host's board froze until a manual
+     * restart.
+     *
+     * Gating the arm on the same conditions means the timer is only ever
+     * created for a roll that can actually happen, and the effect re-runs (both
+     * values are in the dep list) the moment the block clears. */
+    const { isOnlineMatch, isPaused, isOnline: onlineNow } = optionsRef.current;
+    if (isPaused) return;
+    if (isOnlineMatch && !onlineNow) return;
+
+    const arm = () => {
+      scheduleGameTimer('ai', cfg.aiDelayMs, 'idle', () => {
+        doRoll(true);
+        /* Last-resort self-heal: if `doRoll` refused for a reason this effect
+         * could not anticipate, the turn would otherwise stall forever with no
+         * dependency left to re-trigger us. */
+        scheduleUiTimer(0, () => {
+          const g = gs.current;
+          if (
+            g.mode === 'playing' &&
+            g.phase === 'idle' &&
+            !g.rolling &&
+            g.players[g.turn]?.isCpu
+          ) {
+            arm();
+          }
+        });
+      });
+    };
+    arm();
+  }, [
+    hud.mode,
+    hud.players,
+    hud.turn,
+    hud.phase,
+    hud.speed,
+    doRoll,
+    isOnline,
+    isHost,
+    scheduleGameTimer,
+    scheduleUiTimer,
+  ]);
 
   /* ---------- Keyboard Shortcuts ---------- */
 
@@ -1187,6 +1596,7 @@ export function useGame(options: UseGameOptions = {}) {
 
     let touchTimer = 0;
     let resizeRaf = 0;
+    let bakeRaf = 0;
 
     const resize = () => {
       const rect = wrap.getBoundingClientRect();
@@ -1203,14 +1613,35 @@ export function useGame(options: UseGameOptions = {}) {
       const sizeChanged = sizeRef.current !== size || canvas.width !== targetPx;
 
       sizeRef.current = size;
-      canvas.width = targetPx;
-      canvas.height = targetPx;
+      /* (P2) Assigning `canvas.width` reallocates and clears the backing store
+       * even when the value is identical, so only touch it when it really
+       * changed. The rAF loop reads `canvas.width` every frame; gratuitously
+       * resetting it to the same number is pure work. */
+      if (canvas.width !== targetPx) {
+        canvas.width = targetPx;
+        canvas.height = targetPx;
+      }
       canvas.style.width = `${size}px`;
       canvas.style.height = `${size}px`;
       ctxRef.current = canvas.getContext('2d');
 
       if (sizeChanged) {
-        renderBoardLayer();
+        /* (P2) Coalesce re-bakes to at most one per frame.
+         *
+         * Each bake allocates two full-size offscreen canvases - at the pixel
+         * budget that is ~16.8 MB each, ~33 MB per bake. The resize observer is
+         * rAF-driven, so dragging a window edge produced a new size nearly
+         * every frame and therefore ~2 GB/s of canvas backing-store churn:
+         * a stuttery, garbage-heavy resize that could drop frames on a phone.
+         *
+         * Debouncing to one bake per frame means the *final* size is baked once
+         * and the intermediate sizes are skipped entirely, which is all the
+         * eye can perceive anyway. */
+        if (bakeRaf) cancelAnimationFrame(bakeRaf);
+        bakeRaf = requestAnimationFrame(() => {
+          bakeRaf = 0;
+          renderBoardLayer();
+        });
       }
     };
 
@@ -1294,6 +1725,36 @@ export function useGame(options: UseGameOptions = {}) {
 
   /* ---------- Main Loop + Drawing ---------- */
 
+  /* (P2) Reusable per-square token occupancy, rebuilt only when a position
+   * actually changes. See `tokenPoint`. */
+  const occupancyCache = useRef<{
+    signature: string;
+    groups: Map<number, number[]>;
+  }>({ signature: '', groups: new Map() });
+
+  const occupancyFor = useCallback(
+    (playerCount: number, positions: number[]): Map<number, number[]> => {
+      let signature = String(playerCount);
+      for (let i = 0; i < playerCount; i++) signature += `:${positions[i] ?? -1}`;
+      if (occupancyCache.current.signature === signature) {
+        return occupancyCache.current.groups;
+      }
+      const groups = new Map<number, number[]>();
+      for (let i = 0; i < playerCount; i++) {
+        const sq = positions[i];
+        // Only positive squares matter: the start bay is laid out by
+        // `START_POS` and never stacks tokens.
+        if (!(sq > 0)) continue;
+        const bucket = groups.get(sq);
+        if (bucket) bucket.push(i);
+        else groups.set(sq, [i]);
+      }
+      occupancyCache.current = { signature, groups };
+      return groups;
+    },
+    [],
+  );
+
   const tokenPoint = useCallback(
     (p: number, now: number): { x: number; y: number; hopRatio: number } => {
       const g = gs.current;
@@ -1338,17 +1799,23 @@ export function useGame(options: UseGameOptions = {}) {
       }
 
       const n = g.pos[p];
-      if (n <= 0) return { x: dockPos.x, y: dockPos.y, hopRatio: 0 };
+      if (!(n > 0)) return { x: dockPos.x, y: dockPos.y, hopRatio: 0 };
 
       const c = squareCenter(n);
-      // Multi-token arrangement on the same square
-      const sharing: number[] = [];
-      for (let i = 0; i < g.players.length; i++) {
-        if (g.pos[i] === n) sharing.push(i);
-      }
-
-      const slotIdx = sharing.indexOf(p);
-      const offset = getTokenSlotOffset(slotIdx, sharing.length);
+      /* (P2) Share-group occupancy is recomputed once per frame into a reusable
+       * buffer instead of once per player per frame.
+       *
+       * The old code built a fresh `sharing` array for *each* of up to 4
+       * players on *each* of ~60 frames/s, and each build rescanned the whole
+       * roster - so ~240 short-lived arrays and ~960 comparisons per second,
+       * purely to answer "how many tokens are on my square and where am I in
+       * line". The grouping only depends on `pos`, which changes a few times
+       * per turn, so it is cached against the position signature. */
+      const occupancy = occupancyFor(g.players.length, g.pos);
+      const group = occupancy.get(n);
+      const total = group ? group.length : 1;
+      const slotIdx = group ? group.indexOf(p) : 0;
+      const offset = getTokenSlotOffset(slotIdx < 0 ? 0 : slotIdx, total);
 
       return { x: c.x + offset.x, y: c.y + offset.y, hopRatio: 0 };
     },
@@ -1381,9 +1848,13 @@ export function useGame(options: UseGameOptions = {}) {
       const bLayer = boardLayer.current;
       const nLayer = numberLayer.current;
       if (!canvas || !bLayer || canvas.width < 10) return;
-      const ctx = ctxRef.current || canvas.getContext('2d');
-      if (!ctx) return;
-      if (!ctxRef.current) ctxRef.current = ctx;
+      const maybeCtx = ctxRef.current || canvas.getContext('2d');
+      if (!maybeCtx) return;
+      if (!ctxRef.current) ctxRef.current = maybeCtx;
+      /* Bound to a non-null name so the hoisted `drawTokenPass` below keeps the
+       * narrowing - a `const ctx` declared with a nullable inferred type loses
+       * it inside a nested function declaration. */
+      const ctx: CanvasRenderingContext2D = maybeCtx;
       const g = gs.current;
       const w = canvas.width;
       const s = w / LOGICAL;
@@ -1428,7 +1899,9 @@ export function useGame(options: UseGameOptions = {}) {
       }
 
       const now = g.time * 1000;
-      const activePal = PLAYER_COLORS[g.players[g.turn]?.colorId ?? g.turn];
+      // (P2) Via `playerPalette` so an out-of-range colorId cannot throw inside
+      // the rAF loop and kill the render loop permanently.
+      const activePal = playerPalette(g.turn);
 
       // (C5 / E6) Frame-only ambience: drifting motes and a slow light sweep.
       // Both stay on the frame by construction, so gameplay legibility is
@@ -1469,7 +1942,7 @@ export function useGame(options: UseGameOptions = {}) {
         const n = g.pos[p];
         if (n > 0) {
           const c = squareCenter(n);
-          const pal = PLAYER_COLORS[g.players[p]?.colorId ?? p];
+          const pal = playerPalette(p);
           const pulse = 0.5 + 0.35 * Math.sin(g.time * 5);
           ctx.save();
           ctx.strokeStyle = pal.base;
@@ -1511,7 +1984,7 @@ export function useGame(options: UseGameOptions = {}) {
         let occupant: string | null = null;
         for (let i = 0; i < g.players.length; i++) {
           if (g.pos[i] === 100) {
-            occupant = PLAYER_COLORS[g.players[i]?.colorId ?? i].base;
+            occupant = playerPalette(i).base;
             break;
           }
         }
@@ -1536,12 +2009,50 @@ export function useGame(options: UseGameOptions = {}) {
         ctx.restore();
       }
 
-      // Draw tokens (inactive tokens first, active on top)
-      const order = Array.from({ length: g.players.length }, (_, i) => i).sort(
-        (a, b) => (a === g.turn ? 1 : 0) - (b === g.turn ? 1 : 0),
-      );
+      /* (P2) Draw tokens, inactive first so the active player is on top.
+       *
+       * This used to allocate an array from an iterator, plus a fresh closure
+       * comparator, plus the sort's own bookkeeping, on every frame - 60x per
+       * second for a 4-element ordering. At most one index is out of place, so
+       * walk the others forward and draw the active token last. Zero
+       * allocation, same result. */
+      const activeIdx = g.turn;
+      for (let p = 0; p < g.players.length; p++) {
+        if (p === activeIdx) continue;
+        drawTokenPass(p);
+      }
+      if (activeIdx >= 0 && activeIdx < g.players.length) {
+        drawTokenPass(activeIdx);
+      }
 
-      for (const p of order) {
+      drawParticles(ctx, g.particles);
+
+      // (E2) Screen-edge impact flash, drawn last so it veils the whole board.
+      // (J5) Skipped under reduced motion - it is a full-screen flash, and the
+      // shake + shockwave rings already carry the bite.
+      if (!reduced) {
+        drawImpactFlash(ctx, g.flash, g.flashColor);
+      }
+
+      // Draw floating reaction emotes
+      for (const em of g.emotes) {
+        const progress = em.life / em.maxLife;
+        const alpha = Math.min(1, progress * 2.2);
+        const popScale = progress > 0.8 ? 1 + (1 - progress) * 2 : 1;
+        ctx.save();
+        ctx.globalAlpha = alpha;
+        ctx.font = `${Math.round(36 * popScale)}px "Apple Color Emoji", "Segoe UI Emoji", "Noto Color Emoji", sans-serif`;
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.shadowColor = 'rgba(0, 0, 0, 0.6)';
+        ctx.shadowBlur = 10;
+        ctx.fillText(em.emoji, em.x, em.y);
+        ctx.restore();
+      }
+
+      /* Per-token draw pass. Declared as a hoisted function so both loops above
+       * can share it without allocating a closure per frame. */
+      function drawTokenPass(p: number) {
         const tp = tokenPoint(p, now);
         // (J5) The idle bob is a decorative float, so reduced motion holds the
         // token still. Hops and slides are untouched - they *are* the game.
@@ -1554,7 +2065,7 @@ export function useGame(options: UseGameOptions = {}) {
         const docked = g.pos[p] <= 0 && g.moving?.player !== p && g.sliding?.player !== p;
         const baseR = 22 * (docked ? 0.82 : 1);
         const r = baseR * (1 + 0.22 * tp.hopRatio);
-        const pal = PLAYER_COLORS[g.players[p]?.colorId ?? p];
+        const pal = playerPalette(p);
         const slotIndex = g.players[p]?.slotIndex ?? p;
         const isActive = p === g.turn && g.mode === 'playing';
 
@@ -1584,37 +2095,16 @@ export function useGame(options: UseGameOptions = {}) {
           castShadow: theme.board.snakeDropShadow,
         });
       }
-
-      drawParticles(ctx, g.particles);
-
-      // (E2) Screen-edge impact flash, drawn last so it veils the whole board.
-      // (J5) Skipped under reduced motion - it is a full-screen flash, and the
-      // shake + shockwave rings already carry the bite.
-      if (!reduced) {
-        drawImpactFlash(ctx, g.flash, g.flashColor);
-      }
-
-      // Draw floating reaction emotes
-      for (const em of g.emotes) {
-        const progress = em.life / em.maxLife;
-        const alpha = Math.min(1, progress * 2.2);
-        const popScale = progress > 0.8 ? 1 + (1 - progress) * 2 : 1;
-        ctx.save();
-        ctx.globalAlpha = alpha;
-        ctx.font = `${Math.round(36 * popScale)}px "Apple Color Emoji", "Segoe UI Emoji", "Noto Color Emoji", sans-serif`;
-        ctx.textAlign = 'center';
-        ctx.textBaseline = 'middle';
-        ctx.shadowColor = 'rgba(0, 0, 0, 0.6)';
-        ctx.shadowBlur = 10;
-        ctx.fillText(em.emoji, em.x, em.y);
-        ctx.restore();
-      }
     };
 
     const step = (now: number) => {
       const dt = Math.min(50, now - last);
       last = now;
       const g = gs.current;
+      /* (P0) `g` is a snapshot: any `dispatch` below replaces `gs.current` with
+         a fresh object and orphans it. Writes that must survive the frame
+         therefore have to go through `dispatch` (see SET_IMPACT) or re-read
+         `gs.current` after the dispatches. */
       g.time = now / 1000;
       const cfg = SPEEDS[g.speed];
 
@@ -1666,7 +2156,10 @@ export function useGame(options: UseGameOptions = {}) {
               spawnDust(g.particles, landing.x, landing.y, ui.particleDust);
             }
             if (roll === 6) {
-              g.extraTurn = 1;
+              /* (P0) Must go through `dispatch`, not `g.extraTurn = 1`. The
+                 `FINISH_MOVE` dispatch above replaced `gs.current` with a
+                 fresh object, so `g` is an orphan and the halo never drew. */
+              dispatch({ type: 'SET_IMPACT', extraTurn: 1 });
             }
 
             afterMove(movingPlayer, target, roll, txId);
@@ -1691,10 +2184,15 @@ export function useGame(options: UseGameOptions = {}) {
           });
           const ui = themeRef.current.ui;
           if (sl.kind === 'snake') {
-            // (E2) Screen-edge flash + shockwave rings at the landing square.
-            g.shake = 14;
-            g.flash = 1;
-            g.flashColor = 'rgba(239, 68, 68, 0.55)';
+            /* (P0) Same orphaned-state trap as the extra-turn halo above: the
+               `FINISH_SLIDE` dispatch replaced `gs.current`, so these three
+               writes used to be discarded and the shake / flash were dead. */
+            dispatch({
+              type: 'SET_IMPACT',
+              shake: 14,
+              flash: 1,
+              flashColor: 'rgba(239, 68, 68, 0.55)',
+            });
             sfx.hit();
             const c = squareCenter(sl.to);
             spawnDust(g.particles, c.x, c.y, ui.particleDust);
@@ -1760,14 +2258,19 @@ export function useGame(options: UseGameOptions = {}) {
         }
       }
 
-      g.shake *= Math.pow(0.88, dt / 16.7);
-      if (g.shake < 0.4) g.shake = 0;
+      // (P0) Re-read live state: a `dispatch` above may have replaced it, in
+      // which case decaying the orphaned snapshot would silently drop the
+      // decay and leave the effect pinned for a frame.
+      const live = gs.current;
+      live.time = now / 1000;
+      live.shake *= Math.pow(0.88, dt / 16.7);
+      if (live.shake < 0.4) live.shake = 0;
 
       // (E2 / E4) Impact flash and extra-turn halo decay like the shake does.
-      g.flash *= Math.pow(0.86, dt / 16.7);
-      if (g.flash < 0.01) g.flash = 0;
-      g.extraTurn *= Math.pow(0.9, dt / 16.7);
-      if (g.extraTurn < 0.01) g.extraTurn = 0;
+      live.flash *= Math.pow(0.86, dt / 16.7);
+      if (live.flash < 0.01) live.flash = 0;
+      live.extraTurn *= Math.pow(0.9, dt / 16.7);
+      if (live.extraTurn < 0.01) live.extraTurn = 0;
 
       draw();
 
@@ -1911,6 +2414,14 @@ export function useGame(options: UseGameOptions = {}) {
     cancelPending,
     showToast,
     getSnapshot,
+    /**
+     * (P0) Release the guest's "waiting for the host's roll" latch.
+     *
+     * Wired to the multiplayer layer's ROLL_REJECTED handler. Without this a
+     * host-side refusal left `awaitingRemoteRoll` stuck true, `canRoll` false,
+     * and the roll button permanently dead for the rest of the match.
+     */
+    releaseRollRequest: () => setAwaitingRoll(false),
   };
 }
 

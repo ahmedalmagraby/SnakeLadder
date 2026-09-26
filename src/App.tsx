@@ -1377,6 +1377,26 @@ export default function App() {
     getRollAuthority: () => {
       return gameRef.current?.getRollAuthority();
     },
+    /* (P0) The host refused our roll. Release the local latch so the roll
+     * button comes back instead of staying disabled for the rest of the match
+     * - previously every host-side rejection was a silent `return` and the
+     * guest waited forever. */
+    onRollRejected: (reason) => {
+      gameRef.current?.releaseRollRequest();
+      const label: Record<string, string> = {
+        'not-your-turn': 'It is not your turn yet.',
+        'not-awaiting-roll': 'The host is still animating the last turn.',
+        'already-rolled': 'That turn was already rolled.',
+        'stale-turn': 'The host moved on — syncing, try again.',
+        'rate-limited': 'Slow down a moment.',
+        'match-not-playing': 'The match is not running right now.',
+      };
+      gameRef.current?.showToast(
+        'ROLL DECLINED',
+        label[reason] ?? 'The host declined that roll.',
+        'info',
+      );
+    },
   });
 
   const game = useGame({

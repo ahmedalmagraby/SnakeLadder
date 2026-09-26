@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { PeerManager } from '../src/game/network/peerManager';
+import { PROTOCOL_VERSION } from '../src/game/network/types';
 import type {
   Packet,
   GameStateSnapshot,
@@ -174,6 +175,7 @@ describe('Two-Client End-to-End Integration (Host & Guest)', () => {
             stateVersion,
             turnId: 1,
             maxPlayers: 4,
+            v: PROTOCOL_VERSION,
           });
 
           hostPm.broadcast({
@@ -212,6 +214,7 @@ describe('Two-Client End-to-End Integration (Host & Guest)', () => {
               stateVersion,
               turnId: 1,
               maxPlayers: 4,
+              v: PROTOCOL_VERSION,
             });
 
             hostPm.broadcast({
@@ -296,11 +299,21 @@ describe('Two-Client End-to-End Integration (Host & Guest)', () => {
         case 'GAME_START':
           guestGameStarted = true;
           break;
-        case 'ROLL_ANNOUNCED':
+        case 'ROLL_RESULT':
           guestReceivedRoll = packet.roll;
           break;
-        case 'GAME_CHECKPOINT':
-          guestReceivedCheckpoint = packet.snapshot;
+        case 'SYNC_CHECKPOINT':
+          guestReceivedCheckpoint = {
+            mode: packet.mode,
+            pos: packet.pos,
+            turn: packet.turn,
+            phase: packet.phase,
+            rolls: packet.rolls,
+            laddersHit: packet.laddersHit,
+            snakesHit: packet.snakesHit,
+            sixesHit: packet.sixesHit,
+            winner: packet.winner,
+          };
           break;
         case 'EMOTE':
           guestReceivedEmote = packet.emoji;
@@ -326,20 +339,28 @@ describe('Two-Client End-to-End Integration (Host & Guest)', () => {
       speed: 'normal',
       winRule: 'exact',
       stateVersion,
+      turnId: 1,
     });
 
     await new Promise((res) => setTimeout(res, 20));
     expect(hostGameStarted).toBe(true);
     expect(guestGameStarted).toBe(true);
 
-    // 4. Host rolls dice and broadcasts roll
+    // 4. Host rolls dice and broadcasts the authoritative roll.
+    // NOTE: this used to send fictional `ROLL_ANNOUNCED` / `GAME_CHECKPOINT`
+    // packets that do not exist in the protocol. The guest applied whatever it
+    // received without validating, so the test passed while proving nothing
+    // about the real wire format. Real packet types are used now that the guest
+    // validates inbound host traffic.
     const hostRollAnnounced = 5;
     stateVersion += 1;
     hostPm.broadcast({
-      type: 'ROLL_ANNOUNCED',
+      type: 'ROLL_RESULT',
       player: 0,
       roll: hostRollAnnounced,
+      turnId: 1,
       stateVersion,
+      timestamp: Date.now(),
     });
 
     await new Promise((res) => setTimeout(res, 20));
@@ -360,8 +381,16 @@ describe('Two-Client End-to-End Integration (Host & Guest)', () => {
     };
     stateVersion += 1;
     hostPm.broadcast({
-      type: 'GAME_CHECKPOINT',
-      snapshot: snap,
+      type: 'SYNC_CHECKPOINT',
+      mode: snap.mode,
+      pos: snap.pos,
+      turn: snap.turn,
+      phase: snap.phase,
+      rolls: snap.rolls,
+      laddersHit: snap.laddersHit,
+      snakesHit: snap.snakesHit,
+      sixesHit: snap.sixesHit,
+      winner: snap.winner,
       stateVersion,
       turnId: 1,
     });

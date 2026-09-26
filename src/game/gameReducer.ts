@@ -44,33 +44,83 @@ export function getPlayerBySlot(slotIndex: number, players: PlayerConfig[]): Pla
   return players.find((p) => p.slotIndex === slotIndex);
 }
 
+/** The hard ceiling on roster size. Also bounds every palette index. */
+export const MAX_ROSTER_SIZE = 4;
+
 /**
- * Validate that roster slots are unique and within range [0, maxPlayers - 1].
+ * (P2) Normalise a per-player counter array to exactly `len` entries.
+ *
+ * A checkpoint's stat arrays may legitimately be shorter than the roster (a
+ * player who just joined has no stats yet), but every array the HUD and the
+ * board index must be roster-length or those reads produce `undefined`.
+ */
+function padTo(arr: number[], len: number): number[] {
+  const out = new Array<number>(len).fill(0);
+  for (let i = 0; i < Math.min(arr.length, len); i++) {
+    const v = arr[i];
+    out[i] = typeof v === 'number' && Number.isFinite(v) ? v : 0;
+  }
+  return out;
+}
+
+/**
+ * Validate that roster slots are unique and within range [0, maxPlayers - 1],
+ * and that each entry's own fields are usable.
+ *
+ * (P2) This used to check slot uniqueness only, and `maxPlayers` defaulted to
+ * 4. Two consequences:
+ *  - a caller passing a larger `maxPlayers` silently lifted the 4-player
+ *    invariant that `START_POS`, the palette and the log-dot map all assume;
+ *  - `colorId` and `name` were never validated here, so a roster arriving from
+ *    a peer or a restored session could carry a `colorId` of 99 straight into
+ *    the render loop.
+ *
+ * `maxPlayers` is now clamped to `MAX_ROSTER_SIZE` and each player is checked.
  */
 export function validateRoster(
   players: PlayerConfig[],
-  maxPlayers = 4,
+  maxPlayers = MAX_ROSTER_SIZE,
   minPlayers = 2,
 ): { valid: boolean; error?: string } {
+  // Clamp: a caller cannot opt out of the hard 4-player ceiling.
+  const cap = Math.min(maxPlayers, MAX_ROSTER_SIZE);
   if (!Array.isArray(players) || players.length < minPlayers) {
     return { valid: false, error: `Roster must contain at least ${minPlayers} players` };
   }
-  if (players.length > maxPlayers) {
-    return { valid: false, error: `Roster exceeds maxPlayers (${maxPlayers})` };
+  if (players.length > cap) {
+    return { valid: false, error: `Roster exceeds maxPlayers (${cap})` };
   }
   const seenSlots = new Set<number>();
   for (let i = 0; i < players.length; i++) {
     const p = players[i];
+    if (!p || typeof p !== 'object') {
+      return { valid: false, error: `Player at index ${i} is not an object` };
+    }
     if (typeof p.slotIndex !== 'number' || !Number.isInteger(p.slotIndex)) {
       return { valid: false, error: `Player at index ${i} has invalid slotIndex` };
     }
-    if (p.slotIndex < 0 || p.slotIndex >= maxPlayers) {
-      return { valid: false, error: `Player slotIndex ${p.slotIndex} out of range [0, ${maxPlayers - 1}]` };
+    if (p.slotIndex < 0 || p.slotIndex >= cap) {
+      return { valid: false, error: `Player slotIndex ${p.slotIndex} out of range [0, ${cap - 1}]` };
     }
     if (seenSlots.has(p.slotIndex)) {
       return { valid: false, error: `Duplicate slotIndex ${p.slotIndex} in roster` };
     }
     seenSlots.add(p.slotIndex);
+    // (P2) Bounds the palette index, which the draw loop dereferences directly.
+    if (
+      typeof p.colorId !== 'number' ||
+      !Number.isInteger(p.colorId) ||
+      p.colorId < 0 ||
+      p.colorId >= cap
+    ) {
+      return { valid: false, error: `Player at index ${i} has invalid colorId` };
+    }
+    if (typeof p.name !== 'string' || p.name.length === 0) {
+      return { valid: false, error: `Player at index ${i} has an invalid name` };
+    }
+    if (typeof p.isCpu !== 'boolean') {
+      return { valid: false, error: `Player at index ${i} has an invalid isCpu flag` };
+    }
   }
   return { valid: true };
 }
@@ -278,6 +328,24 @@ export type GameAction =
       to: number;
     }
   | {
+      /**
+       * (P0 fix) Set the one-shot impact transients: the bite camera shake,
+       * the screen-edge flash and the lucky-six extra-turn halo.
+       *
+       * These used to be assigned directly onto a `gs.current` reference that
+       * had *already* been replaced by the reducer moments earlier in the same
+       * rAF frame (`FINISH_MOVE` / `FINISH_SLIDE` both return a fresh object),
+       * so the writes landed on an orphaned snapshot and the three effects were
+       * never visible. Routing them through the reducer keeps every state
+       * mutation in one place and makes them unit-testable.
+       */
+      type: 'SET_IMPACT';
+      shake?: number;
+      flash?: number;
+      flashColor?: string;
+      extraTurn?: number;
+    }
+  | {
       type: 'START_SETTLING';
       txId: number;
       player: number;
@@ -419,8 +487,23 @@ export function gameReducer(state: GameState, action: GameAction): GameState {
       const nextRolls = [...state.rolls];
       nextRolls[player] = (nextRolls[player] || 0) + 1;
 
-      const projectedTarget =
-        state.pos[player] + roll <= 100 ? state.pos[player] + roll : undefined;
+      /* (P2) Projected landing square for the board's highlight.
+       *
+       * This only ever computed the *exact* rule, so in a bounce match an
+       * overshooting roll produced `undefined` and the highlight was silently
+       * suppressed - the preview was wrong by omission for the entire bounce
+       * rule set, even though the token does move (to `100 - overshoot`).
+       *
+       * Under the bounce rule the token always lands somewhere, so project it.
+       * Under the exact rule an overshoot really is "you do not move", and
+       * showing no target is the honest answer. */
+      const raw = state.pos[player] + roll;
+      let projectedTarget: number | undefined;
+      if (raw <= 100) {
+        projectedTarget = raw;
+      } else if (state.winRule === 'bounce') {
+        projectedTarget = 100 - (raw - 100);
+      }
 
       return {
         ...state,
@@ -513,6 +596,16 @@ export function gameReducer(state: GameState, action: GameAction): GameState {
         ...state,
         sliding: null,
         pos: nextPos,
+      };
+    }
+
+    case 'SET_IMPACT': {
+      return {
+        ...state,
+        shake: action.shake ?? state.shake,
+        flash: action.flash ?? state.flash,
+        flashColor: action.flashColor ?? state.flashColor,
+        extraTurn: action.extraTurn ?? state.extraTurn,
       };
     }
 
@@ -619,6 +712,43 @@ export function gameReducer(state: GameState, action: GameAction): GameState {
     case 'APPLY_CHECKPOINT': {
       const cp = action.checkpoint;
 
+      /* 0. (P0 FIX) Normalise, do not discard, a checkpoint whose per-player
+       * arrays do not line up with the local roster.
+       *
+       * `pos`, `rolls`, `laddersHit`, `snakesHit` and `sixesHit` were copied
+       * straight from the wire with no length check. A short `pos` makes
+       * `g.pos[p]` `undefined`; `undefined <= 0` is `false`, so the token
+       * point path falls through to `squareCenter(undefined)` and every
+       * coordinate becomes NaN - the token silently stops drawing and the
+       * multi-token `sharing` list is poisoned, with no error anywhere.
+       *
+       * My first attempt returned the state unchanged whenever the widths
+       * disagreed. That fixed the NaN but introduced a worse bug: a guest
+       * whose roster briefly differs from the host's (a player joining, a CPU
+       * being removed) would silently drop every checkpoint, so its board would
+       * freeze while the host's marched on. A desync is worse than a clamped
+       * number.
+       *
+       * So only genuinely unusable input is fatal - a missing array, or values
+       * outside the legal range. Width mismatches are *repaired* to the local
+       * roster length, and `turn` is clamped rather than rejected. The next
+       * checkpoint (and the roster that comes with it) converges everything.
+       */
+      const n = state.players.length;
+      if (!Array.isArray(cp.pos) || cp.pos.length === 0) {
+        return state;
+      }
+      if (!cp.pos.every((x) => Number.isInteger(x) && x >= 0 && x <= 100)) {
+        return state;
+      }
+      for (const arr of [cp.rolls, cp.laddersHit, cp.snakesHit, cp.sixesHit]) {
+        if (!Array.isArray(arr) || arr.length === 0) return state;
+        if (!arr.every((x) => Number.isInteger(x) && x >= 0)) return state;
+      }
+      if (!Number.isInteger(cp.turn) || cp.turn < 0) {
+        return state;
+      }
+
       // 1. Reject duplicate or out-of-order state versions
       if (
         cp.stateVersion !== undefined &&
@@ -643,12 +773,12 @@ export function gameReducer(state: GameState, action: GameAction): GameState {
           mode: 'over',
           phase: 'over',
           winner: cp.winner,
-          pos: [...cp.pos],
-          turn: cp.turn,
-          rolls: [...cp.rolls],
-          laddersHit: [...cp.laddersHit],
-          snakesHit: [...cp.snakesHit],
-          sixesHit: [...cp.sixesHit],
+          pos: padTo(cp.pos, n),
+          turn: Math.min(cp.turn, n - 1),
+          rolls: padTo(cp.rolls, n),
+          laddersHit: padTo(cp.laddersHit, n),
+          snakesHit: padTo(cp.snakesHit, n),
+          sixesHit: padTo(cp.sixesHit, n),
           stateVersion: cp.stateVersion ?? state.stateVersion + 1,
           // Requirement 8: Clear rolling/moving/sliding state when applying a terminal checkpoint
           rolling: false,
@@ -674,12 +804,12 @@ export function gameReducer(state: GameState, action: GameAction): GameState {
         txId: state.txId + 1,
         mode: targetMode,
         phase: targetPhase,
-        pos: [...cp.pos],
-        turn: cp.turn,
-        rolls: [...cp.rolls],
-        laddersHit: [...cp.laddersHit],
-        snakesHit: [...cp.snakesHit],
-        sixesHit: [...cp.sixesHit],
+        pos: padTo(cp.pos, n),
+        turn: Math.min(cp.turn, n - 1),
+        rolls: padTo(cp.rolls, n),
+        laddersHit: padTo(cp.laddersHit, n),
+        snakesHit: padTo(cp.snakesHit, n),
+        sixesHit: padTo(cp.sixesHit, n),
         winner: cp.winner,
         stateVersion: cp.stateVersion ?? state.stateVersion + 1,
         rolling: false,
@@ -711,17 +841,32 @@ export function gameReducer(state: GameState, action: GameAction): GameState {
         // Requirement 9: Reconnect only from stable idle/over states
         const resolvedPhase: Phase = isTerminal ? 'over' : 'idle';
 
+        /* (P0) Same rule as APPLY_CHECKPOINT: repair widths rather than
+         * discarding the resume. Refusing here left a rejoining guest on a
+         * stale board whenever the host's roster no longer matched the stored
+         * one, which is exactly the case a reconnect exists to recover from. */
+        const n = players.length;
+        if (!Array.isArray(cp.pos) || cp.pos.length === 0) {
+          return state;
+        }
+        if (!cp.pos.every((x) => Number.isInteger(x) && x >= 0 && x <= 100)) {
+          return state;
+        }
+        if (!Number.isInteger(cp.turn) || cp.turn < 0) {
+          return state;
+        }
+
         return {
           ...state,
           mode: resolvedMode,
           phase: resolvedPhase,
           players,
-          turn: cp.turn,
-          pos: [...cp.pos],
-          rolls: [...cp.rolls],
-          laddersHit: [...cp.laddersHit],
-          snakesHit: [...cp.snakesHit],
-          sixesHit: [...cp.sixesHit],
+          turn: Math.min(cp.turn, n - 1),
+          pos: padTo(cp.pos, n),
+          rolls: padTo(cp.rolls, n),
+          laddersHit: padTo(cp.laddersHit, n),
+          snakesHit: padTo(cp.snakesHit, n),
+          sixesHit: padTo(cp.sixesHit, n),
           winner: cp.winner,
           speed,
           winRule,

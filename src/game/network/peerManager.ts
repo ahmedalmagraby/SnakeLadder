@@ -1,19 +1,47 @@
 import Peer, { type DataConnection } from 'peerjs';
 import type { AdmissionState, ConnectionStatus, Packet } from './types';
+import { PROTOCOL_VERSION } from './types';
 import {
   isGuestAllowedPacket,
+  isHostAllowedPacket,
   validatePacket,
 } from './validation';
 
 const PEER_PREFIX = 'snkladr-';
 const PENDING_TIMEOUT_MS = 10000; // 10s to authenticate/join before disconnection
+const PING_INTERVAL_MS = 3000;
+/* (P1) Wall-clock heartbeat deadline. Must be >= 3x PING_INTERVAL_MS so a couple
+ * of dropped pings are survivable, and it is only enforced while the tab is
+ * visible - see `startPingMonitor`. */
+const HEARTBEAT_DEADLINE_MS = 9000;
 
-/* Generate clean 6-character room code */
+/* Generate clean 6-character room code.
+ *
+ * (P1) Uses a CSPRNG. This used to be `Math.random()`, which is neither
+ * unpredictable nor uniformly distributed. The room code is also the PeerJS peer
+ * id (`snkladr-<code>`) on a *public* broker, so it is the sole addressing
+ * mechanism for the room: a predictable generator lets anyone who has seen a
+ * few codes enumerate or pre-squat the rest of the 32^6 space, and
+ * `Math.floor(Math.random() * 32)` is measurably biased on top of that.
+ *
+ * `crypto.getRandomValues` is available in every browser context this app runs
+ * in (including plain-http LAN origins), so the fallback exists only for
+ * non-browser/test environments and is deliberately noisy rather than quiet. */
 export function generateRoomCode(): string {
   const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+  const len = chars.length;
+  const out = new Uint8Array(6);
+  const cryptoObj = typeof globalThis !== 'undefined' ? globalThis.crypto : undefined;
+
+  if (cryptoObj && typeof cryptoObj.getRandomValues === 'function') {
+    cryptoObj.getRandomValues(out);
+  } else {
+    for (let i = 0; i < out.length; i++) out[i] = Math.floor(Math.random() * 256);
+  }
+
   let code = '';
   for (let i = 0; i < 6; i++) {
-    code += chars.charAt(Math.floor(Math.random() * chars.length));
+    code += chars[out[i] % len];
   }
   return code;
 }
@@ -339,6 +367,7 @@ export class PeerManager {
               roomCode: this.roomCode,
               slotIndex: reconnectSlotIndex,
               reconnectToken,
+              v: PROTOCOL_VERSION,
             } as Packet);
           } else {
             conn.send({
@@ -347,6 +376,7 @@ export class PeerManager {
               roomCode: this.roomCode,
               name: this.myPlayerName,
               colorId: this.myColorId,
+              v: PROTOCOL_VERSION,
             } as Packet);
           }
           this.startPingMonitor();
@@ -354,7 +384,60 @@ export class PeerManager {
 
         conn.on('data', (raw: any) => {
           if (this.currentGeneration !== gen) return;
-          this.handlePacket(raw, hostPeerId);
+          /* (P1) The guest validates what it receives.
+           *
+           * This handler used to forward the raw frame straight into the
+           * protocol layer, so *none* of the size, shape, enum or
+           * prototype-pollution guards applied to a guest: a hostile host (or
+           * anything that got itself onto the room's peer id) could push a
+           * multi-megabyte JSON blob, a 64 KB player name or a NaN-filled
+           * checkpoint into React state and the canvas renderer.
+           *
+           * (P0 FIX) Structural rejection is fatal, but a malformed *advisory*
+           * snapshot is not.
+           *
+           * The first version of this failed the whole packet on any
+           * validation error, which meant a single bad `gameState` field in a
+           * JOIN_ACCEPTED tore down the connection and left the guest staring
+           * at "Host sent an invalid packet: Invalid gameState snapshot" with
+           * no way to join. That is the wrong trade: `gameState` is only a
+           * convenience so a mid-match joiner can skip a few seconds of play -
+           * the authoritative board arrives on the next `SYNC_CHECKPOINT`
+           * regardless. So the snapshot is validated separately and, if it is
+           * bad, dropped while the rest of the packet is honoured. The guest
+           * joins, and resyncs one checkpoint later.
+           *
+           * Everything else (size cap, prototype pollution, enums, ranges on
+           * fields the engine dereferences) is still fail-closed.
+           */
+          const val = validatePacket(raw, { lenientGameState: true });
+          const droppedGameState = val.droppedGameStateField;
+          if (!val.valid || !val.packet) {
+            const reason = `Host sent an invalid packet: ${val.error}`;
+            this.emitStatus('error', reason);
+            this.abortPendingJoin(reason);
+            this.cleanup();
+            return;
+          }
+          if (!isHostAllowedPacket(val.packet.type)) {
+            // A host has no business sending client-shaped packets.
+            const reason = `Host sent a forbidden packet: ${val.packet.type}`;
+            this.emitStatus('error', reason);
+            this.abortPendingJoin(reason);
+            this.cleanup();
+            return;
+          }
+
+          // The advisory snapshot was dropped by the validator; warn loudly
+          // with the offending field, then carry on without it.
+          if (droppedGameState) {
+            console.warn(
+              `[PeerManager] Host sent an unusable gameState snapshot (bad field: ${droppedGameState}); ` +
+                'joining without it - the board will resync on the next checkpoint.',
+            );
+          }
+
+          this.handlePacket(val.packet, hostPeerId);
         });
 
         conn.on('close', () => {
@@ -410,6 +493,35 @@ export class PeerManager {
     });
   }
 
+  /* ---------- Teardown ---------- */
+
+  /**
+   * (P1) Abort a pending `joinRoom` without tearing down the live transport.
+   *
+   * The guest's inbound path calls `cleanup()` when the host sends something
+   * malformed, and `cleanup()` rejects `pendingJoinReject` if one is still
+   * registered. When a player is auto-rejoining, `pendingJoinReject` is still
+   * set while the host's accept is in flight, so a bad frame produced an
+   * *unhandled* promise rejection in the reconnect helper - a crash-level event
+   * in a browser and a spurious test failure, with the actual cause (the bad
+   * packet) buried in it.
+   *
+   * This clears the pending-join state without closing sockets or bumping the
+   * generation, so the caller can report the real problem.
+   */
+  private abortPendingJoin(reason: string) {
+    if (this.pendingJoinTimer) {
+      clearTimeout(this.pendingJoinTimer);
+      this.pendingJoinTimer = null;
+    }
+    if (this.pendingJoinReject) {
+      const rej = this.pendingJoinReject;
+      this.pendingJoinResolve = null;
+      this.pendingJoinReject = null;
+      rej(new Error(reason));
+    }
+  }
+
   /* ---------- Incoming Connection Handlers ---------- */
 
   private handleIncomingConnection(conn: DataConnection) {
@@ -443,6 +555,28 @@ export class PeerManager {
       lastHeartbeat: Date.now(),
       pendingTimer: timer,
     };
+
+    /* (P1) A reconnect legitimately reuses the peer id of the socket it is
+       replacing. Previously `Map.set` silently orphaned the previous entry:
+       its 10s admission timer kept running, its DataChannel was never closed,
+       and `closeConnection(peerId)` could only ever reach the new entry - so
+       the old socket stayed half-open for the life of the room. Retire the
+       outgoing entry explicitly first. The late `close` event it fires is
+       ignored by the generation check below, because `emitPacket` looks the
+       peer id up in the map and now finds the *new* connection. */
+    const previous = this.connections.get(peerId);
+    if (previous && previous.conn !== conn) {
+      this.connections.delete(peerId);
+      if (previous.pendingTimer) {
+        clearTimeout(previous.pendingTimer);
+        previous.pendingTimer = null;
+      }
+      try {
+        previous.conn.close();
+      } catch {
+        // Already gone; nothing to clean up.
+      }
+    }
 
     this.connections.set(peerId, managedConn);
 
@@ -616,7 +750,23 @@ export class PeerManager {
         }
       });
     } else if (this.hostConn && this.hostConn.open) {
-      this.hostConn.send(packet);
+      /* (P1) The guest branch was unguarded while the host branch was wrapped in
+       * try/catch. A DataChannel whose `.open` still reads true while it is
+       * `closing` throws `InvalidStateError` from `send()`, and that escaped
+       * straight through `broadcastCheckpoint` / `broadcastRoll` / `startGame`
+       * into React with no crash boundary. Treat a failed host send the same as
+       * a failed guest send: report it and let the normal disconnect path run. */
+      try {
+        this.hostConn.send(packet);
+      } catch {
+        this.emitStatus('error', 'Lost connection to host while sending');
+        try {
+          this.hostConn.close();
+        } catch {
+          // Already gone.
+        }
+        this.hostConn = null;
+      }
     }
   }
 
@@ -634,11 +784,38 @@ export class PeerManager {
         }
       }
     } else if (this.hostConn && this.hostConn.open) {
-      this.hostConn.send(packet);
+      // (P1) Same missing guard as `broadcast` - see the note there.
+      try {
+        this.hostConn.send(packet);
+      } catch {
+        this.emitStatus('error', 'Lost connection to host while sending');
+        try {
+          this.hostConn.close();
+        } catch {
+          // Already gone.
+        }
+        this.hostConn = null;
+      }
     }
   }
 
-  /* Ping latency monitor */
+  /* Ping latency monitor
+   *
+   * (P1) Timer-throttling safe.
+   *
+   * This used to be a bare 3s `setInterval` with a hard 9s deadline, which is
+   * only correct while the tab is foregrounded. Browsers clamp timers in
+   * background tabs (Chrome: >=1s normally, >=1min under intensive throttling),
+   * so a player who switched tabs would come back to find themselves falsely
+   * ejected by the host, or - worse - a guest that had *also* been throttled
+   * falsely declaring the host dead and tearing the connection down.
+   *
+   * Two changes:
+   *  1. The deadline is only evaluated when the page is actually visible, so a
+   *     throttled tab can never accumulate a false timeout.
+   *  2. The deadline is anchored to wall-clock time, so it still means "9 real
+   *     seconds" regardless of how many times the interval actually fired.
+   */
   private startPingMonitor() {
     if (this.pingInterval) clearInterval(this.pingInterval);
     const gen = this.currentGeneration;
@@ -648,12 +825,25 @@ export class PeerManager {
       if (this.currentGeneration !== gen) return;
       const now = Date.now();
 
+      /* (P1) While the tab is hidden the browser may not have fired this
+       * interval for minutes. Declaring anybody dead on that basis is wrong, so
+       * suspend the deadline and just re-anchor the clocks on return. */
+      if (typeof document !== 'undefined' && document.hidden) {
+        this.lastHostHeartbeat = now;
+        this.connections.forEach((mc) => {
+          mc.lastHeartbeat = now;
+        });
+        return;
+      }
+
       if (this.isHost) {
+        // Collect first: `closeConnection` mutates the map we would otherwise
+        // be iterating, and emitting a packet fans out over that same map.
+        const dead: string[] = [];
         this.connections.forEach((mc) => {
           if (mc.conn.open && mc.admissionState === 'joined') {
-            // Heartbeat deadline check: 9 seconds (3 missed pings)
-            if (now - mc.lastHeartbeat >= 9000) {
-              this.closeConnection(mc.peerId, 'Heartbeat deadline exceeded (missed responses)');
+            if (now - mc.lastHeartbeat >= HEARTBEAT_DEADLINE_MS) {
+              dead.push(mc.peerId);
               return;
             }
             try {
@@ -663,9 +853,9 @@ export class PeerManager {
             }
           }
         });
+        dead.forEach((id) => this.closeConnection(id, 'Heartbeat deadline exceeded (missed responses)'));
       } else if (this.hostConn && this.hostConn.open) {
-        // Heartbeat deadline check for guest: 9 seconds from host
-        if (this.lastHostHeartbeat > 0 && now - this.lastHostHeartbeat >= 9000) {
+        if (this.lastHostHeartbeat > 0 && now - this.lastHostHeartbeat >= HEARTBEAT_DEADLINE_MS) {
           console.warn('[PeerManager] Host heartbeat deadline exceeded (missed responses)');
           this.emitStatus('disconnected', 'Host heartbeat timed out');
           try {
@@ -682,7 +872,7 @@ export class PeerManager {
           // Socket send error
         }
       }
-    }, 3000);
+    }, PING_INTERVAL_MS);
   }
 
   /* Getters */
@@ -715,16 +905,39 @@ export class PeerManager {
       clearInterval(this.pingInterval);
       this.pingInterval = null;
     }
-    this.connections.forEach((mc) => {
-      if (mc.pendingTimer) clearTimeout(mc.pendingTimer);
+
+    /* (P1) Tear down *before* clearing the host flag.
+     *
+     * `conn.close()` fires the `close` handler synchronously, which calls
+     * `closeConnection` -> `connections.delete()` (mutating the map we are
+     * iterating) -> `emitPacket(PLAYER_DISCONNECTED)`. Because `isHost` was
+     * still `true` at that moment, the host emitted a PLAYER_DISCONNECTED for
+     * every single joined guest, each of which was fanned out over the same
+     * half-destroyed roster and drove a `commitPlayers` + two broadcasts +
+     * `saveSession` in the host's packet handler. Leaving a room produced a
+     * burst of bogus "player left" churn from a roster that no longer existed.
+     *
+     * Clearing `isHost` first means those synthetic closes resolve to
+     * "not a host" and emit nothing. The map is also snapshotted and emptied up
+     * front so nothing can re-enter it mid-iteration. */
+    this.isHost = false;
+
+    const doomed = Array.from(this.connections.values());
+    this.connections.clear();
+    this.slotOwners.clear();
+
+    for (const mc of doomed) {
+      if (mc.pendingTimer) {
+        clearTimeout(mc.pendingTimer);
+        mc.pendingTimer = null;
+      }
       try {
         mc.conn.close();
       } catch {
         // Ignore
       }
-    });
-    this.connections.clear();
-    this.slotOwners.clear();
+    }
+
     if (this.hostConn) {
       try {
         this.hostConn.close();
@@ -741,7 +954,6 @@ export class PeerManager {
       }
       this.peer = null;
     }
-    this.isHost = false;
     this.roomCode = '';
     this.currentPing = 0;
     this.lastHostHeartbeat = 0;

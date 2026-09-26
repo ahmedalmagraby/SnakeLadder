@@ -17,6 +17,7 @@ import {
   getSavedSession,
   saveSession,
 } from '../src/game/network/sessionStorage';
+import { PROTOCOL_VERSION } from '../src/game/network/types';
 import type { NetworkPlayer, Packet } from '../src/game/network/types';
 
 /* ------------------------------------------------------------------ */
@@ -545,14 +546,14 @@ describe('Regression 3: disconnected players are reserved, never AI-controlled',
   });
 
   it('propagates the correction to every other client in the room', async () => {
-    const stub = new HostStub('snkladr-observe');
-    peerRegistry.set('snkladr-observe', stub);
+    const stub = new HostStub('snkladr-obsrv1');
+    peerRegistry.set('snkladr-obsrv1', stub);
 
     const observerHook = renderHook(() => useMultiplayer());
 
     let joinPromise: Promise<void>;
     await act(async () => {
-      joinPromise = observerHook.result.current.joinRoom('OBSERVE', 'Observer', 2);
+      joinPromise = observerHook.result.current.joinRoom('OBSRV1', 'Observer', 2);
       await flush();
     });
 
@@ -563,7 +564,7 @@ describe('Regression 3: disconnected players are reserved, never AI-controlled',
         requestId: 'req_obs',
         slotIndex: 2,
         reconnectToken: 'secret_token_slot_2',
-        roomCode: 'OBSERVE',
+        roomCode: 'OBSRV1',
         speed: 'normal',
         winRule: 'exact',
         players: [
@@ -592,6 +593,7 @@ describe('Regression 3: disconnected players are reserved, never AI-controlled',
         stateVersion: 5,
         turnId: 1,
         maxPlayers: 4,
+        v: PROTOCOL_VERSION,
       });
       await flush();
     });
@@ -860,6 +862,7 @@ describe('Regression 4: a new match re-arms the room session', () => {
         stateVersion: 2,
         turnId: 1,
         maxPlayers: 4,
+        v: PROTOCOL_VERSION,
         gameState: {
           mode: 'playing',
           pos: [10, 10],
@@ -1056,6 +1059,7 @@ describe('Regression 6: guest rejoin respects lobby vs live match', () => {
         stateVersion: 3,
         turnId: 1,
         maxPlayers: 4,
+        v: PROTOCOL_VERSION,
         gameState: {
           mode: 'idle',
           pos: [0, 0],

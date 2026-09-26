@@ -1,0 +1,20 @@
+{
+  "name": "Snake & Ladder",
+  "short_name": "Snake&Ladder",
+  "description": "Race to square 100. Animated 3D dice, five board themes, and real cross-device online multiplayer.",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#06120d",
+  "theme_color": "#06120d",
+  "categories": ["games", "entertainment"],
+  "icons": [
+    {
+      "src": "./favicon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    }
+  ]
+}

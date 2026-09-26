@@ -6,10 +6,52 @@
     <meta name="theme-color" content="#06120d" />
     <!-- Fonts are self-hosted (src/assets/fonts) and inlined by viteSingleFile,
          so there is no external network request before first paint. -->
-    <title>Snake &amp; Ladder — Jungle Chase</title>
+    <title>Snake &amp; Ladder — Race to Square 100</title>
+
+    <!-- (P3) Description + social preview. Without these, every share renders
+         as a blank card with just the URL, which is the main growth surface
+         for a game people invite each other into. -->
+    <meta
+      name="description"
+      content="A modern Snake &amp; Ladder board game with animated 3D dice, five board themes and real cross-device online multiplayer. Play solo against AI, pass &amp; play, or host a room and share the code."
+    />
+    <meta name="author" content="Snake &amp; Ladder" />
+    <meta name="color-scheme" content="dark" />
+    <meta name="theme-color" content="#06120d" media="(prefers-color-scheme: dark)" />
+    <meta name="theme-color" content="#d1fae5" media="(prefers-color-scheme: light)" />
+
+    <meta property="og:type" content="website" />
+    <meta property="og:title" content="Snake &amp; Ladder — Race to Square 100" />
+    <meta
+      property="og:description"
+      content="Animated 3D dice, five board themes, and real cross-device online multiplayer. Host a room and share the code."
+    />
+    <meta property="og:image" content="./og-image.svg" />
+    <meta property="og:image:alt" content="Snake &amp; Ladder board game title screen" />
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content="Snake &amp; Ladder — Race to Square 100" />
+    <meta
+      name="twitter:description"
+      content="Animated 3D dice, five board themes, and real cross-device online multiplayer."
+    />
+    <meta name="twitter:image" content="./og-image.svg" />
+
+    <!-- (P3) Installable on mobile: the game is a fixed-viewport, touch-first
+         experience, so a home-screen install is the natural distribution. -->
+    <link rel="manifest" href="./manifest.webmanifest" />
+    <link rel="icon" type="image/svg+xml" href="./favicon.svg" />
+    <link rel="apple-touch-icon" href="./favicon.svg" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-title" content="Snake &amp; Ladder" />
   </head>
   <body>
     <div id="root"></div>
+    <noscript>
+      <p style="padding: 2rem; font-family: system-ui, sans-serif; color: #d1fae5; background: #064e3b">
+        Snake &amp; Ladder needs JavaScript enabled to run.
+      </p>
+    </noscript>
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>

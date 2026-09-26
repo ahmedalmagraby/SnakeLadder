@@ -1,7 +1,8 @@
 # 🎲 Snake & Ladder — Modern Cross-Device Web Game
 
 [![Live Demo](https://img.shields.io/badge/Live_Demo-Play_Now-emerald?style=for-the-badge&logo=googlechrome)](https://ahmedalmagraby.github.io/SnakeLadder/)
-[![Tests](https://img.shields.io/badge/Tests-167%20Passing-brightgreen?style=for-the-badge&logo=vitest&logoColor=white)](tests/)
+[![Tests](https://img.shields.io/badge/Tests-185%20Passing-brightgreen?style=for-the-badge&logo=vitest&logoColor=white)](tests/)
+[![No known vulnerabilities](https://img.shields.io/badge/audit-0%20vulnerabilities-brightgreen?style=for-the-badge)](https://github.com/ahmedalmagraby/SnakeLadder/actions)
 [![React](https://img.shields.io/badge/React_19-20232A?style=for-the-badge&logo=react&logoColor=61DAFB)](https://react.dev/)
 [![TypeScript](https://img.shields.io/badge/TypeScript_5.9-3178C6?style=for-the-badge&logo=typescript&logoColor=white)](https://www.typescriptlang.org/)
 [![Vite](https://img.shields.io/badge/Vite_7-646CFF?style=for-the-badge&logo=vite&logoColor=FFD62E)](https://vitejs.dev/)
@@ -21,7 +22,7 @@ Play directly in your browser without any installation:
 ## ✨ Features
 
 ### 🌐 Hardened Cross-Device Online Multiplayer
-- **Real-Time P2P WebRTC**: Connect directly between devices (PC, Mac, iPhone, Android, iPad) using low-latency WebRTC DataChannels via PeerJS with public STUN servers.
+- **Real-Time P2P WebRTC**: Connect directly between devices (PC, Mac, iPhone, Android, iPad) using low-latency WebRTC DataChannels via PeerJS with public STUN servers. See the [connectivity ceiling](#-connectivity-ceiling-read-this-before-inviting-people-over-the-internet) before inviting players on restrictive networks.
 - **Connection Admission State Machine**: Enforces a strict 4-stage lifecycle (`pending` ➔ `authenticated` ➔ `joined` ➔ `closed`) with 10-second unauthenticated timeouts and zero broadcast leakage to unadmitted peers.
 - **Host-Authoritative Dice Rolling**: Dice outcomes are calculated and broadcast authoritatively by the host (`ROLL_REQUEST` ➔ `ROLL_RESULT`) with turn-bound deduplication, eliminating client-side roll manipulation or duplicate rolls.
 - **Seat Reservation, Never AI Takeover**: If an opponent drops out, their seat is **reserved and held for that human** — no bot ever plays on their behalf, and the `(CPU)` badge is never applied to a real player. The match simply waits: the UI shows `WAITING FOR <NAME> TO RECONNECT...` and advances as soon as they return, restoring their exact square, score, and colour. The host may optionally fill a vacant lobby slot with a CPU bot, but bots are only ever created by an explicit host action in the waiting room — never automatically.
@@ -33,10 +34,30 @@ Play directly in your browser without any installation:
 - **Synchronized Victory Celebrations**: Authoritative game-over checkpoints trigger simultaneous victory fanfares, fireworks, confetti, and post-game summary overlays for both host and guest players. Non-host players on the victory screen wait for the host to restart.
 - **Floating Emoji Reactions**: Send rate-limited reaction emojis (`🐍`, `🪜`, `🎲`, `👑`, `😱`, `😂`, `🔥`, `🎯`) floating above your token.
 - **Smart Mobile Share Link & LAN Manual Entry**: When hosting locally, shareable links support replacing `localhost` with your device's LAN IP address so phones on the same Wi-Fi network can join seamlessly.
-- **Optional Standalone WebSocket Relay**: Includes an in-tree WebSocket relay server (`npm run relay` / `node server/relay.js`) for environments where direct P2P is restricted.
+- **Versioned Protocol**: A wire-protocol version is negotiated once at admission, so a player on a stale cached tab is told plainly to hard-refresh instead of failing later as an inscrutable desync.
+- **Authoritative Roll Negotiation**: Every `ROLL_REQUEST` is answered — served with a `ROLL_RESULT` or refused with a typed `ROLL_REJECTED` (`not-your-turn`, `stale-turn`, `already-rolled`, `rate-limited`, …). The guest also runs a local watchdog, so even a *lost* rejection cannot leave the roll button dead.
+
+### 🌐 Connectivity ceiling (read this before inviting people over the internet)
+
+Multiplayer is **direct peer-to-peer WebRTC**, and it is configured with **STUN only — there is no TURN server.**
+
+| Network | Works? |
+|---|---|
+| Same Wi-Fi / LAN | ✅ Always — no NAT traversal needed |
+| Home broadband (any router) | ✅ Almost always — STUN hole punching succeeds |
+| Mobile hotspot, CGNAT | ⚠️ Usually |
+| Corporate / school / hotel Wi-Fi | ❌ Symmetric NAT or a stateful firewall blocks the connection |
+| Two players both behind strict symmetric NAT | ❌ Cannot connect at all |
+
+**This is a hard limit of the architecture, not a bug to report.** Adding TURN would fix it, but TURN means operating (or paying for) a relay server — a real infrastructure cost that this project deliberately does not take on.
+
+Practical guidance:
+- **Same room, same Wi-Fi** → works every time. This is the best experience.
+- **Different networks** → works on most home/mobile connections.
+- **Corporate or school networks** → use solo or pass-and-play, or run the board on a phone hotspot.
 
 > [!NOTE]
-> **NAT & Connectivity Details**: Direct WebRTC connections use Google and Twilio public STUN servers. Standard residential routers traverse NAT effortlessly. In restrictive corporate/enterprise environments or symmetric/carrier-grade NATs where STUN hole punching is blocked without TURN, connect over the same local Wi-Fi or run the in-tree relay server. If a host disconnects permanently without re-hosting, guests are gracefully notified and returned to the menu.
+> **Host loss**: If the host disconnects, guests get a 20-second grace period with bounded automatic reconnect attempts (1s → 2s → 4s → 8s), then are told the match ended. The room claim is **kept**, so if the host re-hosts the same code, returning players are re-admitted to their own seat and colour. A dropped seat is never handed to an AI.
 
 > [!IMPORTANT]
 > **Dropped players are never replaced by AI.** A disconnected (or host-refreshed) seat stays bound to the original human: their `isCpu` flag remains `false`, their name keeps no `(CPU)` suffix, and their reconnect token is preserved so nobody else can claim the seat. The turn waits for them. If you *want* a bot in a vacant slot, add it yourself with **+ Add CPU** in the waiting room — that is the only path that creates a bot.
@@ -139,12 +160,7 @@ Play directly in your browser without any installation:
    - Open [http://localhost:5173](http://localhost:5173) on your computer.
    - Open the displayed Network URL (e.g. `http://192.168.x.x:5173`) on your phone or tablet to test multiplayer!
 
-5. **Start optional WebSocket relay server**:
-   ```bash
-   npm run relay
-   ```
-
-6. **Build for production**:
+5. **Build for production**:
    ```bash
    npm run build
    ```
@@ -174,17 +190,20 @@ To enable automatic deployment:
 ```
 SnakeLadder/
 ├── .github/
+│   ├── dependabot.yml              # Automated dependency security updates
 │   └── workflows/
 │       └── deploy.yml              # GitHub Actions CI/CD (typecheck, lint, test, deploy)
-├── server/
-│   └── relay.js                    # Standalone WebSocket packet relay server
+├── public/
+│   ├── favicon.svg                 # App icon (also the PWA icon)
+│   ├── manifest.webmanifest        # Installable home-screen metadata
+│   └── og-image.svg                # Social share card
 ├── tests/
 │   ├── accessibility.test.tsx      # Dialog a11y, focus trap, inert background & shortcuts
 │   ├── canvasCorrectness.test.ts   # Wave spines, token anchoring & coordinate math
 │   ├── lifecycle.test.ts           # Heartbeat deadlines, re-hosting & recovery
 │   ├── multiplayer.test.ts         # Protocol validation, state machine & admission gate
 │   ├── multiplayerBugFixes.test.tsx# Regressions: re-host roster, roll authority, kick & seat reservation
-│   ├── relay.test.ts               # Standalone relay server packet distribution & rooms
+│   ├── productionReadiness.test.tsx# Regressions: P0 blockers (roll latch, phase watchdog, versioning)
 │   ├── rosterSlots.test.ts         # Slot allocation, player roster & reconnect tokens
 │   ├── rulesAndCoordinates.test.ts # Boustrophedon board math, portals & win rules
 │   ├── sessionAndInvite.test.ts    # Session persistence, IP replacement & dismissal
@@ -197,6 +216,7 @@ SnakeLadder/
 │   │   ├── AriaLiveAnnouncer.tsx   # Live region announcer for game events
 │   │   ├── Dialog.tsx              # Reusable accessible modal dialog with focus trap
 │   │   ├── Die.tsx                 # 3D animated CSS die
+│   │   ├── ErrorBoundary.tsx       # Top-level crash recovery (P3)
 │   │   ├── OnlineHudBar.tsx        # In-game multiplayer status bar & emoji bar
 │   │   ├── OnlineLobby.tsx         # Waiting room, swatches & invite link modal
 │   │   └── ThemeModal.tsx          # Visual board theme picker modal
@@ -210,12 +230,12 @@ SnakeLadder/
 │   │   └── network/
 │   │       ├── peerManager.ts      # Connection admission state machine & WebRTC transport
 │   │       ├── sessionStorage.ts   # Session persistence with cryptographic reconnect tokens
-│   │       ├── types.ts            # Network packet definitions & size/rate limits
+│   │       ├── types.ts            # Network packet definitions, protocol version & size/rate limits
 │   │       ├── useMultiplayer.ts   # Host-authoritative multiplayer hook & state sync
 │   │       └── validation.ts       # Runtime packet validator & role permission engine
 │   ├── App.tsx                     # Main layout, menus, responsive HUD & aside
 │   ├── index.css                   # Theme CSS variables & custom animations
-│   └── main.tsx                    # React root mount
+│   └── main.tsx                    # React root mount, error boundary & global handlers
 ├── index.html
 ├── package.json
 ├── tsconfig.json
@@ -226,3 +246,42 @@ SnakeLadder/
 
 ## 📜 License
 This project is open source and available under the [MIT License](LICENSE).
+
+---
+
+## 🌐 Browser support
+
+Built against evergreen browsers with no transpiler-downlevel requirement
+beyond ES2020. Verified in CI logic (typecheck, lint, 185 tests) and manually in
+Chrome and Edge.
+
+| Browser | Status | Notes |
+|---|---|---|
+| Chrome / Edge (desktop + Android) | ✅ Supported | Primary target |
+| Firefox (desktop + Android) | ⚠️ Expected to work | Not manually verified |
+| Safari / iOS (16+) | ⚠️ Expected to work, **untested on device** | See caveats below |
+| Any browser without WebRTC | ❌ No online play | Solo and pass-and-play still work |
+
+Known caveats worth knowing about:
+
+- **Audio starts muted until first interaction.** Browsers block Web Audio
+  autoplay. Sound begins on the first tap or keypress, as required.
+- **`prefers-reduced-motion` is honoured.** Confetti showers, camera shake and
+  ambient drift are dropped; gameplay motion (hops, slides) is kept, because it
+  *is* the game.
+- **iOS Safari is the least-tested path.** The game is touch-first and uses only
+  broadly supported APIs, but it has not been verified on a physical device.
+  Treat any iOS-specific report as a genuine bug rather than an exotic edge case.
+- **Background tabs are throttled by the browser.** The heartbeat and the phase
+  watchdog both suspend while a tab is hidden and re-check on return, so a
+  backgrounded player is not falsely ejected — but a match genuinely progresses
+  only while the tab is focused.
+
+---
+
+## 🤝 Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for the ground rules (the reducer is pure,
+`useGame` owns the clock, `useMultiplayer` owns the wire), and
+[SECURITY.md](SECURITY.md) for the threat model and how to report a
+vulnerability privately.

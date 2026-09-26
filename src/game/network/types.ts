@@ -14,6 +14,28 @@ export const ALLOWED_EMOJIS = ['🐍', '🪜', '🎲', '👑', '😱', '😂', '
 export type AllowedEmoji = typeof ALLOWED_EMOJIS[number];
 export const MIN_EMOTE_INTERVAL_MS = 1000;
 
+/**
+ * (P0) Wire protocol version.
+ *
+ * Bump this whenever a packet's shape or semantics change in a way an older
+ * peer could silently misread. It is checked once, at admission
+ * (`JOIN_REQUEST` / `RECONNECT_REQUEST`), so a mismatched client is told
+ * plainly instead of failing later as an inscrutable desync.
+ *
+ * v1 = the original unversioned protocol (accepted when `v` is absent, so a
+ * cached old tab still gets a clear rejection rather than a silent hang).
+ */
+export const PROTOCOL_VERSION = 2;
+
+/** Why the host refused to serve an authoritative roll. */
+export type RollRejectReason =
+  | 'not-your-turn'
+  | 'not-awaiting-roll'
+  | 'already-rolled'
+  | 'stale-turn'
+  | 'rate-limited'
+  | 'match-not-playing';
+
 export interface NetworkPlayer {
   playerId: string;
   peerId: string;
@@ -95,6 +117,8 @@ export type Packet =
       roomCode: string;
       name: string;
       colorId: number;
+      /** (P0) Protocol version. `1` is implied when absent. */
+      v?: number;
     }
   | {
       type: 'JOIN_ACCEPTED';
@@ -108,6 +132,7 @@ export type Packet =
       stateVersion: number;
       turnId: number;
       maxPlayers: number;
+      v: number;
       gameState?: GameStateSnapshot;
     }
   | {
@@ -121,6 +146,8 @@ export type Packet =
       roomCode: string;
       slotIndex: number;
       reconnectToken: string;
+      /** (P0) Protocol version. `1` is implied when absent. */
+      v?: number;
     }
   | {
       type: 'RECONNECT_ACCEPTED';
@@ -134,6 +161,7 @@ export type Packet =
       stateVersion: number;
       turnId: number;
       maxPlayers: number;
+      v: number;
       gameState?: GameStateSnapshot;
     }
   | {
@@ -178,6 +206,22 @@ export type Packet =
       turnId: number;
       stateVersion: number;
       timestamp: number;
+    }
+  | {
+      /**
+       * (P0) The host's authoritative "no" for a ROLL_REQUEST.
+       *
+       * Previously every rejection path was a bare `return` with no reply, so
+       * a guest that had latched `awaitingRemoteRoll` before sending waited
+       * forever and its roll button was permanently dead. Every rejection now
+       * answers, and the guest additionally self-heals on a local timeout.
+       */
+      type: 'ROLL_REJECTED';
+      requestId: string;
+      reason: RollRejectReason;
+      /** The host's current turn id, so the guest can resync immediately. */
+      turnId: number;
+      stateVersion: number;
     }
   | {
       type: 'SYNC_CHECKPOINT';

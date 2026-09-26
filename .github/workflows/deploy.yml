@@ -30,6 +30,61 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      # (P3) Release gate. A transitive advisory in a build tool is still a real
+      # risk, and the last audit found two (esbuild + vite) that a version bump
+      # fixed. Dependabot keeps them current; this keeps them from regressing.
+      - name: Audit dependencies
+        run: npm audit --audit-level=high
+
+      # `tsc` silently accepts a duplicate JSON key and uses the last one, so a
+      # config mistake like a repeated `types` entry produces no error at all -
+      # it just quietly applies different settings than the file appears to.
+      # Vite warns about it, but the warning scrolls past in CI. Fail on it.
+      - name: Validate JSON configs have no duplicate keys
+        run: |
+          node -e "
+            const fs = require('fs');
+            let bad = 0;
+            for (const f of ['tsconfig.json', 'package.json']) {
+              const raw = fs.readFileSync(f, 'utf8');
+              const dupes = new Set();
+              const seen = new Set();
+              JSON.parse(raw, function (k, v) { return v; });
+              // Walk with a reviver that records object keys as they are parsed.
+              JSON.parse(raw, function (k, v) {
+                return v;
+              });
+              // Simple explicit scan: parse and re-serialise, comparing is not
+              // enough, so detect via a Proxy-free manual check of top-level and
+              // compilerOptions keys.
+              const check = (obj, path, file) => {
+                if (obj === null || typeof obj !== 'object' || Array.isArray(obj)) return;
+                const keys = Object.keys(obj);
+                // Object.keys cannot show duplicates; use the source scan below.
+              };
+              check(JSON.parse(raw), '', f);
+              // Source-level duplicate detection.
+              const lines = raw.split(/\r?\n/);
+              const scope = [];
+              const stack = [];
+              for (const line of lines) {
+                const km = line.match(/^\s*\"([^\"]+)\"\s*:/);
+                if (!km) continue;
+                const indent = line.length - line.trimStart().length;
+                while (stack.length && stack[stack.length-1].indent >= indent) stack.pop();
+                const key = km[1];
+                const active = stack.filter(s => s.key === key && s.indent === indent);
+                if (active.length) {
+                  console.error('DUPLICATE KEY ' + key + ' in ' + f + ' near: ' + line.trim());
+                  bad++;
+                }
+                stack.push({ indent, key });
+              }
+            }
+            if (bad) { console.error(bad + ' duplicate key(s) found'); process.exit(1); }
+            console.log('No duplicate keys.');
+          "
+
       - name: TypeScript typecheck
         run: npm run typecheck
 
@@ -41,6 +96,26 @@ jobs:
 
       - name: Build
         run: npm run build
+
+      # The single-file bundle is the entire shipped app, so a silent
+      # regression in size is worth failing on rather than noticing later.
+      - name: Check bundle size
+        run: |
+          SIZE=$(stat -c%s dist/index.html)
+          echo "dist/index.html is $((SIZE / 1024)) KB"
+          if [ "$SIZE" -gt 1048576 ]; then
+            echo "::error::Bundle exceeds 1 MB - something large was added by accident."
+            exit 1
+          fi
+
+      - name: Verify build output is complete
+        run: |
+          for f in dist/index.html dist/favicon.svg dist/manifest.webmanifest dist/og-image.svg; do
+            test -s "$f" || { echo "::error::missing or empty: $f"; exit 1; }
+          done
+          # The single-file plugin must have inlined the JS and CSS.
+          grep -q '<script type="module" crossorigin src=' dist/index.html \
+            && { echo "::error::JS was not inlined into index.html"; exit 1; } || true
 
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v3

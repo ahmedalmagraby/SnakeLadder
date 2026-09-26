@@ -484,11 +484,14 @@ export function drawAnimatedSnake(
   isActive: boolean,
   theme: BoardTheme = THEMES.jungle,
   ampScale = 1,
+  spineBuffer?: Pt[],
 ) {
   const tb = theme.board;
   const palette = tb.snakePalette;
   const [main, dark] = palette[idx % palette.length];
-  const pts = getSnakeSpine(headNum, tailNum, time, isActive, undefined, ampScale);
+  /* (P2) `spineBuffer` is a caller-owned scratch array reused every frame; see
+   * `drawAnimatedSnakes`. Omit it to get a fresh array (used by tests). */
+  const pts = getSnakeSpine(headNum, tailNum, time, isActive, undefined, ampScale, spineBuffer);
   const n = pts.length - 1;
   const params = SNAKE_PARAMS[headNum] || { phase: 0 };
   const phase = params.phase;
@@ -819,13 +822,47 @@ export function drawAnimatedSnakes(
   theme: BoardTheme = THEMES.jungle,
   ampScale = 1,
 ) {
-  const snakeHeads = Object.keys(SNAKES).map(Number);
-  snakeHeads.forEach((head, idx) => {
+  /* (P2) The snake list and each snake's spine buffer are hoisted to module
+   * scope and reused.
+   *
+   * This used to run `Object.keys(SNAKES).map(Number)` plus a `forEach`
+   * closure on every frame, and each `drawAnimatedSnake` allocated a brand new
+   * ~30-150 element point array. With ten snakes on the board that is roughly
+   * 800 point objects and a dozen closures per frame - around 48k short-lived
+   * objects per second, which is real GC pressure on the main thread and a
+   * plausible source of frame drops on mid-range phones.
+   *
+   * The spine buffers are only read within the frame that fills them, so
+   * reusing them is safe; the snake list is fixed at module load. */
+  let heads = snakeHeadCache;
+  if (heads === null) {
+    heads = Object.keys(SNAKES)
+      .map(Number)
+      .sort((a, b) => a - b);
+    snakeHeadCache = heads;
+  }
+  for (let idx = 0; idx < heads.length; idx++) {
+    const head = heads[idx];
     const tail = SNAKES[head];
     const isActive = activeSnakeHead === head;
-    drawAnimatedSnake(ctx, head, tail, idx, time, isActive, theme, ampScale);
-  });
+    drawAnimatedSnake(
+      ctx,
+      head,
+      tail,
+      idx,
+      time,
+      isActive,
+      theme,
+      ampScale,
+      snakeSpineBuffers[idx] ?? (snakeSpineBuffers[idx] = []),
+    );
+  }
 }
+
+/** (P2) Cached, sorted snake head list - see `drawAnimatedSnakes`. */
+let snakeHeadCache: number[] | null = null;
+/** (P2) Per-snake reusable spine buffers - see `drawAnimatedSnakes`. */
+const snakeSpineBuffers: Pt[][] = [];
 
 /**
  * Draws the square-100 finish podium.
@@ -1935,14 +1972,50 @@ export function drawImpactFlash(
 
 /* ---------------- frame & ambience overlays ---------------- */
 
-/** Maps a perimeter distance to a point on the frame band. */
+/**
+ * The total length of the closed bezel loop that `framePoint` walks.
+ *
+ * (P2) Two separate defects lived here, and the first fix I made only addressed
+ * the smaller one. See `framePoint` for the full account; the short version is
+ * that the walk is now a genuine closed rectangle, whose length is
+ * `2 * LOGICAL + 2 * (LOGICAL - 2 * band)`.
+ */
+function framePerimeter(band: number): number {
+  return 2 * (LOGICAL + (LOGICAL - band * 2));
+}
+
+/**
+ * Maps a perimeter distance to a point on the frame band.
+ *
+ * (P2) This did not trace the frame. It walked the top edge and the bottom edge
+ * in full, but only `band * 2` (82px) down the right side and `band * 2` back up
+ * the left side - while the actual side length between those edges is
+ * `LOGICAL - 2 * band` (958px). The corners and ~90% of both vertical sides
+ * were never visited, and the walk finished at (0, 918) having started at
+ * (0, 41), leaving an ~877px discontinuity for the sweep to jump across on
+ * every lap.
+ *
+ * On top of that, `drawFrameSweep` claimed a total of `LOGICAL * 4` (4160) while
+ * the walk only covered 2244, so for ~24% of every 9-second cycle the sweep was
+ * being drawn at a *negative* y - off the top-left of the canvas.
+ *
+ * Both are fixed by walking a real closed rectangle and reporting its true
+ * length. See `tests/frameSweep.test.ts`, which pins the geometry so the
+ * numbers cannot silently drift again.
+ */
 function framePoint(d: number, band: number): Pt {
   const top = band;
   const bottom = LOGICAL - band;
+  // Full vertical distance between the two horizontal edges.
+  const rail = bottom - top;
   let dd = d;
+  // Top edge, left -> right.
   if (dd < LOGICAL) return { x: dd, y: top };
-  if ((dd -= LOGICAL) < band * 2) return { x: LOGICAL, y: top + dd };
-  if ((dd -= band * 2) < LOGICAL) return { x: LOGICAL - dd, y: bottom };
+  // Right rail, top -> bottom.
+  if ((dd -= LOGICAL) < rail) return { x: LOGICAL, y: top + dd };
+  // Bottom edge, right -> left.
+  if ((dd -= rail) < LOGICAL) return { x: LOGICAL - dd, y: bottom };
+  // Left rail, bottom -> top.
   dd -= LOGICAL;
   return { x: 0, y: bottom - dd };
 }
@@ -1960,14 +2033,19 @@ export function drawAmbientMotes(
   const m = theme.board.ambientMote;
   if (!m || m.count <= 0) return;
   const band = ORIGIN - 4; // usable frame thickness on each side
-  const perimeter = 2 * (LOGICAL + band * 2);
+  const perimeter = framePerimeter(band);
   ctx.save();
   ctx.fillStyle = m.color;
   for (let i = 0; i < m.count; i++) {
-    // Deterministic per-mote randomness so nothing jumps on a theme change.
-    const s1 = mulberry32(9001 + i * 137)();
-    const s2 = mulberry32(4242 + i * 311)();
-    const s3 = mulberry32(777 + i * 53)();
+    /* (P2) The three per-mote seeds are *deterministic* - they are derived from
+     * the mote's index alone, so a theme change can never make the field jump.
+     * That means they can be computed once and cached instead of building
+     * three `mulberry32` closures per mote per frame (16-24 motes per theme,
+     * i.e. up to ~70 closures every frame, purely to reproduce constants). */
+    const seeds = moteSeeds(i);
+    const s1 = seeds[0];
+    const s2 = seeds[1];
+    const s3 = seeds[2];
 
     const p = (s1 + time * m.speed * (0.5 + s3)) % 1;
     const pt = framePoint(p * perimeter, band);
@@ -1983,6 +2061,18 @@ export function drawAmbientMotes(
   ctx.restore();
 }
 
+/** (P2) Lazily built, index-derived mote seeds. See `drawAmbientMotes`. */
+let moteSeedCache: number[][] | null = null;
+function moteSeeds(i: number): number[] {
+  if (moteSeedCache === null) moteSeedCache = [];
+  let row = moteSeedCache[i];
+  if (!row) {
+    row = [mulberry32(9001 + i * 137)(), mulberry32(4242 + i * 311)(), mulberry32(777 + i * 53)()];
+    moteSeedCache[i] = row;
+  }
+  return row;
+}
+
 /**
  * (E6) A very slow light sweep travelling around the bezel, so a waiting board
  * never looks frozen. Confined to the frame.
@@ -1994,7 +2084,10 @@ export function drawFrameSweep(
 ) {
   const accent = theme.ui.accent;
   const band = ORIGIN - 4;
-  const perimeter = LOGICAL * 4;
+  // (P2) Must match the distance `framePoint` actually walks, or the sweep
+  // runs off the end of the left rail and disappears for part of every cycle.
+  const perimeter = framePerimeter(band);
+  const sweepLength = Math.min(190, perimeter);
   const start = ((time % 9) / 9) * perimeter;
 
   ctx.save();
@@ -2008,7 +2101,7 @@ export function drawFrameSweep(
   ctx.beginPath();
   const steps = 10;
   for (let i = 0; i <= steps; i++) {
-    const pt = framePoint((start + (i / steps) * 190) % perimeter, band);
+    const pt = framePoint((start + (i / steps) * sweepLength) % perimeter, band);
     if (i === 0) ctx.moveTo(pt.x, pt.y);
     else ctx.lineTo(pt.x, pt.y);
   }

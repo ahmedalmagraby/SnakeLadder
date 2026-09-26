@@ -14,7 +14,9 @@ import {
   type SavedSession,
 } from './sessionStorage';
 import {
+  MAX_PLAYERS,
   MIN_EMOTE_INTERVAL_MS,
+  PROTOCOL_VERSION,
   type AuthStatus,
   type CheckpointMode,
   type ConnectionStatus,
@@ -23,9 +25,15 @@ import {
   type NetworkPlayer,
   type Packet,
   type RoomMembership,
+  type RollRejectReason,
   type TransportStatus,
 } from './types';
-import { isValidEmoji, isValidNetworkPlayer, stripCpuSuffix } from './validation';
+import {
+  isCompatibleProtocolVersion,
+  isValidEmoji,
+  isValidNetworkPlayer,
+  stripCpuSuffix,
+} from './validation';
 
 function generateSecureToken(): string {
   if (typeof crypto !== 'undefined') {
@@ -42,7 +50,38 @@ function generateSecureToken(): string {
 }
 
 function generateRequestId(prefix = 'req'): string {
-  return `${prefix}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+  return `${prefix}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;}
+
+/* (P1) ROLL_REQUEST flood control. See `consumeRollToken`. */
+const ROLL_BUCKET_CAPACITY = 6;
+const ROLL_BUCKET_REFILL_PER_SEC = 2;
+
+/**
+ * (P1) Constant-time string comparison for reconnect tokens.
+ *
+ * The check used to be `expectedToken !== packet.reconnectToken`, which exits
+ * at the first differing character and so leaks the token's common prefix
+ * through response timing.
+ *
+ * `crypto.subtle` is unavailable in non-secure contexts, and this app is
+ * explicitly playable over plain-http LAN URLs, so a WebCrypto HMAC is not an
+ * option. This is a small local XOR accumulator, which is the standard fix and
+ * needs no platform support.
+ *
+ * Practical note: over a WebRTC data channel the timing signal is tiny, so this
+ * is defence in depth rather than the fix for a live exploit - but the token is
+ * the sole bearer credential for a seat, and "we compared it in constant time"
+ * should be a property of the code rather than an accident.
+ */
+function tokensEqual(a: string, b: string): boolean {
+  if (typeof a !== 'string' || typeof b !== 'string') return false;
+  // Length is not secret: tokens are always the same minted length.
+  if (a.length !== b.length) return false;
+  let diff = 0;
+  for (let i = 0; i < a.length; i++) {
+    diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
+  }
+  return diff === 0;
 }
 
 export interface UseMultiplayerProps {
@@ -78,6 +117,12 @@ export interface UseMultiplayerProps {
    * because `getGameStateSnapshot` intentionally reports the last *stable* state.
    */
   getRollAuthority?: () => { turnSlot: number; isPlaying: boolean; isAwaitingRoll: boolean } | undefined;
+  /**
+   * (P0) Called when the host refuses a roll this guest requested. The guest
+   * must release its `awaitingRemoteRoll` latch here, otherwise the roll button
+   * stays disabled for the remainder of the match.
+   */
+  onRollRejected?: (reason: RollRejectReason) => void;
 }
 
 export function useMultiplayer({
@@ -91,6 +136,7 @@ export function useMultiplayer({
   onReconnected,
   getGameStateSnapshot,
   getRollAuthority,
+  onRollRejected,
 }: UseMultiplayerProps = {}) {
   const [isOnline, setIsOnline] = useState(false);
   const [isHost, setIsHost] = useState(false);
@@ -150,6 +196,39 @@ export function useMultiplayer({
   const slotTokensRef = useRef<Map<number, string>>(new Map()); // slotIndex -> reconnectToken
   const processedRequestIdsRef = useRef<Set<string>>(new Set());
   const lastEmoteTimeRef = useRef<Map<number, number>>(new Map());
+  /* (P1) Per-peer token bucket for ROLL_REQUEST, keyed by peerId so one noisy
+     guest cannot spend everyone else's budget. A turn is at most a few seconds
+     long and a legitimate guest sends exactly one request per turn, so a
+     modest burst with steady refill admits real play while making a flood
+     loop pointless. See `consumeRollToken`. */
+  const rollBucketsRef = useRef<Map<string, { tokens: number; last: number }>>(new Map());
+
+  /**
+   * (P1) Token bucket for ROLL_REQUEST. Returns false when the peer is over
+   * budget, in which case the caller answers `rate-limited` and the guest
+   * releases its `awaitingRemoteRoll` latch.
+   */
+  const consumeRollToken = useCallback((peerId: string): boolean => {
+    const now = Date.now();
+    const bucket = rollBucketsRef.current.get(peerId);
+    if (!bucket) {
+      rollBucketsRef.current.set(peerId, {
+        tokens: ROLL_BUCKET_CAPACITY - 1,
+        last: now,
+      });
+      return true;
+    }
+    const elapsed = now - bucket.last;
+    bucket.last = now;
+    // Refill at ROLL_BUCKET_REFILL_PER_SEC, capped at the burst capacity.
+    bucket.tokens = Math.min(
+      ROLL_BUCKET_CAPACITY,
+      bucket.tokens + (elapsed / 1000) * ROLL_BUCKET_REFILL_PER_SEC,
+    );
+    if (bucket.tokens < 1) return false;
+    bucket.tokens -= 1;
+    return true;
+  }, []);
 
   // Keep references to state and callbacks for packet handlers
   const stateRef = useRef({
@@ -173,6 +252,7 @@ export function useMultiplayer({
     onReconnected,
     getGameStateSnapshot,
     getRollAuthority,
+    onRollRejected,
   });
 
   /* Synchronous mirror of the roster.
@@ -213,6 +293,7 @@ export function useMultiplayer({
     onReconnected,
     getGameStateSnapshot,
     getRollAuthority,
+    onRollRejected,
   };
 
   // Sync saved session state
@@ -257,13 +338,27 @@ export function useMultiplayer({
             // Start 20s grace period if not already running
             if (!gracePeriodTimerRef.current) {
               gracePeriodTimerRef.current = setTimeout(() => {
-                console.warn('[useMultiplayer] 20s grace period expired: Host loss match termination');
+                console.warn('[useMultiplayer] 20s grace period expired: host unreachable');
                 setIsPaused(false);
                 setGameStatus('abandoned');
                 setRoomMembership('left');
                 setTransportStatus('failed');
                 setAuthStatus('unauthenticated');
-                clearSession();
+                /* (P1) Do NOT `clearSession()` here.
+                 *
+                 * This used to run on expiry, which deleted the guest's
+                 * `reconnectToken` from storage. Re-hosting is a first-class
+                 * flow, so a host who refreshed and came back 30s later found
+                 * every guest had silently forgotten their seat: `canRejoinRoom`
+                 * returned false, so they were re-admitted as brand-new players
+                 * in different slots, or could not rejoin at all. Giving up on
+                 * the *match* must not mean giving up on the player's *identity*.
+                 *
+                 * The claim is kept so the resume banner stays available. The
+                 * guest is told plainly that the match ended, and the explicit
+                 * "forget this room" control in the lobby remains the only way
+                 * to discard it. */
+                touchSession();
                 refreshSavedSession();
                 callbacksRef.current.onPlayerDisconnected?.(0, 'Host');
               }, 20000);
@@ -301,6 +396,27 @@ export function useMultiplayer({
         } else if (roomMembershipRef.current === 'joining') {
           setRoomMembership('none');
           setAuthStatus(st === 'error' ? 'rejected' : 'unauthenticated');
+        } else if (roomMembershipRef.current === 'joined' && stateRef.current.isHost) {
+          /* (P1) A guest that drops out while the room is still in the *lobby*.
+           *
+           * The recovery logic above is gated on the match being `playing` or
+           * `paused`, so a guest in the waiting room whose host disappears fell
+           * through every branch: no retry, no grace timer, no error, no
+           * session cleanup. The UI just sat at "disconnected" indefinitely
+           * with nothing to click and no explanation.
+           *
+           * Match state is irrelevant to the connection being gone, so handle
+           * it explicitly and say what happened. */
+          console.warn('[useMultiplayer] Host lost while still in the lobby');
+          setTransportStatus('failed');
+          setAuthStatus('unauthenticated');
+          setStatusDetail('The host left before the match started.');
+          /* (P1) Keep the room claim: if they re-host the same code, returning
+           * players are re-admitted to their own seat rather than treated as
+           * new guests in a different slot. */
+          touchSession();
+          refreshSavedSession();
+          callbacksRef.current.onPlayerDisconnected?.(0, 'Host');
         }
       }
     });
@@ -351,6 +467,20 @@ export function useMultiplayer({
 
         switch (packet.type) {
           case 'JOIN_REQUEST': {
+            /* (P0) Protocol version gate, checked before anything is allocated
+             * so a mismatched client can never occupy a slot or mint a token.
+             * Reported as a plain JOIN_REJECTED rather than a silent drop so a
+             * player on a stale cached tab learns *why* they cannot join. */
+            if (!isCompatibleProtocolVersion(packet.v)) {
+              peerManager.sendToPeer(peerId, {
+                type: 'JOIN_REJECTED',
+                requestId: packet.requestId,
+                reason: `Incompatible game version (host speaks v${PROTOCOL_VERSION}, you sent v${packet.v ?? 1}). Please hard-refresh.`,
+              });
+              peerManager.closeConnection(peerId, 'Protocol version mismatch');
+              return;
+            }
+
             // Verify room code
             if (packet.roomCode !== s.roomCode) {
               peerManager.sendToPeer(peerId, {
@@ -441,6 +571,7 @@ export function useMultiplayer({
               stateVersion: stateVersionRef.current,
               turnId: turnIdRef.current,
               maxPlayers: s.maxPlayers,
+              v: PROTOCOL_VERSION,
               gameState: isMatchInProgress ? currentSnap : undefined,
             });
 
@@ -484,6 +615,16 @@ export function useMultiplayer({
           }
 
           case 'RECONNECT_REQUEST': {
+            if (!isCompatibleProtocolVersion(packet.v)) {
+              peerManager.sendToPeer(peerId, {
+                type: 'RECONNECT_REJECTED',
+                requestId: packet.requestId,
+                reason: `Incompatible game version (host speaks v${PROTOCOL_VERSION}, you sent v${packet.v ?? 1}). Please hard-refresh.`,
+              });
+              peerManager.closeConnection(peerId, 'Protocol version mismatch');
+              return;
+            }
+
             if (packet.roomCode !== s.roomCode) {
               peerManager.sendToPeer(peerId, {
                 type: 'RECONNECT_REJECTED',
@@ -496,7 +637,7 @@ export function useMultiplayer({
 
             // Authenticate using host-issued reconnect token
             const expectedToken = slotTokensRef.current.get(packet.slotIndex);
-            if (!expectedToken || expectedToken !== packet.reconnectToken) {
+            if (!expectedToken || !tokensEqual(expectedToken, packet.reconnectToken)) {
               // Failed token authentication
               peerManager.sendToPeer(peerId, {
                 type: 'RECONNECT_REJECTED',
@@ -535,7 +676,21 @@ export function useMultiplayer({
             );
 
             stateVersionRef.current += 1;
-            hasRolledForCurrentTurnRef.current = false;
+
+            /* (P0) `hasRolledForCurrentTurnRef` is intentionally NOT cleared
+             * here.
+             *
+             * It used to be reset on every reconnect, which reopened the
+             * per-turn single-roll guard: a guest whose socket dropped while it
+             * was the current player could reconnect, see a still-idle phase in
+             * the rejoin snapshot, and be served a *second* authoritative roll
+             * for one turn. The guest then applied both ROLL_RESULTs, and
+             * nothing detected it - there was no turnId check on that path.
+             *
+             * The guard is now cleared only where a turn genuinely begins:
+             * `broadcastCheckpoint` (host settles a turn) and `startGame`.
+             * Reconnecting is a transport event and says nothing about whose
+             * turn it is or whether it has already been rolled. */
 
             const configs: PlayerConfig[] = updated.map((p) => ({
               id: p.playerId || `p_${p.slotIndex}`,
@@ -561,6 +716,7 @@ export function useMultiplayer({
               stateVersion: stateVersionRef.current,
               turnId: turnIdRef.current,
               maxPlayers: s.maxPlayers,
+              v: PROTOCOL_VERSION,
               gameState: currentGameState,
             });
 
@@ -649,6 +805,33 @@ export function useMultiplayer({
               return;
             }
 
+            /* (P0) Every rejection below now *answers*.
+             *
+             * They used to be bare `return`s and the protocol had no NACK, so a
+             * guest that had already latched `awaitingRemoteRoll` before
+             * sending had no way to learn its request was dropped: its roll
+             * button stayed disabled for the rest of the match with no timeout
+             * and no recovery. The guest now clears its latch on ROLL_REJECTED
+             * *and* on a local timeout, so a lost rejection is survivable too. */
+            const rejectRoll = (reason: RollRejectReason) => {
+              peerManager.sendToPeer(peerId, {
+                type: 'ROLL_REJECTED',
+                requestId: packet.requestId,
+                reason,
+                turnId: turnIdRef.current,
+                stateVersion: stateVersionRef.current,
+              });
+            };
+
+            /* (P1) Flood guard. The per-turn latches below already stop a peer
+             * from obtaining more than one *roll*, but nothing stopped it from
+             * making the host run a full validatePacket + NACK fan-out an
+             * unlimited number of times. Token bucket per peer. */
+            if (!consumeRollToken(peerId)) {
+              rejectRoll('rate-limited');
+              return;
+            }
+
             /*
              * Authoritative turn/phase validation.
              *
@@ -662,23 +845,44 @@ export function useMultiplayer({
             const snapshot = callbacksRef.current.getGameStateSnapshot?.();
 
             if (authority) {
-              if (!authority.isPlaying) return;
-              if (packet.slotIndex !== authority.turnSlot) return; // out of turn
-              if (!authority.isAwaitingRoll) return; // mid-animation or already rolled
+              if (!authority.isPlaying) {
+                rejectRoll('match-not-playing');
+                return;
+              }
+              if (packet.slotIndex !== authority.turnSlot) {
+                rejectRoll('not-your-turn');
+                return;
+              }
+              if (!authority.isAwaitingRoll) {
+                rejectRoll('not-awaiting-roll');
+                return;
+              }
             } else {
               // Fallback for headless use without a live authority source.
               const currentTurnIdx = snapshot ? snapshot.turn : 0;
               const activePlayer = roster[currentTurnIdx];
-              if (packet.slotIndex !== activePlayer?.slotIndex) return;
-              if (snapshot && snapshot.phase !== 'idle') return;
+              if (packet.slotIndex !== activePlayer?.slotIndex) {
+                rejectRoll('not-your-turn');
+                return;
+              }
+              if (snapshot && snapshot.phase !== 'idle') {
+                rejectRoll('not-awaiting-roll');
+                return;
+              }
             }
 
             // Reject stale or future turn requests. `turnId` is bumped by the host on
             // every authoritative checkpoint, so a mismatch means the guest is behind.
-            if (packet.turnId !== turnIdRef.current) return;
+            if (packet.turnId !== turnIdRef.current) {
+              rejectRoll('stale-turn');
+              return;
+            }
 
             // Belt-and-braces duplicate guard for this exact turn.
-            if (hasRolledForCurrentTurnRef.current) return;
+            if (hasRolledForCurrentTurnRef.current) {
+              rejectRoll('already-rolled');
+              return;
+            }
 
             // Host generates authoritative roll 1..6
             const roll = 1 + Math.floor(Math.random() * 6);
@@ -994,9 +1198,40 @@ export function useMultiplayer({
           }
 
           case 'ROLL_RESULT': {
+            /* (P0) Ordering guard.
+             *
+             * This handler used to apply any ROLL_RESULT it was handed. There
+             * was no check that the result belonged to the turn the guest was
+             * actually waiting on, so a duplicate or reordered delivery made
+             * the guest roll twice for one turn and desync its board from the
+             * host's. `turnId` only ever moves forward, and the host bumps it on
+             * every authoritative checkpoint, so a result for an older turn is
+             * a replay and is dropped.
+             *
+             * The matching double-roll source on the host - clearing
+             * `hasRolledForCurrentTurnRef` on RECONNECT_REQUEST - is fixed in
+             * the host's RECONNECT_REQUEST handler. */
+            if (packet.turnId < turnIdRef.current) {
+              break;
+            }
             turnIdRef.current = packet.turnId;
+            if (packet.stateVersion > lastSeenStateVersionRef.current) {
+              lastSeenStateVersionRef.current = packet.stateVersion;
+            }
             touchSession();
             callbacksRef.current.onRemoteRoll?.(packet.player, packet.roll);
+            break;
+          }
+
+          /* (P0) The host refused our roll. Release the guest's
+           * `awaitingRemoteRoll` latch so the roll button comes back instead of
+           * staying dead for the rest of the match, and resync the turn id so
+           * the retry is aimed at the turn the host is actually on. */
+          case 'ROLL_REJECTED': {
+            if (packet.turnId > turnIdRef.current) {
+              turnIdRef.current = packet.turnId;
+            }
+            callbacksRef.current.onRollRejected?.(packet.reason);
             break;
           }
 
@@ -1069,10 +1304,35 @@ export function useMultiplayer({
       hasRolledForCurrentTurnRef.current = false;
       processedRequestIdsRef.current.clear();
 
-      if (session?.slotTokens && session.slotTokens.length > 0) {
-        slotTokensRef.current = new Map(session.slotTokens);
-      } else {
-        slotTokensRef.current.clear();
+      /* (P1) Rebuild the token map defensively.
+       *
+       * This ran `new Map(session.slotTokens)` *before* the `try` that guards
+       * `peerManager.createRoom`. `validateSavedSession` checks only seven
+       * scalar fields - it never inspects `slotTokens` - so a corrupt or
+       * tampered storage entry whose `slotTokens` is a string instead of an
+       * array of pairs made `new Map` throw a `TypeError` straight out of
+       * `createRoom`, bypassing the error UI entirely and leaving the caller
+       * with an unhandled rejection.
+       *
+       * Reconstruct entry by entry and drop anything malformed: a partial map
+       * means some seats cannot be reclaimed, which is bad, whereas a thrown
+       * TypeError means the host cannot start at all. */
+      slotTokensRef.current.clear();
+      if (Array.isArray(session?.slotTokens)) {
+        for (const entry of session.slotTokens) {
+          if (!Array.isArray(entry) || entry.length !== 2) continue;
+          const [slot, token] = entry as [unknown, unknown];
+          if (
+            typeof slot === 'number' &&
+            Number.isInteger(slot) &&
+            slot >= 0 &&
+            slot < MAX_PLAYERS &&
+            typeof token === 'string' &&
+            token.length > 0
+          ) {
+            slotTokensRef.current.set(slot, token);
+          }
+        }
       }
 
       const hostPlayer: NetworkPlayer = {
@@ -1169,11 +1429,56 @@ export function useMultiplayer({
         setRoomMembership('none');
         setTransportStatus('failed');
         setGameStatus('none');
-        clearSession();
+
+        /* (P0) Do NOT `clearSession()` on a transient signalling failure.
+         *
+         * The `saveSession` above persists the roster *and every guest's
+         * reconnect token*. This catch used to wipe all of it, and the one
+         * error that reliably reaches here - `unavailable-id` - is exactly the
+         * condition `peerManager.createRoom` already retries twice with a
+         * 1200ms backoff. So two players clicking "re-host" inside the same
+         * few-second window could permanently destroy every guest's ability to
+         * reclaim their reserved seat, on an error path that is explicitly
+         * expected and handled.
+         *
+         * A failed create is not a decision to forget the room: keep the
+         * claim so the player can simply retry, and only surface the error. */
+        if (isRehost) {
+          // Restore the previously-persisted claim rather than the partially
+          // rewritten one, so a retry sees exactly what was there before.
+          if (session) {
+            saveSession({
+              roomCode: session.roomCode,
+              playerId: session.playerId,
+              playerName: session.playerName,
+              colorId: session.colorId,
+              slotIndex: session.slotIndex,
+              isHost: session.isHost,
+              maxPlayers: session.maxPlayers,
+              speed: session.speed,
+              winRule: session.winRule,
+              reconnectToken: session.reconnectToken,
+              players: session.players,
+              slotTokens: session.slotTokens,
+              gameState: session.gameState,
+              turnId: session.turnId,
+              stateVersion: session.stateVersion,
+            });
+          }
+        } else {
+          // A brand-new room that never came up has no claim worth keeping.
+          clearSession();
+        }
         refreshSavedSession();
+
         if (err?.type === 'unavailable-id') {
           setStatus('error');
-          setStatusDetail(`Room code ${code} is still held by the network. Please wait a moment or create a new room.`);
+          setStatusDetail(
+            `Room code ${code} is still held by the network. Please wait a moment and press Resume - your players and seats are kept.`,
+          );
+        } else {
+          setStatus('error');
+          setStatusDetail(err?.message || 'Could not start the room. Please try again.');
         }
         throw err;
       }

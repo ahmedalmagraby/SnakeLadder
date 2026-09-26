@@ -1,7 +1,7 @@
 {
   "name": "snake-and-ladder",
   "private": true,
-  "version": "0.0.0",
+  "version": "1.0.0",
   "type": "module",
   "engines": {
     "node": "^20.19.0 || >=22.12.0"
@@ -12,16 +12,14 @@
     "lint": "eslint .",
     "test": "vitest run",
     "build": "vite build",
-    "preview": "vite preview",
-    "relay": "node server/relay.js"
+    "preview": "vite preview"
   },
   "dependencies": {
     "clsx": "2.1.1",
     "peerjs": "^1.5.5",
     "react": "19.2.6",
     "react-dom": "19.2.6",
-    "tailwind-merge": "3.4.0",
-    "ws": "^8.21.3"
+    "tailwind-merge": "3.4.0"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
@@ -31,14 +29,13 @@
     "@types/node": "22.19.17",
     "@types/react": "19.2.7",
     "@types/react-dom": "19.2.3",
-    "@types/ws": "^8.18.1",
     "@vitejs/plugin-react": "5.1.1",
     "eslint": "^10.11.0",
     "jsdom": "^30.1.1",
     "tailwindcss": "4.1.17",
     "typescript": "5.9.3",
     "typescript-eslint": "^8.70.1",
-    "vite": "7.3.2",
+    "vite": "^7.3.6",
     "vite-plugin-singlefile": "2.3.0",
     "vitest": "^5.0.1"
   }

@@ -713,7 +713,32 @@ describe('8. Player Disconnect/Reconnect & AI Mark Removal', () => {
       expect(retrieved?.stateVersion).toBe(7);
     });
 
-    it('discards and clears session if older than 1 hour', () => {
+    it('keeps a session that is merely hours old, and still honours the claim', () => {
+      // (P1 regression) This used to assert the opposite: a 1-hour TTL that
+      // called `clearSession()`, deleting the reconnect token. A player who took
+      // an hour between matches came back as a *different person* - re-admitted
+      // to a new slot, or unable to rejoin. Age alone must not destroy a seat
+      // claim.
+      const recentish = {
+        roomCode: 'OLD123',
+        playerId: 'p_old',
+        playerName: 'OldHost',
+        colorId: 0,
+        slotIndex: 1,
+        isHost: false,
+        reconnectToken: 'a'.repeat(32),
+        updatedAt: Date.now() - (61 * 60 * 1000), // 61 minutes ago
+      };
+      mockStore['snkladr_active_session'] = JSON.stringify(recentish);
+
+      const retrieved = getSavedSession();
+      expect(retrieved).not.toBeNull();
+      expect(retrieved?.roomCode).toBe('OLD123');
+      expect(retrieved?.reconnectToken).toBe('a'.repeat(32));
+      expect(mockStore['snkladr_active_session']).toBeDefined();
+    });
+
+    it('still discards a session past the multi-day claim TTL', () => {
       const expiredSession = {
         roomCode: 'OLD123',
         playerId: 'p_old',
@@ -721,7 +746,7 @@ describe('8. Player Disconnect/Reconnect & AI Mark Removal', () => {
         colorId: 0,
         slotIndex: 0,
         isHost: true,
-        updatedAt: Date.now() - (61 * 60 * 1000), // 61 minutes ago
+        updatedAt: Date.now() - (8 * 24 * 60 * 60 * 1000), // 8 days ago
       };
       mockStore['snkladr_active_session'] = JSON.stringify(expiredSession);
 

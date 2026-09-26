@@ -35,6 +35,23 @@ const ACTIVE_SESSION_KEY = 'snkladr_active_session';
 const LAN_IP_KEY = 'snkladr_lan_ip';
 
 /**
+ * (P1) How long a room *claim* stays valid without being touched.
+ *
+ * This was 60 minutes, and expiring it called `clearSession()` - which deleted
+ * the `reconnectToken` along with everything else. A player who took an hour
+ * between matches therefore came back to find their seat claim gone:
+ * `canRejoinRoom` returned false, so they were re-admitted as a brand-new guest
+ * in a different slot, or could not rejoin at all. The identity was destroyed by
+ * a timer nobody could see.
+ *
+ * A claim is a bearer credential, so it cannot live forever - but the failure
+ * mode has to be "your seat expired", not "you are a different person now". The
+ * window is generous and the token is never revived from an old snapshot, so a
+ * host that has genuinely forgotten the room simply will not recognise it.
+ */
+const SESSION_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+
+/**
  * Validate raw stored session data against strict schema
  */
 export function validateSavedSession(data: unknown): SavedSession | null {
@@ -227,7 +244,7 @@ export function canRejoinRoom(session: SavedSession | null | undefined): boolean
 }
 
 /**
- * Get saved session if it is valid and less than 60 minutes old.
+ * Get saved session if it is valid and within the claim TTL.
  *
  * A FINISHED match is retained rather than discarded: its board is no longer
  * resumable (see `hasResumableMatch`), but the room seat and reconnect token
@@ -242,8 +259,9 @@ export function getSavedSession(): SavedSession | null {
     return null;
   }
 
-  const ONE_HOUR = 60 * 60 * 1000;
-  if (Date.now() - session.updatedAt > ONE_HOUR) {
+  // (P1) Expiry drops the claim, but the reason is now explicit and the window
+  // is long enough that a real player will never trip it by taking a break.
+  if (Date.now() - session.updatedAt > SESSION_TTL_MS) {
     clearSession();
     return null;
   }
