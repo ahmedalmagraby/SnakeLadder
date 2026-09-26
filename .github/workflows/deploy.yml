@@ -40,50 +40,11 @@ jobs:
       # config mistake like a repeated `types` entry produces no error at all -
       # it just quietly applies different settings than the file appears to.
       # Vite warns about it, but the warning scrolls past in CI. Fail on it.
-      - name: Validate JSON configs have no duplicate keys
-        run: |
-          node -e "
-            const fs = require('fs');
-            let bad = 0;
-            for (const f of ['tsconfig.json', 'package.json']) {
-              const raw = fs.readFileSync(f, 'utf8');
-              const dupes = new Set();
-              const seen = new Set();
-              JSON.parse(raw, function (k, v) { return v; });
-              // Walk with a reviver that records object keys as they are parsed.
-              JSON.parse(raw, function (k, v) {
-                return v;
-              });
-              // Simple explicit scan: parse and re-serialise, comparing is not
-              // enough, so detect via a Proxy-free manual check of top-level and
-              // compilerOptions keys.
-              const check = (obj, path, file) => {
-                if (obj === null || typeof obj !== 'object' || Array.isArray(obj)) return;
-                const keys = Object.keys(obj);
-                // Object.keys cannot show duplicates; use the source scan below.
-              };
-              check(JSON.parse(raw), '', f);
-              // Source-level duplicate detection.
-              const lines = raw.split(/\r?\n/);
-              const scope = [];
-              const stack = [];
-              for (const line of lines) {
-                const km = line.match(/^\s*\"([^\"]+)\"\s*:/);
-                if (!km) continue;
-                const indent = line.length - line.trimStart().length;
-                while (stack.length && stack[stack.length-1].indent >= indent) stack.pop();
-                const key = km[1];
-                const active = stack.filter(s => s.key === key && s.indent === indent);
-                if (active.length) {
-                  console.error('DUPLICATE KEY ' + key + ' in ' + f + ' near: ' + line.trim());
-                  bad++;
-                }
-                stack.push({ indent, key });
-              }
-            }
-            if (bad) { console.error(bad + ' duplicate key(s) found'); process.exit(1); }
-            console.log('No duplicate keys.');
-          "
+      # Lives in a script file, not inline: the first attempt was a heredoc'd
+      # `node -e` that broke the moment the shell met a quote or a comment, and
+      # a failing lint step that cannot run locally is a lint step nobody trusts.
+      - name: Validate JSON configs (no duplicate keys)
+        run: node scripts/check-json-configs.mjs
 
       - name: TypeScript typecheck
         run: npm run typecheck
