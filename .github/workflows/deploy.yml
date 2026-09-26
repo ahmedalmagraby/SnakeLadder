@@ -118,7 +118,7 @@ jobs:
             && { echo "::error::JS was not inlined into index.html"; exit 1; } || true
 
       - name: Upload artifact
-        uses: actions/upload-pages-artifact@v3
+        uses: actions/upload-pages-artifact@v5
         with:
           path: ./dist
 
