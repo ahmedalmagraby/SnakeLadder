@@ -597,6 +597,9 @@ export function validatePacket(raw: unknown): ValidationResult {
       if (!isFiniteInteger(p.turnId, 1)) {
         return { valid: false, error: 'Invalid turnId' };
       }
+      if (p.gameState !== undefined && !isValidGameStateSnapshot(p.gameState)) {
+        return { valid: false, error: 'Invalid gameState snapshot in GAME_START' };
+      }
       return {
         valid: true,
         packet: {
@@ -606,6 +609,7 @@ export function validatePacket(raw: unknown): ValidationResult {
           winRule: p.winRule,
           stateVersion: p.stateVersion,
           turnId: p.turnId,
+          gameState: p.gameState as GameStateSnapshot | undefined,
         },
       };
     }

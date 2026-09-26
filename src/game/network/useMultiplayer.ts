@@ -4,9 +4,11 @@ import type { PlayerConfig } from '../useGame';
 import { generateRoomCode, peerManager } from './peerManager';
 import {
   clearSession,
+  detachSession,
   getOrCreatePlayerId,
   getSavedSession,
   markSessionFinished,
+  reactivateSession,
   saveSession,
   touchSession,
   type SavedSession,
@@ -961,6 +963,25 @@ export function useMultiplayer({
             setGameStatus('playing');
             setIsPaused(false);
 
+            /*
+             * A NEW match is starting (typically the host replaying after a win).
+             * The previous match had flagged this session as finished, which used
+             * to wipe it - killing the resume/rejoin affordance and the reconnect
+             * token, so the returning player was treated as a brand new guest.
+             * Re-arm the session for this match instead.
+             */
+            reactivateSession({
+              roomCode: stateRef.current.roomCode,
+              maxPlayers: stateRef.current.maxPlayers,
+              speed: packet.speed,
+              winRule: packet.winRule,
+              players: packet.players,
+              turnId: packet.turnId,
+              stateVersion: packet.stateVersion,
+              gameState: packet.gameState,
+            });
+            refreshSavedSession();
+
             const configs: PlayerConfig[] = packet.players.map((p) => ({
               id: p.playerId || `p_${p.slotIndex}`,
               slotIndex: p.slotIndex,
@@ -983,6 +1004,8 @@ export function useMultiplayer({
             turnIdRef.current = packet.turnId;
             if (packet.winner >= 0 || packet.mode === 'over') {
               markSessionFinished();
+              // The room claim survives, so the rejoin affordance must refresh.
+              refreshSavedSession();
               setGameStatus('over');
             } else {
               touchSession();
@@ -1420,15 +1443,6 @@ export function useMultiplayer({
     setGameStatus('playing');
     setIsPaused(false);
 
-    peerManager.broadcast({
-      type: 'GAME_START',
-      players: roster,
-      speed,
-      winRule,
-      stateVersion: stateVersionRef.current,
-      turnId: turnIdRef.current,
-    });
-
     const configs: PlayerConfig[] = roster.map((p) => ({
       id: p.playerId || `p_${p.slotIndex}`,
       slotIndex: p.slotIndex,
@@ -1436,6 +1450,31 @@ export function useMultiplayer({
       isCpu: p.isCpu,
       colorId: p.colorId,
     }));
+
+    const openingBoard: GameStateSnapshot = {
+      mode: 'playing',
+      pos: configs.map(() => 0),
+      turn: 0,
+      phase: 'idle',
+      rolls: configs.map(() => 0),
+      laddersHit: configs.map(() => 0),
+      snakesHit: configs.map(() => 0),
+      sixesHit: configs.map(() => 0),
+      winner: -1,
+      isPlaying: true,
+    };
+
+    // Ship the authoritative opening board so every guest can re-arm its stored
+    // session for this new match (see the GAME_START guest handler).
+    peerManager.broadcast({
+      type: 'GAME_START',
+      players: roster,
+      speed,
+      winRule,
+      stateVersion: stateVersionRef.current,
+      turnId: turnIdRef.current,
+      gameState: openingBoard,
+    });
 
     saveSession({
       roomCode,
@@ -1451,18 +1490,7 @@ export function useMultiplayer({
       slotTokens: Array.from(slotTokensRef.current.entries()),
       turnId: turnIdRef.current,
       stateVersion: stateVersionRef.current,
-      gameState: {
-        mode: 'playing',
-        pos: configs.map(() => 0),
-        turn: 0,
-        phase: 'idle',
-        rolls: configs.map(() => 0),
-        laddersHit: configs.map(() => 0),
-        snakesHit: configs.map(() => 0),
-        sixesHit: configs.map(() => 0),
-        winner: -1,
-        isPlaying: true,
-      },
+      gameState: openingBoard,
     });
     refreshSavedSession();
 
@@ -1522,6 +1550,7 @@ export function useMultiplayer({
 
       if (checkpoint.winner >= 0 || checkpointMode === 'over') {
         markSessionFinished();
+        refreshSavedSession();
         setGameStatus('over');
       } else {
         touchSession();
@@ -1598,7 +1627,10 @@ export function useMultiplayer({
   const leaveRoom = useCallback(() => {
     clearRetryTimers();
     peerManager.cleanup();
-    clearSession();
+    // Detach rather than delete: the room still holds this seat, so the reconnect
+    // token must survive for the player to be recognised when they come back.
+    // `dismissSession()` (the lobby's ✕) is the explicit "forget this room" path.
+    detachSession();
     refreshSavedSession();
     setIsOnline(false);
     setIsHost(false);

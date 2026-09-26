@@ -162,6 +162,8 @@ export type Packet =
       winRule: WinRule;
       stateVersion: number;
       turnId: number;
+      /** Authoritative opening board, so guests can re-arm their stored session. */
+      gameState?: GameStateSnapshot;
     }
   | {
       type: 'ROLL_REQUEST';

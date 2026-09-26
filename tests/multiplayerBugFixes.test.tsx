@@ -14,6 +14,7 @@ import { useMultiplayer } from '../src/game/network/useMultiplayer';
 import { validatePacket } from '../src/game/network/validation';
 import {
   clearSession,
+  getSavedSession,
   saveSession,
 } from '../src/game/network/sessionStorage';
 import type { NetworkPlayer, Packet } from '../src/game/network/types';
@@ -817,10 +818,151 @@ describe('Regression 3: disconnected players are reserved, never AI-controlled',
 });
 
 /* ------------------------------------------------------------------ */
-/* 4. Kicking a human actually removes them                            */
+/* 4. Room membership survives a finished match + next match           */
 /* ------------------------------------------------------------------ */
 
-describe('Regression 4: kicking a human player removes the seat', () => {
+describe('Regression 4: a new match re-arms the room session', () => {
+  const roster = (): NetworkPlayer[] => [
+    hostPlayer(),
+    {
+      playerId: 'p_guest',
+      peerId: 'peer_guest',
+      name: 'Guest',
+      slotIndex: 1,
+      colorId: 1,
+      isHost: false,
+      isCpu: false,
+      isReady: true,
+    },
+  ];
+
+  async function mountGuest() {
+    const stub = new HostStub('snkladr-rstrt1');
+    peerRegistry.set('snkladr-rstrt1', stub);
+
+    const hook = renderHook(() => useMultiplayer());
+    let joinPromise: Promise<void>;
+    await act(async () => {
+      joinPromise = hook.result.current.joinRoom('RSTRT1', 'Guest', 1);
+      await flush();
+    });
+
+    await act(async () => {
+      stub.conn!.send({
+        type: 'JOIN_ACCEPTED',
+        requestId: 'req_rm',
+        slotIndex: 1,
+        reconnectToken: 'secret_token_slot_1',
+        roomCode: 'RSTRT1',
+        speed: 'normal',
+        winRule: 'exact',
+        players: roster(),
+        stateVersion: 2,
+        turnId: 1,
+        maxPlayers: 4,
+        gameState: {
+          mode: 'playing',
+          pos: [10, 10],
+          turn: 0,
+          phase: 'idle',
+          rolls: [1, 1],
+          laddersHit: [0, 0],
+          snakesHit: [0, 0],
+          sixesHit: [0, 0],
+          winner: -1,
+          isPlaying: true,
+        },
+      });
+      await flush();
+    });
+    await act(async () => {
+      await joinPromise;
+    });
+
+    return { hook, stub };
+  }
+
+  it('keeps the rejoin identity after the match ends and the host starts another', async () => {
+    const { hook, stub } = await mountGuest();
+
+    const tokenBefore = hook.result.current.savedSession?.reconnectToken;
+    expect(tokenBefore).toBe('secret_token_slot_1');
+
+    // Match 1 concludes: the host wins.
+    await act(async () => {
+      stub.conn!.send({
+        type: 'SYNC_CHECKPOINT',
+        mode: 'over',
+        pos: [100, 20],
+        turn: 0,
+        phase: 'over',
+        rolls: [12, 4],
+        laddersHit: [2, 1],
+        snakesHit: [0, 1],
+        sixesHit: [1, 0],
+        winner: 0,
+        stateVersion: 30,
+        turnId: 9,
+      });
+      await flush();
+    });
+
+    // A finished match must not offer to resume a stale board...
+    expect(hook.result.current.savedSession?.isFinished).toBe(true);
+    expect(hook.result.current.savedSession?.gameState?.isPlaying).toBeFalsy();
+    // ...but the player must STILL hold their claim on the room.
+    expect(hook.result.current.savedSession?.reconnectToken).toBe('secret_token_slot_1');
+
+    // Host launches the next match.
+    await act(async () => {
+      stub.conn!.send({
+        type: 'GAME_START',
+        players: roster(),
+        speed: 'normal',
+        winRule: 'exact',
+        stateVersion: 31,
+        turnId: 1,
+      });
+      await flush();
+    });
+
+    // The session is live again: resume/rejoin is offered and the token is intact.
+    expect(hook.result.current.savedSession?.isFinished).toBeFalsy();
+    expect(hook.result.current.savedSession?.reconnectToken).toBe('secret_token_slot_1');
+    expect(hook.result.current.savedSession?.slotIndex).toBe(1);
+    expect(hook.result.current.savedSession?.roomCode).toBe('RSTRT1');
+    expect(hook.result.current.gameStatus).toBe('playing');
+
+    // And the same identity survives a page reload mid-match-2.
+    const reloaded = getSavedSession();
+    expect(reloaded?.reconnectToken).toBe('secret_token_slot_1');
+    expect(reloaded?.isFinished).toBeFalsy();
+
+    hook.unmount();
+  });
+
+  it('preserves the seat identity when the guest leaves and comes back', async () => {
+    const { hook } = await mountGuest();
+
+    act(() => {
+      hook.result.current.leaveRoom();
+    });
+    await flush();
+
+    // Leaving the room must not destroy the reconnect token: the host still holds
+    // the seat reserved, so returning must be recognised as the same player.
+    const afterLeave = hook.result.current.savedSession;
+    expect(afterLeave?.reconnectToken).toBe('secret_token_slot_1');
+    expect(afterLeave?.roomCode).toBe('RSTRT1');
+    expect(afterLeave?.slotIndex).toBe(1);
+  });
+});
+
+/* ------------------------------------------------------------------ */
+/* 5. Kicking a human actually removes them                            */
+/* ------------------------------------------------------------------ */
+
+describe('Regression 5: kicking a human player removes the seat', () => {
   it('drops the roster entry, revokes the token and closes the transport', async () => {
     const { result } = renderHook(() => useMultiplayer());
     await act(async () => {
@@ -871,10 +1013,10 @@ describe('Regression 4: kicking a human player removes the seat', () => {
 });
 
 /* ------------------------------------------------------------------ */
-/* 5. Guest lifecycle: lobby rejoin must not jump into the match        */
+/* 6. Guest lifecycle: lobby rejoin must not jump into the match        */
 /* ------------------------------------------------------------------ */
 
-describe('Regression 5: guest rejoin respects lobby vs live match', () => {
+describe('Regression 6: guest rejoin respects lobby vs live match', () => {
   it('stays in the lobby when the host has not started a match', async () => {
     const stub = new HostStub('snkladr-lobby1');
     peerRegistry.set('snkladr-lobby1', stub);

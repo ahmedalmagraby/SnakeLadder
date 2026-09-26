@@ -2,9 +2,11 @@ import { useState, useEffect } from 'react';
 import { PLAYER_COLORS, type GameSpeed, type WinRule } from '../game/constants';
 import type { NetworkPlayer, ConnectionStatus } from '../game/network/types';
 import {
+  canRejoinRoom,
   dismissSession,
   getLanIp,
   getShareUrl,
+  hasResumableMatch,
   isLocalhost,
   setLanIp,
   type SavedSession,
@@ -163,7 +165,9 @@ export default function OnlineLobby({
     }
   };
 
-  const activeSavedSession = sessionDismissed ? null : savedSession;
+  const activeSavedSession =
+    sessionDismissed || !canRejoinRoom(savedSession) ? null : savedSession;
+  const savedSessionIsLiveMatch = hasResumableMatch(activeSavedSession);
 
   /* ---------------- Active Waiting Room View ---------------- */
   if (isOnline && roomCode) {
@@ -515,16 +519,21 @@ export default function OnlineLobby({
           Play with friends on phones, tablets, or laptops over the Internet
         </p>
 
-        {/* Resume Recent Active Match Banner */}
+        {/* Rejoin Recent Room Banner */}
         {activeSavedSession && (
           <div className="mb-4 p-3 rounded-xl bg-gradient-to-r from-amber-500/20 via-emerald-900/40 to-amber-500/20 border border-amber-400/60 flex items-center justify-between text-left">
             <div>
               <div className="text-xs font-display text-amber-300 flex items-center gap-1.5">
                 <span aria-hidden="true">🔄</span>
-                <span>RESUME RECENT MATCH</span>
+                <span>
+                  {savedSessionIsLiveMatch ? 'RESUME RECENT MATCH' : 'REJOIN YOUR ROOM'}
+                </span>
               </div>
               <div className="text-[11px] text-emerald-200/80 font-bold">
                 Room: <strong className="text-amber-200">{activeSavedSession.roomCode}</strong> as {activeSavedSession.playerName}
+                {!savedSessionIsLiveMatch && (
+                  <span className="text-emerald-300/70"> — your seat is reserved</span>
+                )}
               </div>
             </div>
             <div className="flex items-center gap-1.5">
@@ -532,7 +541,7 @@ export default function OnlineLobby({
                 type="button"
                 disabled={isSubmitting}
                 onClick={handleResume}
-                aria-label="Rejoin active match"
+                aria-label={savedSessionIsLiveMatch ? 'Rejoin active match' : 'Rejoin your room'}
                 className="min-h-[44px] px-3.5 py-1.5 rounded-lg text-xs font-black bg-amber-400 text-stone-900 hover:bg-amber-300 transition-all cursor-pointer shadow flex items-center"
               >
                 {isSubmitting ? 'RECONNECTING...' : 'REJOIN'}

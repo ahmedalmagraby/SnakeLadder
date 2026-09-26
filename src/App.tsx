@@ -9,6 +9,7 @@ import AriaLiveAnnouncer from './components/AriaLiveAnnouncer';
 import AccessibleBoardTable from './components/AccessibleBoardTable';
 import { useMultiplayer } from './game/network/useMultiplayer';
 import type { SavedSession } from './game/network/sessionStorage';
+import { hasResumableMatch } from './game/network/sessionStorage';
 import {
   PLAYER_COLORS,
   PORTALS,
@@ -459,7 +460,7 @@ function StartScreen({
         </p>
 
         {/* Active Session Reconnect Banner */}
-        {savedSession && (
+        {savedSession && hasResumableMatch(savedSession) && (
           <div className="mt-4 p-3 rounded-xl bg-gradient-to-r from-amber-500/25 via-emerald-900/60 to-amber-500/25 border border-amber-400/70 flex items-center justify-between text-left shadow-lg">
             <div>
               <div className="text-xs font-display text-amber-300 flex items-center gap-1.5">

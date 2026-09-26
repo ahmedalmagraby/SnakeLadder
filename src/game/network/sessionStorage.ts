@@ -117,38 +117,10 @@ export function touchSession(): void {
 }
 
 /**
- * Mark the session as finished when match ends so resume is not offered
+ * Read + validate the stored session without applying any retention policy.
+ * Returns null for missing/corrupt data without mutating storage.
  */
-export function markSessionFinished(): void {
-  if (typeof window === 'undefined') return;
-  try {
-    const raw = localStorage.getItem(ACTIVE_SESSION_KEY);
-    if (!raw) return;
-    const session = JSON.parse(raw);
-    const valid = validateSavedSession(session);
-    if (!valid) {
-      clearSession();
-      return;
-    }
-    valid.isFinished = true;
-    valid.updatedAt = Date.now();
-    localStorage.setItem(ACTIVE_SESSION_KEY, JSON.stringify(valid));
-  } catch {
-    // Ignore
-  }
-}
-
-/**
- * Dismiss session without page reload
- */
-export function dismissSession(): void {
-  clearSession();
-}
-
-/**
- * Get saved active session if less than 60 minutes old, valid, and not finished
- */
-export function getSavedSession(): SavedSession | null {
+function readStoredSession(): SavedSession | null {
   if (typeof window === 'undefined') return null;
   try {
     const raw = localStorage.getItem(ACTIVE_SESSION_KEY);
@@ -157,31 +129,126 @@ export function getSavedSession(): SavedSession | null {
     try {
       parsed = JSON.parse(raw);
     } catch {
-      clearSession();
       return null;
     }
-
-    const session = validateSavedSession(parsed);
-    if (!session) {
-      clearSession();
-      return null;
-    }
-
-    if (session.isFinished) {
-      clearSession();
-      return null;
-    }
-
-    const ONE_HOUR = 60 * 60 * 1000;
-    if (Date.now() - session.updatedAt > ONE_HOUR) {
-      clearSession();
-      return null;
-    }
-
-    return session;
+    return validateSavedSession(parsed);
   } catch {
     return null;
   }
+}
+
+/**
+ * Mark the current match as finished so a stale board is never resumed.
+ *
+ * The ROOM claim is deliberately preserved: the host typically launches another
+ * match in the same room, and the player must still be recognised when they
+ * return. Only the finished board is dropped.
+ */
+export function markSessionFinished(): void {
+  if (typeof window === 'undefined') return;
+  const valid = readStoredSession();
+  if (!valid) {
+    clearSession();
+    return;
+  }
+  const next: SavedSession = { ...valid, isFinished: true, updatedAt: Date.now() };
+  delete next.gameState;
+  try {
+    localStorage.setItem(ACTIVE_SESSION_KEY, JSON.stringify(next));
+  } catch {
+    // Quota / privacy mode
+  }
+}
+
+/**
+ * Re-arm the stored session for a NEW match.
+ *
+ * Clears the finished flag and refreshes the timestamp while preserving the
+ * room code, seat and reconnect token, so the same player is still recognised
+ * and the resume/rejoin affordance becomes available again.
+ */
+export function reactivateSession(overrides: Partial<SavedSession> = {}): void {
+  if (typeof window === 'undefined') return;
+  const current = readStoredSession();
+  if (!current) return;
+  const next: SavedSession = { ...current, ...overrides, updatedAt: Date.now() };
+  delete next.isFinished;
+  try {
+    localStorage.setItem(ACTIVE_SESSION_KEY, JSON.stringify(next));
+  } catch {
+    // Quota / privacy mode
+  }
+}
+
+/**
+ * Drop the live-match state but KEEP the claim on the room.
+ *
+ * Used when leaving a room: the host still holds the seat reserved, so the
+ * reconnect token must survive or the returning player would be admitted as a
+ * brand new guest in a different slot.
+ */
+export function detachSession(): void {
+  if (typeof window === 'undefined') return;
+  const current = readStoredSession();
+  if (!current) return;
+  const next: SavedSession = { ...current, updatedAt: Date.now() };
+  // No live board to resume once the player has left the room.
+  delete next.gameState;
+  delete next.isFinished;
+  try {
+    localStorage.setItem(ACTIVE_SESSION_KEY, JSON.stringify(next));
+  } catch {
+    // Quota / privacy mode
+  }
+}
+
+/**
+ * Dismiss session without page reload (explicit "forget this room" action)
+ */
+export function dismissSession(): void {
+  clearSession();
+}
+
+/**
+ * True when the remembered room still holds a match that can be resumed
+ * mid-flight (i.e. the board is live, not a finished one).
+ */
+export function hasResumableMatch(session: SavedSession | null | undefined): boolean {
+  return !!session && !session.isFinished && session.gameState?.isPlaying === true;
+}
+
+/**
+ * True when the player still holds a claim on the room, so the rejoin
+ * affordance should be offered. Requires a host-issued token for guests.
+ */
+export function canRejoinRoom(session: SavedSession | null | undefined): boolean {
+  if (!session || !session.roomCode) return false;
+  return session.isHost || !!session.reconnectToken;
+}
+
+/**
+ * Get saved session if it is valid and less than 60 minutes old.
+ *
+ * A FINISHED match is retained rather than discarded: its board is no longer
+ * resumable (see `hasResumableMatch`), but the room seat and reconnect token
+ * must survive so the player rejoins as the same person.
+ */
+export function getSavedSession(): SavedSession | null {
+  if (typeof window === 'undefined') return null;
+
+  const session = readStoredSession();
+  if (!session) {
+    clearSession();
+    return null;
+  }
+
+  const ONE_HOUR = 60 * 60 * 1000;
+  if (Date.now() - session.updatedAt > ONE_HOUR) {
+    clearSession();
+    return null;
+  }
+
+  return session;
 }
 
 /**

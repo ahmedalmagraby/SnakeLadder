@@ -6,6 +6,9 @@ import {
   clearSession,
   touchSession,
   markSessionFinished,
+  reactivateSession,
+  hasResumableMatch,
+  canRejoinRoom,
 } from '../src/game/network/sessionStorage';
 import type {
   Packet,
@@ -447,7 +450,7 @@ describe('Connection & Room Lifecycle Handling', () => {
   /* 6. Reconnect While Over & Session Clearing                         */
   /* ------------------------------------------------------------------ */
   describe('6. Reconnect While Over', () => {
-    it('marks session finished when match concludes so it cannot be reconnected', () => {
+    it('drops the finished board but keeps the room claim so the player is still recognised', () => {
       saveSession({
         roomCode: 'OVER01',
         playerId: 'p1',
@@ -456,6 +459,7 @@ describe('Connection & Room Lifecycle Handling', () => {
         slotIndex: 0,
         isHost: true,
         maxPlayers: 4,
+        reconnectToken: 'secret_token_slot_1',
         gameState: {
           mode: 'playing',
           pos: [99, 50],
@@ -479,8 +483,29 @@ describe('Connection & Room Lifecycle Handling', () => {
       // Match concludes with a winner -> markSessionFinished
       markSessionFinished();
 
-      // getSavedSession must now return null because finished match cannot be resumed!
-      expect(getSavedSession()).toBeNull();
+      const afterFinish = getSavedSession();
+      // A finished match is no longer resumable...
+      expect(afterFinish?.isFinished).toBe(true);
+      expect(afterFinish?.gameState).toBeUndefined();
+      expect(hasResumableMatch(afterFinish)).toBe(false);
+      // ...but the player keeps their seat and reconnect identity, so rejoining a
+      // NEW match in the same room is still recognised as the same person.
+      expect(afterFinish?.roomCode).toBe('OVER01');
+      expect(afterFinish?.reconnectToken).toBe('secret_token_slot_1');
+      expect(afterFinish?.slotIndex).toBe(0);
+      expect(canRejoinRoom(afterFinish)).toBe(true);
+
+      // Starting the next match re-arms the session for resume/reconnect.
+      reactivateSession();
+      const rearmed = getSavedSession();
+      expect(rearmed?.isFinished).toBeFalsy();
+      expect(rearmed?.reconnectToken).toBe('secret_token_slot_1');
+      expect(rearmed?.roomCode).toBe('OVER01');
+    });
+
+    it('a session with no room claim cannot be rejoined', () => {
+      expect(canRejoinRoom(null)).toBe(false);
+      expect(hasResumableMatch(null)).toBe(false);
     });
   });
 
