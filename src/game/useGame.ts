@@ -35,7 +35,6 @@ import {
   drawLadderClimbGlow,
   drawParticles,
   drawPodiumPresence,
-  drawPortalPreview,
   drawStaticBoard,
   drawTargetHighlight,
   drawToken,
@@ -1470,12 +1469,6 @@ export function useGame(options: UseGameOptions = {}) {
       // Hovered square inspection highlight
       if (g.hoveredSquare && g.hoveredSquare !== g.targetSquare) {
         drawHoverHighlight(ctx, g.hoveredSquare, g.time, theme);
-
-        // (B5 / B6) Trace the route the token would take.
-        const portal = PORTALS[g.hoveredSquare];
-        if (portal) {
-          drawPortalPreview(ctx, g.hoveredSquare, portal.to, g.time, theme);
-        }
       }
 
       // Square 100 Finish Line ambient beacon + (C1/C7) ripple & winner halo
@@ -1634,17 +1627,21 @@ export function useGame(options: UseGameOptions = {}) {
               target,
             });
 
-            // (C8) A themed landing ring for ordinary moves. Previously only
-            // snake/ladder arrivals had a payoff - a plain move just stopped.
-            // (E4) A 6 also fires the extra-turn halo.
+            // (C8/B2) Themed landing rings and shockwave micro-dust for moves
             const ui = themeRef.current.ui;
             if (target > 0) {
               const landing = squareCenter(target);
               spawnRing(g.particles, landing.x, landing.y, ui.particleSpark, {
-                size: 15,
+                size: 16,
                 life: 0.5,
                 thickness: 3,
               });
+              spawnRing(g.particles, landing.x, landing.y, '#ffffff', {
+                size: 8,
+                life: 0.32,
+                thickness: 2,
+              });
+              spawnDust(g.particles, landing.x, landing.y, ui.particleDust);
             }
             if (roll === 6) {
               g.extraTurn = 1;
@@ -1703,21 +1700,28 @@ export function useGame(options: UseGameOptions = {}) {
           const pt = sl.kind === 'snake'
             ? getSnakeSlidePoint(sl.from, sl.to, f2, g.time, true, snakeAmpScale())
             : pointAt(sl.pts, sl.cum, f2 * sl.total);
-          if (Math.random() < 0.65) {
-            const ui = themeRef.current.ui;
-            spawnSpark(
-              g.particles,
-              pt.x,
-              pt.y,
-              sl.kind === 'ladder' ? ui.particleSpark : ui.particleSnakeSpark,
-            );
+          const ui = themeRef.current.ui;
+          if (sl.kind === 'ladder') {
+            // (B4) Ladder climb sparkle trail
+            if (Math.random() < 0.6) {
+              spawnSpark(g.particles, pt.x, pt.y, ui.particleLadderSpark);
+            }
+          } else {
+            // (B4) Snake slide friction dust and sparks
+            if (Math.random() < 0.45) {
+              spawnSpark(g.particles, pt.x, pt.y, ui.particleSnakeSpark);
+            }
+            if (Math.random() < 0.35) {
+              spawnDust(g.particles, pt.x, pt.y, ui.particleDust);
+            }
           }
         }
       }
 
-      // Bound particles to avoid unbounded memory growth
-      if (g.particles.length > 60) {
-        g.particles.splice(0, g.particles.length - 60);
+      // Bound particles to avoid unbounded memory growth (elevated during win celebration)
+      const maxParticles = g.phase === 'over' || g.mode === 'over' ? 180 : 75;
+      if (g.particles.length > maxParticles) {
+        g.particles.splice(0, g.particles.length - maxParticles);
       }
       updateParticles(g.particles, dt / 1000);
 

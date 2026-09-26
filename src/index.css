@@ -292,6 +292,65 @@ body {
   animation: dieShake 0.22s linear infinite;
 }
 
+/* C1: Dice Landing Bounce & Impact */
+@keyframes dieBounce {
+  0% { transform: translateY(0); }
+  32% { transform: translateY(-7px) scale(1.05); }
+  62% { transform: translateY(2px) scale(0.98); }
+  100% { transform: translateY(0) scale(1); }
+}
+.die-stage.landed:not(.rolling) .die-cube {
+  animation: dieBounce 0.38s cubic-bezier(0.18, 0.89, 0.32, 1.28) 1;
+}
+
+@keyframes dieShockwave {
+  0% { transform: translateX(-50%) scale(0.65); opacity: 0.8; }
+  100% { transform: translateX(-50%) scale(1.55); opacity: 0; }
+}
+.die-stage.landed:not(.rolling) .die-shadow::after {
+  content: '';
+  position: absolute;
+  inset: -4px;
+  border-radius: 50%;
+  border: 2px solid var(--theme-accent);
+  animation: dieShockwave 0.45s ease-out forwards;
+}
+
+/* C2: Lucky 6 Golden Shimmer */
+@keyframes luckySixGlow {
+  0%, 100% {
+    filter: drop-shadow(0 0 10px rgba(251, 191, 36, 0.75)) drop-shadow(0 0 22px rgba(251, 191, 36, 0.45));
+  }
+  50% {
+    filter: drop-shadow(0 0 18px rgba(251, 191, 36, 0.95)) drop-shadow(0 0 32px rgba(251, 191, 36, 0.7));
+  }
+}
+.die-stage.lucky-six:not(.rolling) {
+  animation: luckySixGlow 1.2s ease-in-out infinite;
+}
+
+/* D1: Active Player Card Spotlight Shimmer */
+@keyframes cardShimmer {
+  0% {
+    background-position: -200% 0;
+  }
+  100% {
+    background-position: 200% 0;
+  }
+}
+.active-shimmer {
+  background-image: linear-gradient(
+    115deg,
+    transparent 0%,
+    transparent 35%,
+    rgba(255, 255, 255, 0.09) 50%,
+    transparent 65%,
+    transparent 100%
+  ) !important;
+  background-size: 250% 100% !important;
+  animation: pulseGlow 1.6s ease-in-out infinite, cardShimmer 3.5s ease-in-out infinite !important;
+}
+
 /* Custom dark scrollbar for sidebar (A3: was hardcoded to jungle amber) */
 ::-webkit-scrollbar {
   width: 6px;
@@ -505,8 +564,11 @@ body {
   /* Infinite decorative loops simply hold still. */
   .floaty,
   .pulse-glow,
+  .active-shimmer,
   .board-glow,
   .die-stage.rolling,
+  .die-stage.lucky-six,
+  .die-stage.landed .die-cube,
   .animate-pulse {
     animation: none !important;
   }

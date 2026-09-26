@@ -44,7 +44,7 @@ export interface Particle {
   maxLife: number;
   size: number;
   color: string;
-  kind: 'dust' | 'spark' | 'confetti' | 'firework' | 'ring';
+  kind: 'dust' | 'spark' | 'confetti' | 'firework' | 'ring' | 'streamer' | 'star';
   rot: number;
   vr: number;
   g: number;
@@ -103,25 +103,25 @@ export function spawnSpark(ps: Particle[], x: number, y: number, color = '#ffd75
   });
 }
 
-/* (E1) Confetti/firework palettes are now theme-driven. The caller passes
-   `theme.ui.celebrate`; jungle's list is the exact array that was hardcoded
-   here before, so the default celebration looks identical. */
+/* (E1/E2) Multi-tier confetti, streamers, and star bursts */
 export function spawnConfetti(ps: Particle[], colors: string[]) {
   const palette = colors.length ? colors : ['#fbbf24', '#ffffff'];
-  for (let i = 0; i < 80; i++) {
+  for (let i = 0; i < 95; i++) {
+    const kindRoll = Math.random();
+    const kind = kindRoll < 0.65 ? 'confetti' : kindRoll < 0.85 ? 'streamer' : 'star';
     ps.push({
       x: Math.random() * LOGICAL,
       y: -20 - Math.random() * 80,
-      vx: (Math.random() - 0.5) * 110,
-      vy: 70 + Math.random() * 140,
+      vx: (Math.random() - 0.5) * 120,
+      vy: kind === 'streamer' ? 50 + Math.random() * 110 : 70 + Math.random() * 140,
       life: 3.2 + Math.random() * 2.8,
       maxLife: 6.0,
-      size: 6 + Math.random() * 7,
+      size: kind === 'streamer' ? 14 + Math.random() * 10 : kind === 'star' ? 5 + Math.random() * 5 : 6 + Math.random() * 7,
       color: palette[(Math.random() * palette.length) | 0],
-      kind: 'confetti',
+      kind,
       rot: Math.random() * Math.PI,
-      vr: (Math.random() - 0.5) * 10,
-      g: 50,
+      vr: (Math.random() - 0.5) * (kind === 'streamer' ? 14 : 10),
+      g: kind === 'streamer' ? 35 : 50,
     });
   }
 }
@@ -188,6 +188,22 @@ export function drawParticles(ctx: CanvasRenderingContext2D, ps: Particle[]) {
       ctx.globalAlpha = Math.min(1, a * 2.5);
       ctx.fillStyle = p.color;
       ctx.fillRect(-p.size / 2, -p.size / 4, p.size, p.size / 2);
+      ctx.restore();
+    } else if (p.kind === 'streamer') {
+      ctx.save();
+      ctx.translate(p.x, p.y);
+      ctx.rotate(p.rot);
+      ctx.globalAlpha = Math.min(1, a * 2.5);
+      ctx.fillStyle = p.color;
+      // Slender elongated ribbon strip with soft perspective tilt
+      ctx.fillRect(-p.size / 2, -1.8, p.size, 3.6);
+      ctx.restore();
+    } else if (p.kind === 'star') {
+      ctx.save();
+      ctx.translate(p.x, p.y);
+      ctx.rotate(p.rot);
+      ctx.globalAlpha = Math.min(1, a * 2.5);
+      drawStar(ctx, 0, 0, p.size * 0.8, p.color);
       ctx.restore();
     } else if (p.kind === 'ring') {
       // Expanding shockwave. `a` runs 1 -> 0 over the particle's life.
@@ -278,29 +294,6 @@ function drawChevron(ctx: CanvasRenderingContext2D, x: number, y: number, s: num
   ctx.restore();
 }
 
-/** Filled right-pointing arrow head, used for direction hints. */
-function drawArrowHead(
-  ctx: CanvasRenderingContext2D,
-  x: number,
-  y: number,
-  angle: number,
-  size: number,
-  color: string,
-) {
-  ctx.save();
-  ctx.translate(x, y);
-  ctx.rotate(angle);
-  ctx.beginPath();
-  ctx.moveTo(size, 0);
-  ctx.lineTo(-size * 0.8, size * 0.72);
-  ctx.lineTo(-size * 0.45, 0);
-  ctx.lineTo(-size * 0.8, -size * 0.72);
-  ctx.closePath();
-  ctx.fillStyle = color;
-  ctx.fill();
-  ctx.restore();
-}
-
 function drawLadder(
   ctx: CanvasRenderingContext2D,
   b: number,
@@ -341,6 +334,14 @@ function drawLadder(
   ctx.lineWidth = 12;
   rail(px + 2, py + 3);
   rail(-px + 2, -py + 3);
+
+  // (A2) Deep 3D elevation ground shadow behind rails
+  ctx.save();
+  ctx.strokeStyle = 'rgba(0, 0, 0, 0.28)';
+  ctx.lineWidth = 14;
+  rail(px + 4, py + 6);
+  rail(-px + 4, -py + 6);
+  ctx.restore();
 
   // Rail core
   ctx.strokeStyle = tb.ladderRailCore;
@@ -406,6 +407,15 @@ function drawLadder(
     const f = i / (count + 1);
     const x = a.x + dx * f;
     const y = a.y + dy * f;
+
+    // (A2) Rung 3D elevation cast shadow onto board below (height increases with f)
+    const elev = 2.5 + f * 4.5;
+    ctx.strokeStyle = 'rgba(0, 0, 0, 0.25)';
+    ctx.lineWidth = 7;
+    ctx.beginPath();
+    ctx.moveTo(x + px + elev * 0.4, y + py + elev);
+    ctx.lineTo(x - px + elev * 0.4, y - py + elev);
+    ctx.stroke();
 
     // Rung shadow
     ctx.strokeStyle = tb.ladderRungShadow;
@@ -505,6 +515,25 @@ export function drawAnimatedSnake(
   const segColors = getSegmentColors(main, dark, n);
   for (let i = 0; i < n; i++) {
     seg(i, wAt(i / n), segColors[i] || main);
+  }
+
+  // (A3) Ventral belly plates / underbelly scale highlight
+  for (let i = 1; i < n; i++) {
+    const f = i / n;
+    const pt = pts[i];
+    const next = pts[i + 1] || pt;
+    const tdx = next.x - pt.x;
+    const tdy = next.y - pt.y;
+    const tlen = Math.hypot(tdx, tdy) || 1;
+    const nx = (-tdy / tlen);
+    const ny = (tdx / tlen);
+    const w = wAt(f);
+    ctx.strokeStyle = 'rgba(255, 255, 255, 0.15)';
+    ctx.lineWidth = Math.max(1.5, w * 0.28);
+    ctx.beginPath();
+    ctx.moveTo(pt.x + nx * (w * 0.18), pt.y + ny * (w * 0.18));
+    ctx.lineTo(next.x + nx * (w * 0.18), next.y + ny * (w * 0.18));
+    ctx.stroke();
   }
 
   // 4. Style-specific spine patterns
@@ -667,10 +696,10 @@ export function drawAnimatedSnake(
     ctx.shadowBlur = 0;
   }
 
-  // Head shadow
+  // (A3) Deep Head shadow
   ctx.fillStyle = tb.snakeDropShadow;
   ctx.beginPath();
-  ctx.ellipse(8, 3.5, 24, 18, 0, 0, Math.PI * 2);
+  ctx.ellipse(8, 4.5, 26, 20, 0, 0, Math.PI * 2);
   ctx.fill();
 
   // Head base
@@ -1275,6 +1304,27 @@ export function drawStaticBoard(
       ctx.globalAlpha = 1;
     }
 
+    // (A1) 2.5D Beveled tile inset and micro-emboss
+    if (n !== 100) {
+      ctx.save();
+      // Top & Left inner highlight
+      ctx.strokeStyle = 'rgba(255, 255, 255, 0.13)';
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(x + 1.5, y + CELL - 1.5);
+      ctx.lineTo(x + 1.5, y + 1.5);
+      ctx.lineTo(x + CELL - 1.5, y + 1.5);
+      ctx.stroke();
+      // Bottom & Right inner bevel shadow
+      ctx.strokeStyle = 'rgba(0, 0, 0, 0.18)';
+      ctx.beginPath();
+      ctx.moveTo(x + CELL - 1.5, y + 1.5);
+      ctx.lineTo(x + CELL - 1.5, y + CELL - 1.5);
+      ctx.lineTo(x + 1.5, y + CELL - 1.5);
+      ctx.stroke();
+      ctx.restore();
+    }
+
     // Tile border
     ctx.strokeStyle = tb.tileBorder;
     ctx.lineWidth = 1.5;
@@ -1579,6 +1629,35 @@ export function drawToken(
 
   ctx.translate(x, y);
 
+  // (B1) Kinetic Squash & Stretch during hops
+  if (hopRatio > 0) {
+    const stretchY = 1 + 0.12 * hopRatio;
+    const stretchX = 1 - 0.06 * hopRatio;
+    ctx.scale(stretchX, stretchY);
+  }
+
+  // (B3) 3D Weighted Base Pedestal / Rim
+  const baseY = r * 0.72;
+  const baseR = r * 0.96;
+  const baseGrad = ctx.createLinearGradient(0, baseY - 3, 0, baseY + 4);
+  baseGrad.addColorStop(0, colors.light);
+  baseGrad.addColorStop(0.4, colors.base);
+  baseGrad.addColorStop(1, colors.dark);
+  ctx.fillStyle = baseGrad;
+  ctx.beginPath();
+  ctx.ellipse(0, baseY, baseR, baseR * 0.32, 0, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.strokeStyle = 'rgba(0, 0, 0, 0.45)';
+  ctx.lineWidth = 1.5;
+  ctx.stroke();
+
+  // Highlight rim on pedestal
+  ctx.strokeStyle = 'rgba(255, 255, 255, 0.35)';
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.ellipse(0, baseY - 1, baseR * 0.88, baseR * 0.24, 0, Math.PI * 0.8, Math.PI * 2.2);
+  ctx.stroke();
+
   // 3D Sphere gradient
   const g = ctx.createRadialGradient(-r * 0.35, -r * 0.45, r * 0.15, 0, 0, r * 1.25);
   g.addColorStop(0, colors.light);
@@ -1676,74 +1755,6 @@ export function drawHoverHighlight(
   ctx.shadowColor = theme.board.hoverRingGlow;
   ctx.shadowBlur = 10;
   roundRectPath(ctx, x + 3, y + 3, CELL - 6, CELL - 6, 8);
-  ctx.stroke();
-  ctx.restore();
-}
-
-/**
- * (B5 / B6) While inspecting a ladder or snake, trace the route the token will
- * take: a marching dashed line for ladders, plus a direction arrow at the
- * destination for both.
- */
-export function drawPortalPreview(
-  ctx: CanvasRenderingContext2D,
-  from: number,
-  to: number,
-  time: number,
-  theme: BoardTheme = THEMES.jungle,
-) {
-  const portal = PORTALS[from];
-  if (!portal) return;
-  const tb = theme.board;
-  const a = squareCenter(from);
-  const c = squareCenter(to);
-  const isLadder = portal.type === 'ladder';
-  const color = isLadder ? tb.badgeLadderBorder : tb.badgeSnakeBorder;
-  const glow = isLadder ? tb.badgeLadderText : tb.badgeSnakeText;
-
-  // Ladders are drawn between their two rails, so the preview follows suit.
-  let ax = a.x;
-  let ay = a.y;
-  if (isLadder) {
-    const dx = c.x - a.x;
-    const dy = c.y - a.y;
-    const len = Math.hypot(dx, dy) || 1;
-    ax += (-dy / len) * 13;
-    ay += (dx / len) * 13;
-  }
-
-  ctx.save();
-  ctx.strokeStyle = color;
-  ctx.lineWidth = 3;
-  ctx.lineCap = 'round';
-  ctx.setLineDash([9, 11]);
-  ctx.lineDashOffset = -time * 42;
-  ctx.globalAlpha = 0.7;
-  ctx.shadowColor = glow;
-  ctx.shadowBlur = 8;
-  ctx.beginPath();
-  ctx.moveTo(ax, ay);
-  ctx.lineTo(c.x, c.y);
-  ctx.stroke();
-  ctx.setLineDash([]);
-
-  // Direction arrow at the destination
-  const ang = Math.atan2(c.y - ay, c.x - ax);
-  drawArrowHead(
-    ctx,
-    c.x - Math.cos(ang) * (isLadder ? 10 : 4),
-    c.y - Math.sin(ang) * (isLadder ? 10 : 4),
-    ang,
-    9,
-    glow,
-  );
-
-  // Destination ring
-  ctx.globalAlpha = 0.55 + 0.25 * Math.sin(time * 6);
-  ctx.strokeStyle = glow;
-  ctx.lineWidth = 2;
-  ctx.beginPath();
-  ctx.arc(c.x, c.y, CELL * 0.36, 0, Math.PI * 2);
   ctx.stroke();
   ctx.restore();
 }

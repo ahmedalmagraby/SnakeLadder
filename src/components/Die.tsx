@@ -84,7 +84,9 @@ export default function Die({
         disabled={!canRoll}
         className={`die-stage select-none outline-none relative group ${
           compact ? 'scale-[0.72] origin-center -my-2' : ''
-        } ${rolling ? 'rolling' : ''} ${canRoll ? 'cursor-pointer hover:scale-105 active:scale-95' : 'cursor-default'}`}
+        } ${rolling ? 'rolling' : ''} ${isLanded && !rolling ? 'landed' : ''} ${
+          isLanded && !rolling && value === 6 ? 'lucky-six' : ''
+        } ${canRoll ? 'cursor-pointer hover:scale-105 active:scale-95' : 'cursor-default'}`}
         style={{
           filter: canRoll ? `drop-shadow(0 0 12px ${activeColor}55)` : 'none',
         }}
@@ -120,7 +122,13 @@ export default function Die({
       {/* Pop badge showing rolled number on settle */}
       <div className={`flex items-center justify-center ${compact ? 'h-4' : 'h-5'}`}>
         {value > 0 && isLanded && !rolling ? (
-          <div className="pop-in flex items-center gap-1 px-1.5 py-0.5 rounded-full bg-emerald-950/90 border border-amber-400/40 text-[10px] font-black text-amber-300 leading-none">
+          <div
+            className={`pop-in flex items-center gap-1 px-2 py-0.5 rounded-full font-black text-[10px] leading-none transition-all ${
+              value === 6
+                ? 'bg-amber-500/25 border border-amber-300 text-amber-200 shadow-[0_0_12px_rgba(251,191,36,0.6)] animate-pulse'
+                : 'bg-emerald-950/90 border border-amber-400/40 text-amber-300'
+            }`}
+          >
             <span>ROLLED {value}</span>
             {value === 6 && <span className="text-cyan-300">★ +1</span>}
           </div>

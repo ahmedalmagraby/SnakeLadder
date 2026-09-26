@@ -181,16 +181,56 @@ function ProgressTicks() {
 
 const btnGhost = 'btn-theme-ghost font-display tracking-wide px-6 py-3';
 
-function BgGlow({ bgGlow }: { bgGlow?: string }) {
+function BgGlow({ bgGlow, themeId = 'jungle' }: { bgGlow?: string; themeId?: ThemeId }) {
   return (
     <div
-      className="absolute inset-0 pointer-events-none transition-all duration-700"
+      className="absolute inset-0 pointer-events-none transition-all duration-700 overflow-hidden"
       style={{
         background:
           bgGlow ||
           'radial-gradient(950px 620px at 10% -5%, rgba(16,185,129,0.16), transparent 60%), radial-gradient(850px 620px at 92% 105%, rgba(251,191,36,0.14), transparent 60%), radial-gradient(1300px 900px at 50% 50%, rgba(7,60,44,0.5), transparent 75%)',
       }}
-    />
+    >
+      {/* Theme atmospheric ambient sparkles (D2) */}
+      {themeId === 'jungle' && (
+        <>
+          <div className="absolute top-[12%] left-[8%] w-2 h-2 rounded-full bg-emerald-400/40 blur-[1px] floaty" />
+          <div className="absolute top-[75%] left-[15%] w-2.5 h-2.5 rounded-full bg-yellow-300/35 blur-[1.5px] floaty" style={{ animationDelay: '-2s' }} />
+          <div className="absolute top-[20%] right-[10%] w-1.5 h-1.5 rounded-full bg-emerald-300/40 blur-[1px] floaty" style={{ animationDelay: '-3.5s' }} />
+          <div className="absolute top-[68%] right-[12%] w-2 h-2 rounded-full bg-amber-400/30 blur-[1px] floaty" style={{ animationDelay: '-1s' }} />
+        </>
+      )}
+      {themeId === 'cyber' && (
+        <>
+          <div className="absolute top-[15%] left-[10%] w-2 h-2 rounded bg-cyan-400/40 blur-[1px] floaty" />
+          <div className="absolute top-[80%] left-[8%] w-2.5 h-2.5 rounded bg-fuchsia-400/30 blur-[1px] floaty" style={{ animationDelay: '-2.5s' }} />
+          <div className="absolute top-[25%] right-[8%] w-1.5 h-1.5 rounded bg-cyan-300/45 blur-[1px] floaty" style={{ animationDelay: '-4s' }} />
+          <div className="absolute bottom-0 inset-x-0 h-16 bg-gradient-to-t from-cyan-500/10 to-transparent pointer-events-none" />
+        </>
+      )}
+      {themeId === 'desert' && (
+        <>
+          <div className="absolute top-[18%] left-[12%] w-2 h-2 rounded-full bg-amber-300/40 blur-[1.5px] floaty" />
+          <div className="absolute top-[70%] left-[6%] w-1.5 h-1.5 rounded-full bg-yellow-400/30 blur-[1px] floaty" style={{ animationDelay: '-1.8s' }} />
+          <div className="absolute top-[30%] right-[14%] w-2 h-2 rounded-full bg-amber-400/35 blur-[1.5px] floaty" style={{ animationDelay: '-3s' }} />
+        </>
+      )}
+      {themeId === 'cosmic' && (
+        <>
+          <div className="absolute top-[10%] left-[14%] w-1.5 h-1.5 rounded-full bg-indigo-300/50 blur-[0.5px] floaty" />
+          <div className="absolute top-[82%] left-[12%] w-2 h-2 rounded-full bg-purple-300/40 blur-[1px] floaty" style={{ animationDelay: '-2.2s' }} />
+          <div className="absolute top-[18%] right-[12%] w-2 h-2 rounded-full bg-cyan-200/50 blur-[0.8px] floaty" style={{ animationDelay: '-4.2s' }} />
+          <div className="absolute top-[65%] right-[8%] w-1.5 h-1.5 rounded-full bg-fuchsia-300/40 blur-[0.5px] floaty" style={{ animationDelay: '-1.2s' }} />
+        </>
+      )}
+      {themeId === 'candy' && (
+        <>
+          <div className="absolute top-[14%] left-[10%] w-2 h-2 rounded-full bg-pink-300/40 blur-[1px] floaty" />
+          <div className="absolute top-[78%] left-[14%] w-2.5 h-2.5 rounded-full bg-amber-200/45 blur-[1px] floaty" style={{ animationDelay: '-1.5s' }} />
+          <div className="absolute top-[22%] right-[10%] w-2 h-2 rounded-full bg-sky-300/40 blur-[1px] floaty" style={{ animationDelay: '-3.8s' }} />
+        </>
+      )}
+    </div>
   );
 }
 
@@ -269,7 +309,7 @@ function PlayerCard({
   return (
     <div
       className={`panel p-2.5 transition-all duration-300 ${
-        active ? 'pulse-glow border-amber-400/80 shadow-[0_0_16px_var(--theme-accent-glow)]' : 'opacity-80'
+        active ? 'active-shimmer pulse-glow border-amber-400/80 shadow-[0_0_16px_var(--theme-accent-glow)]' : 'opacity-80'
       }`}
       style={active ? { borderColor: col.base } : undefined}
     >
@@ -306,15 +346,27 @@ function PlayerCard({
         </span>
       </div>
 
-      {/* Progress bar to 100 */}
-      <div className="relative mt-1.5 h-1.5 rounded-full bg-emerald-950/80 overflow-hidden">
+      {/* Progress bar to 100 with miniature token pin (D3) */}
+      <div className="relative mt-2 h-2 rounded-full bg-emerald-950/80">
         <div
-          className="h-full rounded-full transition-all duration-500"
+          className="h-full rounded-full transition-all duration-500 relative"
           style={{
-            width: `${pos}%`,
+            width: `${Math.max(2, Math.min(100, pos))}%`,
             background: `linear-gradient(90deg, ${col.dark}, ${col.base})`,
           }}
-        />
+        >
+          {pos > 0 && (
+            <span
+              className="absolute -right-1.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 rounded-full border border-white/80 shadow-md flex items-center justify-center text-[7.5px] font-black text-white pointer-events-none"
+              style={{
+                background: `radial-gradient(circle at 35% 30%, ${col.light}, ${col.base} 55%, ${col.dark})`,
+                boxShadow: `0 0 6px ${col.glow}`,
+              }}
+            >
+              {player.slotIndex + 1}
+            </span>
+          )}
+        </div>
         <ProgressTicks />
       </div>
 
@@ -360,7 +412,7 @@ function MobilePlayerChip({
     <div
       className={`min-w-0 px-1.5 py-1 rounded-lg border transition-all duration-300 flex items-center gap-1 ${
         active
-          ? 'bg-amber-400/20 border-amber-400 shadow-[0_0_10px_var(--theme-accent-glow)] ring-1 ring-amber-400/60'
+          ? 'active-shimmer bg-amber-400/20 border-amber-400 shadow-[0_0_10px_var(--theme-accent-glow)] ring-1 ring-amber-400/60'
           : 'bg-emerald-950/60 border-emerald-800/40 opacity-80'
       }`}
       style={active ? { borderColor: col.base } : undefined}
@@ -952,15 +1004,105 @@ function WinOverlay({
             themes but never rendered anywhere. Surface them here. */}
         <p
           className="mt-1 text-[11px] font-black tracking-[0.18em] uppercase text-amber-300/80 rise-in"
-          style={{ animationDelay: '230ms' }}
+          style={{ animationDelay: '210ms' }}
         >
           {theme.board.podiumTitle} · {theme.board.podiumSubtitle}
         </p>
 
+        {/* (E1) Tiered Victory Podium */}
+        <div className="mt-4 mb-2 flex items-end justify-center gap-2 sm:gap-3 px-2 rise-in" style={{ animationDelay: '260ms' }}>
+          {/* 2nd Place (Left) */}
+          {standings[1] && (() => {
+            const p2 = standings[1];
+            const col2 = PLAYER_COLORS[p2.player.colorId % PLAYER_COLORS.length];
+            return (
+              <div className="flex-1 max-w-[95px] flex flex-col items-center">
+                <div className="relative mb-1 flex flex-col items-center">
+                  <span className="text-xs mb-0.5" aria-hidden="true">🥈</span>
+                  <div
+                    className="w-7 h-7 sm:w-8 sm:h-8 rounded-full flex items-center justify-center font-black text-xs text-white border-2 border-slate-300 shadow-md"
+                    style={{
+                      background: `radial-gradient(circle at 35% 30%, ${col2.light}, ${col2.base} 55%, ${col2.dark})`,
+                      boxShadow: `0 0 10px ${col2.glow}`,
+                    }}
+                  >
+                    {p2.player.slotIndex + 1}
+                  </div>
+                  <span className="text-[10px] font-bold text-slate-200 mt-1 truncate max-w-full">
+                    {p2.player.name}
+                  </span>
+                </div>
+                <div className="w-full h-14 sm:h-16 rounded-t-xl bg-gradient-to-t from-slate-800/90 via-slate-700/80 to-slate-500/70 border-t-2 border-x border-slate-400/60 flex flex-col items-center justify-center shadow-lg">
+                  <span className="font-display text-lg sm:text-xl text-slate-100 leading-none">2</span>
+                  <span className="text-[8px] font-black text-slate-300/80 tnum">SQ {p2.pos}</span>
+                </div>
+              </div>
+            );
+          })()}
+
+          {/* 1st Place (Center - Highest) */}
+          {standings[0] && (() => {
+            const p1 = standings[0];
+            const col1 = PLAYER_COLORS[p1.player.colorId % PLAYER_COLORS.length];
+            return (
+              <div className="flex-1 max-w-[110px] flex flex-col items-center">
+                <div className="relative mb-1 flex flex-col items-center">
+                  <span className="text-sm mb-0.5 animate-bounce" aria-hidden="true">👑</span>
+                  <div
+                    className="w-9 h-9 sm:w-10 sm:h-10 rounded-full flex items-center justify-center font-black text-sm text-white border-2 border-amber-300 shadow-lg"
+                    style={{
+                      background: `radial-gradient(circle at 35% 30%, ${col1.light}, ${col1.base} 55%, ${col1.dark})`,
+                      boxShadow: `0 0 16px ${col1.glow}`,
+                    }}
+                  >
+                    {p1.player.slotIndex + 1}
+                  </div>
+                  <span className="text-[11px] font-black text-amber-300 mt-1 truncate max-w-full">
+                    {p1.player.name}
+                  </span>
+                </div>
+                <div className="w-full h-20 sm:h-24 rounded-t-xl bg-gradient-to-t from-amber-700/90 via-amber-500/80 to-yellow-300/90 border-t-2 border-x border-amber-200 flex flex-col items-center justify-center shadow-xl">
+                  <span className="font-display text-2xl sm:text-3xl text-stone-950 font-black leading-none drop-shadow-sm">1</span>
+                  <span className="text-[9px] font-black text-stone-900/90 uppercase tracking-wider">WINNER</span>
+                </div>
+              </div>
+            );
+          })()}
+
+          {/* 3rd Place (Right) */}
+          {standings[2] && (() => {
+            const p3 = standings[2];
+            const col3 = PLAYER_COLORS[p3.player.colorId % PLAYER_COLORS.length];
+            return (
+              <div className="flex-1 max-w-[95px] flex flex-col items-center">
+                <div className="relative mb-1 flex flex-col items-center">
+                  <span className="text-xs mb-0.5" aria-hidden="true">🥉</span>
+                  <div
+                    className="w-7 h-7 sm:w-8 sm:h-8 rounded-full flex items-center justify-center font-black text-xs text-white border-2 border-amber-600 shadow-md"
+                    style={{
+                      background: `radial-gradient(circle at 35% 30%, ${col3.light}, ${col3.base} 55%, ${col3.dark})`,
+                      boxShadow: `0 0 10px ${col3.glow}`,
+                    }}
+                  >
+                    {p3.player.slotIndex + 1}
+                  </div>
+                  <span className="text-[10px] font-bold text-amber-200 mt-1 truncate max-w-full">
+                    {p3.player.name}
+                  </span>
+                </div>
+                <div className="w-full h-10 sm:h-12 rounded-t-xl bg-gradient-to-t from-amber-950/80 via-amber-800/70 to-amber-700/60 border-t-2 border-x border-amber-600/60 flex flex-col items-center justify-center shadow-md">
+                  <span className="font-display text-base sm:text-lg text-amber-200 leading-none">3</span>
+                  <span className="text-[8px] font-black text-amber-300/80 tnum">SQ {p3.pos}</span>
+                </div>
+              </div>
+            );
+          })()}
+        </div>
+
         {/* Match breakdown stats */}
         <div
-          className="mt-4 grid grid-cols-3 gap-2 p-3 rounded-xl bg-emerald-950/70 border border-amber-400/30 text-center rise-in"
-          style={{ animationDelay: '290ms' }}
+          className="mt-3 grid grid-cols-3 gap-2 p-3 rounded-xl bg-emerald-950/70 border border-amber-400/30 text-center rise-in"
+          style={{ animationDelay: '320ms' }}
         >
           <div>
             <div className="text-[10px] font-black tracking-wider text-emerald-300/60">ROLLS</div>
@@ -1414,7 +1556,7 @@ export default function App() {
         ...themeVars,
       }}
     >
-      <BgGlow bgGlow={game.theme.ui.bgGlow} />
+      <BgGlow bgGlow={game.theme.ui.bgGlow} themeId={game.themeId} />
       <AriaLiveAnnouncer message={liveAnnouncement} />
       <AccessibleBoardTable
         players={hud.players}
