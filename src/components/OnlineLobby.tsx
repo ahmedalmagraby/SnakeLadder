@@ -482,7 +482,7 @@ export default function OnlineLobby({
                 aria-label="Start match"
                 className={`w-full font-display text-lg tracking-wider py-3.5 rounded-xl transition-all min-h-[48px] ${
                   canStart
-                    ? 'bg-gradient-to-b from-amber-300 via-amber-400 to-amber-500 text-[#3a2302] border-b-4 border-amber-700 shadow-[0_8px_24px_rgba(251,191,36,0.35)] hover:brightness-105 active:translate-y-0.5 cursor-pointer'
+                    ? 'bg-gradient-to-b from-amber-300 via-amber-400 to-amber-500 text-[#3a2302] border-b-4 border-amber-700 shadow-[0_8px_24px_var(--theme-accent-glow)] hover:brightness-105 active:translate-y-0.5 cursor-pointer'
                     : 'bg-emerald-900/40 text-emerald-500/50 border border-emerald-800/40 cursor-not-allowed'
                 }`}
               >
@@ -738,7 +738,7 @@ export default function OnlineLobby({
               disabled={isSubmitting}
               onClick={handleCreate}
               aria-label="Create room and get invite code"
-              className="w-full font-display text-lg tracking-wider py-3 rounded-xl bg-gradient-to-b from-amber-300 via-amber-400 to-amber-500 text-[#3a2302] border-b-4 border-amber-700 shadow-[0_8px_20px_rgba(251,191,36,0.28)] hover:brightness-105 active:translate-y-0.5 cursor-pointer min-h-[48px]"
+              className="w-full font-display text-lg tracking-wider py-3 rounded-xl bg-gradient-to-b from-amber-300 via-amber-400 to-amber-500 text-[#3a2302] border-b-4 border-amber-700 shadow-[0_8px_20px_var(--theme-btn-glow)] hover:brightness-105 active:translate-y-0.5 cursor-pointer min-h-[48px]"
             >
               {isSubmitting ? 'CREATING ROOM...' : '👑 CREATE ROOM & GET INVITE CODE'}
             </button>
@@ -807,7 +807,7 @@ export default function OnlineLobby({
               aria-label="Join room"
               className={`w-full font-display text-lg tracking-wider py-3 rounded-xl transition-all min-h-[48px] ${
                 inputCode.trim()
-                  ? 'bg-gradient-to-b from-amber-300 via-amber-400 to-amber-500 text-[#3a2302] border-b-4 border-amber-700 shadow-[0_8px_20px_rgba(251,191,36,0.28)] hover:brightness-105 active:translate-y-0.5 cursor-pointer'
+                  ? 'bg-gradient-to-b from-amber-300 via-amber-400 to-amber-500 text-[#3a2302] border-b-4 border-amber-700 shadow-[0_8px_20px_var(--theme-btn-glow)] hover:brightness-105 active:translate-y-0.5 cursor-pointer'
                   : 'bg-emerald-900/40 text-emerald-500/50 border border-emerald-800/40 cursor-not-allowed'
               }`}
             >

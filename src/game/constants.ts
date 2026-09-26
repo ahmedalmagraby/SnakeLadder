@@ -61,7 +61,6 @@ export interface PlayerPalette {
   dark: string;
   accent: string;
   glow: string;
-  bgBadge: string;
 }
 
 export const PLAYER_COLORS: PlayerPalette[] = [
@@ -73,7 +72,6 @@ export const PLAYER_COLORS: PlayerPalette[] = [
     dark: '#0e7490',
     accent: '#22d3ee',
     glow: 'rgba(6, 182, 212, 0.55)',
-    bgBadge: 'bg-cyan-500/20 text-cyan-300 border-cyan-500/40',
   },
   {
     id: 1,
@@ -83,7 +81,6 @@ export const PLAYER_COLORS: PlayerPalette[] = [
     dark: '#9f1239',
     accent: '#fb7185',
     glow: 'rgba(244, 63, 94, 0.55)',
-    bgBadge: 'bg-rose-500/20 text-rose-300 border-rose-500/40',
   },
   {
     id: 2,
@@ -93,7 +90,6 @@ export const PLAYER_COLORS: PlayerPalette[] = [
     dark: '#3f6212',
     accent: '#a3e635',
     glow: 'rgba(132, 204, 22, 0.55)',
-    bgBadge: 'bg-lime-500/20 text-lime-300 border-lime-500/40',
   },
   {
     id: 3,
@@ -103,20 +99,30 @@ export const PLAYER_COLORS: PlayerPalette[] = [
     dark: '#92400e',
     accent: '#fbbf24',
     glow: 'rgba(245, 158, 11, 0.55)',
-    bgBadge: 'bg-amber-500/20 text-amber-300 border-amber-500/40',
   },
 ];
 
-/* Dock positions for up to 4 tokens in Start Bay (Square 0) - separated cleanly from title */
+/**
+ * Dock positions for up to 4 tokens in the Start Bay (square 0).
+ *
+ * (D1) These were 46px apart while tokens are drawn at r=22 (44px across), so a
+ * 4-player start had essentially no breathing room and the docking dishes were
+ * completely covered. The bay's usable span is ~166..356 (the title plaque
+ * ends at 154, the divider is at 162, and the navigation arrow sits at 374), so
+ * these are now spaced 54px apart, centred in that span.
+ */
 export const START_POS: Pt[] = [
-  { x: 182, y: 1017 },
-  { x: 228, y: 1017 },
-  { x: 274, y: 1017 },
-  { x: 320, y: 1017 },
+  { x: 178, y: 1017 },
+  { x: 232, y: 1017 },
+  { x: 286, y: 1017 },
+  { x: 340, y: 1017 },
 ];
 
 export function squareCenter(n: number): Pt {
-  if (n <= 0) return { x: 251, y: 1017 };
+  // (I2) This used to hardcode x=251, which is not any of the four dock
+  // positions, so anything falling back to "square 0" (e.g. emote spawns) drew
+  // a token floating in the middle of the bay.
+  if (n <= 0) return START_POS[0];
   const i = n - 1;
   const r = Math.floor(i / 10);
   const c = r % 2 === 0 ? i % 10 : 9 - (i % 10);
@@ -186,20 +192,6 @@ export function hexLerp(c1: string, c2: string, t: number): string {
     lerp(b1, b2, t),
   )})`;
 }
-
-const SNAKE_PALETTE: [string, string][] = [
-  ['#ef4444', '#7f1d1d'],
-  ['#f97316', '#7c2d12'],
-  ['#a3e635', '#3f6212'],
-  ['#22d3ee', '#155e75'],
-  ['#e879f9', '#701a75'],
-  ['#facc15', '#854d0e'],
-  ['#4ade80', '#14532d'],
-  ['#fb7185', '#881337'],
-  ['#38bdf8', '#075985'],
-  ['#fbbf24', '#92400e'],
-];
-export const snakeColor = (i: number) => SNAKE_PALETTE[i % SNAKE_PALETTE.length];
 
 export interface SnakeWaveParams {
   baseAmp: number;

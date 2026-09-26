@@ -152,7 +152,11 @@ export default function Dialog({
           onClose();
         }
       }}
-      className={`fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4 bg-black/80 backdrop-blur-sm fade-in outline-none ${backdropClassName}`}
+      /* (H4) The scrim was a fixed `bg-black/80`. It now reads the theme's
+         scrim colour and gets a slightly stronger blur, so a dialog over the
+         Candy board doesn't look like a black rectangle over a pink one. */
+      className={`fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4 backdrop-blur-md fade-in outline-none ${backdropClassName}`}
+      style={{ background: 'var(--theme-scrim, rgba(0, 0, 0, 0.8))' }}
     >
       <div className={`panel pop-in max-h-[92vh] overflow-y-auto ${className}`}>
         {children}

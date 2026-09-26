@@ -1,10 +1,111 @@
 export type ThemeId = 'jungle' | 'cyber' | 'desert' | 'cosmic' | 'candy';
 
+export type ShadeKey =
+  | '50'
+  | '100'
+  | '200'
+  | '300'
+  | '400'
+  | '500'
+  | '600'
+  | '700'
+  | '800'
+  | '900'
+  | '950';
+
+/**
+ * A full lightness ramp for one colour role. Values are CSS colours in any
+ * format, but they are authored as `oklch()` so they can be hue-rotated cheaply
+ * (see `rotateHue`) instead of hand-writing 10 near-identical values per theme.
+ */
+export type ShadeRamp = Record<ShadeKey, string>;
+
+export const SHADE_KEYS: ShadeKey[] = [
+  '50',
+  '100',
+  '200',
+  '300',
+  '400',
+  '500',
+  '600',
+  '700',
+  '800',
+  '900',
+  '950',
+];
+
+/**
+ * Tailwind v4's `emerald` and `amber` scales, verbatim.
+ *
+ * These are what the entire UI rendered *before* the theme ramps existed, so
+ * reusing them as the Jungle defaults guarantees the default look is unchanged.
+ */
+const BASE_SURFACE_RAMP: ShadeRamp = {
+  '50': 'oklch(97.9% 0.021 166.113)',
+  '100': 'oklch(95% 0.052 163.051)',
+  '200': 'oklch(90.5% 0.093 164.15)',
+  '300': 'oklch(84.5% 0.143 164.978)',
+  '400': 'oklch(76.5% 0.177 163.223)',
+  '500': 'oklch(69.6% 0.17 162.48)',
+  '600': 'oklch(59.6% 0.145 163.225)',
+  '700': 'oklch(50.8% 0.118 165.612)',
+  '800': 'oklch(43.2% 0.095 166.913)',
+  '900': 'oklch(37.8% 0.077 168.94)',
+  '950': 'oklch(26.2% 0.051 172.552)',
+};
+
+const BASE_ACCENT_RAMP: ShadeRamp = {
+  '50': 'oklch(98.7% 0.022 95.277)',
+  '100': 'oklch(96.2% 0.059 95.617)',
+  '200': 'oklch(92.4% 0.12 95.746)',
+  '300': 'oklch(87.9% 0.169 91.605)',
+  '400': 'oklch(82.8% 0.189 84.429)',
+  '500': 'oklch(76.9% 0.188 70.08)',
+  '600': 'oklch(66.6% 0.179 58.318)',
+  '700': 'oklch(55.5% 0.163 48.998)',
+  '800': 'oklch(47.3% 0.137 46.201)',
+  '900': 'oklch(41.4% 0.112 45.904)',
+  '950': 'oklch(27.9% 0.077 45.635)',
+};
+
+const OKLCH_RE = /^oklch\(\s*([\d.]+)%\s+([\d.]+)\s+([\d.]+)\s*\)$/;
+
+/**
+ * Rotates the hue of an `oklch()` ramp while preserving every step's
+ * lightness and chroma, so the contrast relationships inside the ramp - and
+ * therefore the whole UI's legibility - survive the theme change intact.
+ */
+function rotateHue(ramp: ShadeRamp, hue: number): ShadeRamp {
+  const out = {} as ShadeRamp;
+  for (const key of SHADE_KEYS) {
+    const m = OKLCH_RE.exec(ramp[key]);
+    out[key] = m ? `oklch(${m[1]}% ${m[2]} ${hue})` : ramp[key];
+  }
+  return out;
+}
+
+export interface ThemeRamps {
+  /** Replaces Tailwind's `emerald-*` utilities (panels, chips, borders). */
+  surface: ShadeRamp;
+  /** Replaces Tailwind's `amber-*` utilities (accents, highlights, CTAs). */
+  accent: ShadeRamp;
+}
+
+/** A slow-drifting ambient particle shown only on the board frame (C5). */
+export interface AmbientMote {
+  color: string;
+  size: number;
+  alpha: number;
+  count: number;
+  speed: number;
+}
+
 export interface BoardTheme {
   id: ThemeId;
   name: string;
   tagline: string;
   icon: string;
+  /** Colours used for the small swatch chips. Mirrors `board`/`ui` exactly. */
   previewColors: {
     frame: string;
     tileDark: string;
@@ -17,27 +118,66 @@ export interface BoardTheme {
     panelBorder: string;
     accent: string;
     accentGlow: string;
-    badgeBg: string;
-    badgeBorder: string;
-    badgeText: string;
-    btnClass: string;
     btnBg: string;
     btnText: string;
     btnBorder: string;
     btnShadow: string;
+
+    /* --- added: full ramps + structural chrome so the whole UI follows the theme --- */
+    ramps: ThemeRamps;
+    /** Page background behind the panels. */
+    bodyBg: string;
+    /** Modal scrim behind dialogs. */
+    scrim: string;
+    /** Soft drop shadow used by `.panel`. */
+    shadow: string;
+    /** Text-selection highlight. */
+    selection: string;
+    /** Colours driven by the `pulseGlow` keyframes. */
+    pulseRing: string;
+    pulseBlur: string;
+    /**
+     * Low-alpha accent glows for decorative box-shadows on selected cards and
+     * buttons. Split by strength because the original UI used four different
+     * alphas inline; folding them into one value would change the Jungle look.
+     */
+    ringGlowSoft: string;
+    ringGlow: string;
+    ringGlowStrong: string;
+    /** Custom scrollbar track / thumb / thumb-hover. */
+    scrollbarTrack: string;
+    scrollbarThumb: string;
+    scrollbarThumbHover: string;
+    /** Confetti + firework palette (E1). */
+    celebrate: string[];
+    /** Colour of the dust puff and spark particles (E5). */
+    particleDust: string;
+    particleSpark: string;
+    particleLadderSpark: string;
+    particleSnakeSpark: string;
   };
   board: {
     frameGrad: [string, string, string, string];
     framePattern: 'wood' | 'circuits' | 'sandstone' | 'stars' | 'frosting';
+    /** Stroke/fill colours for `framePattern` (were hardcoded per theme). */
+    framePatternColors: string[];
     bezelOuter: string;
     bezelInner: string;
     cornerType: 'brass' | 'cyber' | 'pharaoh' | 'astral' | 'peppermint';
     cornerColors: [string, string, string];
+    /** Groove colour inside the 'brass' corner studs (was hardcoded to jungle). */
+    cornerGroove: string;
 
     tileDark: string;
     tileLight: string;
     tileSheen: string;
     tileBorder: string;
+    /** Strength of the fine per-tile grain overlay, 0 disables it (B2). */
+    tileGrain: number;
+    /** Colour of the soft inner shadow around the play area (C4). */
+    vignette: string;
+    /** Number of notch marks on the frame at the 25/50/75% bands (B4). */
+    guideNotch: string;
 
     ladderStyle: 'wood' | 'neon' | 'gold' | 'starlight' | 'candycane';
     ladderRailCore: string;
@@ -48,12 +188,22 @@ export interface BoardTheme {
     ladderRungShadow: string;
     ladderRungHighlight: string;
     ladderRivetColor: string;
+    /** Ambient glow bled out behind the rails (C3). */
+    ladderAmbientGlow: string;
+    /** Extra glow colour for glow-heavy styles (was hardcoded to #818cf8). */
+    ladderGlowColor: string;
 
     snakeStyle: 'natural' | 'cyber' | 'pharaoh' | 'cosmic' | 'gummy';
     snakePalette: [string, string][];
     snakeOutline: string;
     snakeDropShadow: string;
     snakeSpecular: string;
+    /** Accent + glow used by the style-specific spine overlays. */
+    snakeDetailA: string;
+    snakeDetailB: string;
+    snakeDetailGlow: string;
+    /** Dark mouth colour when a snake is mid-bite (was hardcoded to #450a0a). */
+    snakeMouth: string;
     eyeSclera: string;
     eyePupil: string;
     eyeScleraActive: string;
@@ -68,6 +218,8 @@ export interface BoardTheme {
     podiumRibbonGrad: [string, string, string];
     podiumRibbonText: string;
     podiumCupColors: [string, string, string, string];
+    podiumAura: string;
+    podiumSunburst: string;
 
     startBayTitle: string;
     startBaySub: string;
@@ -93,6 +245,12 @@ export interface BoardTheme {
     badgeSnakeBg: string;
     badgeSnakeBorder: string;
     badgeSnakeText: string;
+
+    /** Colour of the hover-inspection ring (was hardcoded to jungle amber). */
+    hoverRing: string;
+    hoverRingGlow: string;
+    /** Drifting motes shown on the frame only, never over the play area. */
+    ambientMote: AmbientMote;
   };
 }
 
@@ -105,7 +263,7 @@ export const THEMES: Record<ThemeId, BoardTheme> = {
     previewColors: {
       frame: '#78350f',
       tileDark: '#0a3d31',
-      tileLight: '#062d24',
+      tileLight: '#04241c',
       accent: '#fbbf24',
     },
     ui: {
@@ -115,28 +273,51 @@ export const THEMES: Record<ThemeId, BoardTheme> = {
       panelBorder: 'rgba(251, 191, 36, 0.18)',
       accent: '#fbbf24',
       accentGlow: 'rgba(251, 191, 36, 0.35)',
-      badgeBg: 'bg-emerald-950/80',
-      badgeBorder: 'border-emerald-700/40',
-      badgeText: 'text-emerald-300/80',
-      btnClass:
-        'bg-gradient-to-b from-amber-300 via-amber-400 to-amber-500 border-amber-700 text-[#3a2302] shadow-[0_8px_20px_rgba(251,191,36,0.28)]',
       btnBg: 'linear-gradient(180deg, #fde047 0%, #fbbf24 50%, #f59e0b 100%)',
       btnText: '#3a2302',
       btnBorder: '#b45309',
       btnShadow: 'rgba(251, 191, 36, 0.35)',
+
+      ramps: { surface: BASE_SURFACE_RAMP, accent: BASE_ACCENT_RAMP },
+      bodyBg: '#06120d',
+      scrim: 'rgba(0, 0, 0, 0.8)',
+      shadow: 'rgba(0, 0, 0, 0.35)',
+      selection: 'rgba(251, 191, 36, 0.28)',
+      pulseRing: 'rgba(251, 191, 36, 0.45)',
+      pulseBlur: 'rgba(251, 191, 36, 0.28)',
+      ringGlowSoft: 'rgba(251, 191, 36, 0.2)',
+      ringGlow: 'rgba(251, 191, 36, 0.25)',
+      ringGlowStrong: 'rgba(251, 191, 36, 0.3)',
+      scrollbarTrack: 'rgba(6, 18, 13, 0.6)',
+      scrollbarThumb: 'rgba(251, 191, 36, 0.25)',
+      scrollbarThumbHover: 'rgba(251, 191, 36, 0.5)',
+      celebrate: ['#fbbf24', '#22d3ee', '#f43f5e', '#a3e635', '#ffffff', '#fb923c', '#e879f9'],
+      particleDust: '#a7f3d0',
+      particleSpark: '#ffd75e',
+      particleLadderSpark: '#fde047',
+      particleSnakeSpark: '#f87171',
     },
     board: {
       frameGrad: ['#78350f', '#92400e', '#713f12', '#451a03'],
       framePattern: 'wood',
+      framePatternColors: ['rgba(40, 20, 5, 0.22)'],
       bezelOuter: 'rgba(0, 0, 0, 0.65)',
       bezelInner: 'rgba(251, 191, 36, 0.45)',
       cornerType: 'brass',
       cornerColors: ['#fef08a', '#eab308', '#713f12'],
+      cornerGroove: '#451a03',
 
+      // (B1) The two jungle greens were only ~5 L* apart, so the checkerboard
+      // was effectively invisible. The light tile is pushed darker (same hue
+      // family, so the board stays exactly as dark and green as before) which
+      // roughly doubles the separation.
       tileDark: '#0a3d31',
-      tileLight: '#062d24',
+      tileLight: '#04241c',
       tileSheen: 'rgba(255, 255, 255, 0.08)',
       tileBorder: 'rgba(0, 0, 0, 0.45)',
+      tileGrain: 0.035,
+      vignette: 'rgba(0, 0, 0, 0.34)',
+      guideNotch: 'rgba(251, 191, 36, 0.5)',
 
       ladderStyle: 'wood',
       ladderRailCore: '#4a2508',
@@ -147,6 +328,8 @@ export const THEMES: Record<ThemeId, BoardTheme> = {
       ladderRungShadow: 'rgba(25, 12, 4, 0.75)',
       ladderRungHighlight: '#fef08a',
       ladderRivetColor: '#fef08a',
+      ladderAmbientGlow: 'rgba(217, 119, 6, 0.16)',
+      ladderGlowColor: '#d97706',
 
       snakeStyle: 'natural',
       snakePalette: [
@@ -164,6 +347,10 @@ export const THEMES: Record<ThemeId, BoardTheme> = {
       snakeOutline: 'rgba(5, 25, 18, 0.95)',
       snakeDropShadow: 'rgba(2, 12, 8, 0.62)',
       snakeSpecular: 'rgba(255, 255, 255, 0.45)',
+      snakeDetailA: 'rgba(255, 255, 255, 0.45)',
+      snakeDetailB: 'rgba(255, 255, 255, 0.45)',
+      snakeDetailGlow: 'rgba(255, 255, 255, 0)',
+      snakeMouth: '#450a0a',
       eyeSclera: '#fef08a',
       eyePupil: '#111827',
       eyeScleraActive: '#fee2e2',
@@ -178,6 +365,8 @@ export const THEMES: Record<ThemeId, BoardTheme> = {
       podiumRibbonGrad: ['#b91c1c', '#dc2626', '#991b1b'],
       podiumRibbonText: '★ FINISH ★',
       podiumCupColors: ['#d97706', '#fef08a', '#f59e0b', '#92400e'],
+      podiumAura: 'rgba(255, 255, 255, 0.45)',
+      podiumSunburst: 'rgba(255, 255, 255, 0.18)',
 
       startBayTitle: '★ START ★',
       startBaySub: 'BAY • SQ 0 ➔',
@@ -203,6 +392,10 @@ export const THEMES: Record<ThemeId, BoardTheme> = {
       badgeSnakeBg: 'rgba(15, 23, 42, 0.88)',
       badgeSnakeBorder: '#ef4444',
       badgeSnakeText: '#f87171',
+
+      hoverRing: 'rgba(251, 191, 36, 1)',
+      hoverRingGlow: '#f59e0b',
+      ambientMote: { color: '#a3e635', size: 2.2, alpha: 0.5, count: 16, speed: 0.06 },
     },
   },
 
@@ -213,8 +406,8 @@ export const THEMES: Record<ThemeId, BoardTheme> = {
     icon: '⚡',
     previewColors: {
       frame: '#0f172a',
-      tileDark: '#0b1329',
-      tileLight: '#050a18',
+      tileDark: '#0c1633',
+      tileLight: '#060b1b',
       accent: '#06b6d4',
     },
     ui: {
@@ -224,28 +417,53 @@ export const THEMES: Record<ThemeId, BoardTheme> = {
       panelBorder: 'rgba(6, 182, 212, 0.3)',
       accent: '#06b6d4',
       accentGlow: 'rgba(6, 182, 212, 0.45)',
-      badgeBg: 'bg-cyan-950/80',
-      badgeBorder: 'border-cyan-700/40',
-      badgeText: 'text-cyan-300/90',
-      btnClass:
-        'bg-gradient-to-b from-cyan-300 via-cyan-400 to-cyan-500 border-cyan-700 text-[#04202c] shadow-[0_8px_20px_rgba(6,182,212,0.32)]',
       btnBg: 'linear-gradient(180deg, #67e8f9 0%, #06b6d4 50%, #0891b2 100%)',
       btnText: '#04202c',
       btnBorder: '#0e7490',
       btnShadow: 'rgba(6, 182, 212, 0.42)',
+
+      ramps: {
+        surface: rotateHue(BASE_SURFACE_RAMP, 268),
+        accent: rotateHue(BASE_ACCENT_RAMP, 205),
+      },
+      bodyBg: '#04060f',
+      scrim: 'rgba(0, 0, 0, 0.82)',
+      shadow: 'rgba(0, 0, 0, 0.45)',
+      selection: 'rgba(6, 182, 212, 0.32)',
+      pulseRing: 'rgba(6, 182, 212, 0.5)',
+      pulseBlur: 'rgba(6, 182, 212, 0.32)',
+      ringGlowSoft: 'rgba(6, 182, 212, 0.2)',
+      ringGlow: 'rgba(6, 182, 212, 0.25)',
+      ringGlowStrong: 'rgba(6, 182, 212, 0.3)',
+      scrollbarTrack: 'rgba(2, 6, 23, 0.7)',
+      scrollbarThumb: 'rgba(6, 182, 212, 0.32)',
+      scrollbarThumbHover: 'rgba(6, 182, 212, 0.6)',
+      celebrate: ['#67e8f9', '#06b6d4', '#ec4899', '#a855f7', '#ffffff', '#38bdf8', '#f472b6'],
+      particleDust: '#a5f3fc',
+      particleSpark: '#67e8f9',
+      particleLadderSpark: '#a5f3fc',
+      particleSnakeSpark: '#ec4899',
     },
     board: {
       frameGrad: ['#090d16', '#1e1b4b', '#0f172a', '#020617'],
       framePattern: 'circuits',
+      framePatternColors: ['rgba(6, 182, 212, 0.28)', 'rgba(236, 72, 153, 0.5)'],
       bezelOuter: 'rgba(0, 0, 0, 0.85)',
       bezelInner: 'rgba(6, 182, 212, 0.65)',
       cornerType: 'cyber',
       cornerColors: ['#a5f3fc', '#06b6d4', '#0e7490'],
+      cornerGroove: '#0e7490',
 
+      // Left at the original pair: measured L* separation is already ~7 here
+      // (the cyan tileBorder does the rest of the work), and nudging the light
+      // tile darker was measured to make it *worse*.
       tileDark: '#0c1633',
       tileLight: '#060b1b',
       tileSheen: 'rgba(6, 182, 212, 0.12)',
       tileBorder: 'rgba(6, 182, 212, 0.28)',
+      tileGrain: 0.03,
+      vignette: 'rgba(0, 0, 0, 0.45)',
+      guideNotch: 'rgba(6, 182, 212, 0.6)',
 
       ladderStyle: 'neon',
       ladderRailCore: '#0891b2',
@@ -256,6 +474,8 @@ export const THEMES: Record<ThemeId, BoardTheme> = {
       ladderRungShadow: 'rgba(14, 116, 144, 0.6)',
       ladderRungHighlight: '#cffafe',
       ladderRivetColor: '#ec4899',
+      ladderAmbientGlow: 'rgba(6, 182, 212, 0.22)',
+      ladderGlowColor: '#06b6d4',
 
       snakeStyle: 'cyber',
       snakePalette: [
@@ -271,6 +491,10 @@ export const THEMES: Record<ThemeId, BoardTheme> = {
       snakeOutline: 'rgba(2, 6, 23, 0.98)',
       snakeDropShadow: 'rgba(6, 182, 212, 0.45)',
       snakeSpecular: 'rgba(236, 72, 153, 0.7)',
+      snakeDetailA: '#67e8f9',
+      snakeDetailB: '#ec4899',
+      snakeDetailGlow: '#06b6d4',
+      snakeMouth: '#1e0b2e',
       eyeSclera: '#67e8f9',
       eyePupil: '#020617',
       eyeScleraActive: '#f43f5e',
@@ -285,6 +509,8 @@ export const THEMES: Record<ThemeId, BoardTheme> = {
       podiumRibbonGrad: ['#831843', '#ec4899', '#be185d'],
       podiumRibbonText: '★ SINGULARITY ★',
       podiumCupColors: ['#06b6d4', '#a5f3fc', '#8b5cf6', '#312e81'],
+      podiumAura: 'rgba(165, 243, 252, 0.45)',
+      podiumSunburst: 'rgba(255, 255, 255, 0.2)',
 
       startBayTitle: '★ CYBER BAY ★',
       startBaySub: 'GRID • SQ 0 ➔',
@@ -310,6 +536,10 @@ export const THEMES: Record<ThemeId, BoardTheme> = {
       badgeSnakeBg: 'rgba(30, 5, 20, 0.9)',
       badgeSnakeBorder: '#ec4899',
       badgeSnakeText: '#f472b6',
+
+      hoverRing: 'rgba(6, 182, 212, 1)',
+      hoverRingGlow: '#06b6d4',
+      ambientMote: { color: '#67e8f9', size: 1.8, alpha: 0.55, count: 20, speed: 0.09 },
     },
   },
 
@@ -321,7 +551,7 @@ export const THEMES: Record<ThemeId, BoardTheme> = {
     previewColors: {
       frame: '#92400e',
       tileDark: '#351f0b',
-      tileLight: '#1e293b',
+      tileLight: '#0f1a30',
       accent: '#f59e0b',
     },
     ui: {
@@ -331,28 +561,53 @@ export const THEMES: Record<ThemeId, BoardTheme> = {
       panelBorder: 'rgba(245, 158, 11, 0.28)',
       accent: '#f59e0b',
       accentGlow: 'rgba(245, 158, 11, 0.4)',
-      badgeBg: 'bg-amber-950/80',
-      badgeBorder: 'border-amber-700/40',
-      badgeText: 'text-amber-300/90',
-      btnClass:
-        'bg-gradient-to-b from-amber-300 via-amber-400 to-amber-500 border-amber-700 text-[#3b1d03] shadow-[0_8px_20px_rgba(245,158,11,0.3)]',
       btnBg: 'linear-gradient(180deg, #fde68a 0%, #f59e0b 50%, #d97706 100%)',
       btnText: '#3b1d03',
       btnBorder: '#92400e',
       btnShadow: 'rgba(245, 158, 11, 0.38)',
+
+      ramps: {
+        surface: rotateHue(BASE_SURFACE_RAMP, 62),
+        accent: rotateHue(BASE_ACCENT_RAMP, 70),
+      },
+      bodyBg: '#140c04',
+      scrim: 'rgba(12, 6, 2, 0.82)',
+      shadow: 'rgba(0, 0, 0, 0.42)',
+      selection: 'rgba(245, 158, 11, 0.3)',
+      pulseRing: 'rgba(245, 158, 11, 0.48)',
+      pulseBlur: 'rgba(245, 158, 11, 0.3)',
+      ringGlowSoft: 'rgba(245, 158, 11, 0.2)',
+      ringGlow: 'rgba(245, 158, 11, 0.25)',
+      ringGlowStrong: 'rgba(245, 158, 11, 0.3)',
+      scrollbarTrack: 'rgba(24, 14, 5, 0.7)',
+      scrollbarThumb: 'rgba(245, 158, 11, 0.3)',
+      scrollbarThumbHover: 'rgba(245, 158, 11, 0.58)',
+      celebrate: ['#fbbf24', '#fde68a', '#f97316', '#38bdf8', '#ffffff', '#fbbf24', '#fdba74'],
+      particleDust: '#fde68a',
+      particleSpark: '#fbbf24',
+      particleLadderSpark: '#fde68a',
+      particleSnakeSpark: '#fb923c',
     },
     board: {
       frameGrad: ['#78350f', '#b45309', '#92400e', '#451a03'],
       framePattern: 'sandstone',
+      framePatternColors: ['rgba(245, 158, 11, 0.18)'],
       bezelOuter: 'rgba(30, 15, 5, 0.85)',
       bezelInner: 'rgba(245, 158, 11, 0.6)',
       cornerType: 'pharaoh',
       cornerColors: ['#fde68a', '#f59e0b', '#1d4ed8'],
+      cornerGroove: '#451a03',
 
+      // (B1) `tileDark` (#351f0b) and `tileLight` (#192841) were within 1 L* of
+      // each other, so the checker was invisible. The lapis-blue tile is pushed
+      // darker instead, preserving the brown/blue "tomb" pairing.
       tileDark: '#351f0b',
-      tileLight: '#192841',
+      tileLight: '#0f1a30',
       tileSheen: 'rgba(253, 230, 138, 0.12)',
       tileBorder: 'rgba(217, 119, 6, 0.35)',
+      tileGrain: 0.045,
+      vignette: 'rgba(0, 0, 0, 0.4)',
+      guideNotch: 'rgba(245, 158, 11, 0.55)',
 
       ladderStyle: 'gold',
       ladderRailCore: '#78350f',
@@ -363,6 +618,8 @@ export const THEMES: Record<ThemeId, BoardTheme> = {
       ladderRungShadow: 'rgba(30, 15, 5, 0.65)',
       ladderRungHighlight: '#fde68a',
       ladderRivetColor: '#2563eb',
+      ladderAmbientGlow: 'rgba(251, 191, 36, 0.18)',
+      ladderGlowColor: '#d97706',
 
       snakeStyle: 'pharaoh',
       snakePalette: [
@@ -377,6 +634,10 @@ export const THEMES: Record<ThemeId, BoardTheme> = {
       snakeOutline: 'rgba(30, 15, 5, 0.95)',
       snakeDropShadow: 'rgba(30, 15, 5, 0.6)',
       snakeSpecular: 'rgba(254, 240, 138, 0.6)',
+      snakeDetailA: '#fbbf24',
+      snakeDetailB: '#2563eb',
+      snakeDetailGlow: 'rgba(0, 0, 0, 0)',
+      snakeMouth: '#450a0a',
       eyeSclera: '#fef08a',
       eyePupil: '#7f1d1d',
       eyeScleraActive: '#fee2e2',
@@ -391,6 +652,8 @@ export const THEMES: Record<ThemeId, BoardTheme> = {
       podiumRibbonGrad: ['#1e3a8a', '#2563eb', '#1d4ed8'],
       podiumRibbonText: '★ RA ASCENT ★',
       podiumCupColors: ['#d97706', '#fef08a', '#2563eb', '#78350f'],
+      podiumAura: 'rgba(254, 240, 138, 0.45)',
+      podiumSunburst: 'rgba(255, 255, 255, 0.2)',
 
       startBayTitle: '★ SUN GATE ★',
       startBaySub: 'TOMB • SQ 0 ➔',
@@ -416,6 +679,10 @@ export const THEMES: Record<ThemeId, BoardTheme> = {
       badgeSnakeBg: 'rgba(35, 10, 10, 0.9)',
       badgeSnakeBorder: '#dc2626',
       badgeSnakeText: '#fca5a5',
+
+      hoverRing: 'rgba(245, 158, 11, 1)',
+      hoverRingGlow: '#f59e0b',
+      ambientMote: { color: '#fde68a', size: 2, alpha: 0.4, count: 18, speed: 0.05 },
     },
   },
 
@@ -426,7 +693,7 @@ export const THEMES: Record<ThemeId, BoardTheme> = {
     icon: '🌌',
     previewColors: {
       frame: '#1e1b4b',
-      tileDark: '#120f33',
+      tileDark: '#181442',
       tileLight: '#070518',
       accent: '#8b5cf6',
     },
@@ -437,28 +704,52 @@ export const THEMES: Record<ThemeId, BoardTheme> = {
       panelBorder: 'rgba(139, 92, 246, 0.32)',
       accent: '#8b5cf6',
       accentGlow: 'rgba(139, 92, 246, 0.45)',
-      badgeBg: 'bg-purple-950/80',
-      badgeBorder: 'border-purple-700/40',
-      badgeText: 'text-purple-300/90',
-      btnClass:
-        'bg-gradient-to-b from-purple-300 via-purple-400 to-indigo-500 border-purple-700 text-[#190533] shadow-[0_8px_20px_rgba(139,92,246,0.32)]',
       btnBg: 'linear-gradient(180deg, #c4b5fd 0%, #8b5cf6 50%, #6366f1 100%)',
       btnText: '#190533',
       btnBorder: '#4f46e5',
       btnShadow: 'rgba(139, 92, 246, 0.42)',
+
+      ramps: {
+        surface: rotateHue(BASE_SURFACE_RAMP, 288),
+        accent: rotateHue(BASE_ACCENT_RAMP, 295),
+      },
+      bodyBg: '#050417',
+      scrim: 'rgba(3, 2, 14, 0.84)',
+      shadow: 'rgba(0, 0, 0, 0.5)',
+      selection: 'rgba(139, 92, 246, 0.34)',
+      pulseRing: 'rgba(139, 92, 246, 0.5)',
+      pulseBlur: 'rgba(139, 92, 246, 0.32)',
+      ringGlowSoft: 'rgba(139, 92, 246, 0.2)',
+      ringGlow: 'rgba(139, 92, 246, 0.25)',
+      ringGlowStrong: 'rgba(139, 92, 246, 0.3)',
+      scrollbarTrack: 'rgba(9, 7, 26, 0.75)',
+      scrollbarThumb: 'rgba(139, 92, 246, 0.34)',
+      scrollbarThumbHover: 'rgba(139, 92, 246, 0.62)',
+      celebrate: ['#c4b5fd', '#a78bfa', '#38bdf8', '#f472b6', '#ffffff', '#818cf8', '#f0abfc'],
+      particleDust: '#c4b5fd',
+      particleSpark: '#c4b5fd',
+      particleLadderSpark: '#bae6fd',
+      particleSnakeSpark: '#f472b6',
     },
     board: {
       frameGrad: ['#030712', '#1e1b4b', '#0f172a', '#020617'],
       framePattern: 'stars',
+      framePatternColors: ['#38bdf8', '#c084fc', '#ffffff'],
       bezelOuter: 'rgba(0, 0, 0, 0.85)',
       bezelInner: 'rgba(139, 92, 246, 0.55)',
       cornerType: 'astral',
       cornerColors: ['#e0e7ff', '#818cf8', '#312e81'],
+      cornerGroove: '#312e81',
 
-      tileDark: '#120f33',
+      // (B1) Lifted the indigo tile so the starfield checker reads against the
+      // near-black violet tile.
+      tileDark: '#181442',
       tileLight: '#070518',
       tileSheen: 'rgba(139, 92, 246, 0.14)',
       tileBorder: 'rgba(129, 140, 248, 0.28)',
+      tileGrain: 0.025,
+      vignette: 'rgba(0, 0, 0, 0.48)',
+      guideNotch: 'rgba(139, 92, 246, 0.6)',
 
       ladderStyle: 'starlight',
       ladderRailCore: '#4338ca',
@@ -469,6 +760,8 @@ export const THEMES: Record<ThemeId, BoardTheme> = {
       ladderRungShadow: 'rgba(30, 27, 75, 0.7)',
       ladderRungHighlight: '#bae6fd',
       ladderRivetColor: '#c084fc',
+      ladderAmbientGlow: 'rgba(129, 140, 248, 0.22)',
+      ladderGlowColor: '#818cf8',
 
       snakeStyle: 'cosmic',
       snakePalette: [
@@ -483,6 +776,10 @@ export const THEMES: Record<ThemeId, BoardTheme> = {
       snakeOutline: 'rgba(3, 7, 18, 0.98)',
       snakeDropShadow: 'rgba(99, 102, 241, 0.45)',
       snakeSpecular: 'rgba(224, 231, 255, 0.75)',
+      snakeDetailA: '#ffffff',
+      snakeDetailB: '#c084fc',
+      snakeDetailGlow: '#8b5cf6',
+      snakeMouth: '#1e0b2e',
       eyeSclera: '#e0e7ff',
       eyePupil: '#030712',
       eyeScleraActive: '#f43f5e',
@@ -497,6 +794,8 @@ export const THEMES: Record<ThemeId, BoardTheme> = {
       podiumRibbonGrad: ['#312e81', '#4f46e5', '#3730a3'],
       podiumRibbonText: '★ SUPERNOVA ★',
       podiumCupColors: ['#6366f1', '#e0e7ff', '#a855f7', '#1e1b4b'],
+      podiumAura: 'rgba(224, 231, 255, 0.45)',
+      podiumSunburst: 'rgba(255, 255, 255, 0.22)',
 
       startBayTitle: '★ LAUNCH BAY ★',
       startBaySub: 'ORBIT • SQ 0 ➔',
@@ -522,6 +821,10 @@ export const THEMES: Record<ThemeId, BoardTheme> = {
       badgeSnakeBg: 'rgba(32, 8, 30, 0.9)',
       badgeSnakeBorder: '#f43f5e',
       badgeSnakeText: '#fda4af',
+
+      hoverRing: 'rgba(139, 92, 246, 1)',
+      hoverRingGlow: '#8b5cf6',
+      ambientMote: { color: '#c4b5fd', size: 1.6, alpha: 0.6, count: 24, speed: 0.04 },
     },
   },
 
@@ -532,8 +835,8 @@ export const THEMES: Record<ThemeId, BoardTheme> = {
     icon: '🍭',
     previewColors: {
       frame: '#5c2c16',
-      tileDark: '#381324',
-      tileLight: '#132824',
+      tileDark: '#401627',
+      tileLight: '#0b1f1c',
       accent: '#f43f5e',
     },
     ui: {
@@ -543,28 +846,52 @@ export const THEMES: Record<ThemeId, BoardTheme> = {
       panelBorder: 'rgba(244, 63, 94, 0.3)',
       accent: '#f43f5e',
       accentGlow: 'rgba(244, 63, 94, 0.45)',
-      badgeBg: 'bg-rose-950/80',
-      badgeBorder: 'border-rose-700/40',
-      badgeText: 'text-rose-300/90',
-      btnClass:
-        'bg-gradient-to-b from-rose-300 via-rose-400 to-pink-500 border-rose-700 text-[#3d0315] shadow-[0_8px_20px_rgba(244,63,94,0.3)]',
       btnBg: 'linear-gradient(180deg, #fda4af 0%, #f43f5e 50%, #e11d48 100%)',
       btnText: '#3d0315',
       btnBorder: '#be185d',
       btnShadow: 'rgba(244, 63, 94, 0.42)',
+
+      ramps: {
+        surface: rotateHue(BASE_SURFACE_RAMP, 352),
+        accent: rotateHue(BASE_ACCENT_RAMP, 12),
+      },
+      bodyBg: '#1a0a10',
+      scrim: 'rgba(20, 6, 12, 0.82)',
+      shadow: 'rgba(0, 0, 0, 0.4)',
+      selection: 'rgba(244, 63, 94, 0.3)',
+      pulseRing: 'rgba(244, 63, 94, 0.48)',
+      pulseBlur: 'rgba(244, 63, 94, 0.3)',
+      ringGlowSoft: 'rgba(244, 63, 94, 0.2)',
+      ringGlow: 'rgba(244, 63, 94, 0.25)',
+      ringGlowStrong: 'rgba(244, 63, 94, 0.3)',
+      scrollbarTrack: 'rgba(26, 9, 18, 0.7)',
+      scrollbarThumb: 'rgba(244, 63, 94, 0.32)',
+      scrollbarThumbHover: 'rgba(244, 63, 94, 0.6)',
+      celebrate: ['#fda4af', '#f43f5e', '#fbbf24', '#34d399', '#ffffff', '#fb7185', '#a78bfa'],
+      particleDust: '#fecdd3',
+      particleSpark: '#fda4af',
+      particleLadderSpark: '#fde68a',
+      particleSnakeSpark: '#fb7185',
     },
     board: {
       frameGrad: ['#5c2c16', '#78350f', '#451a03', '#2d1205'],
       framePattern: 'frosting',
+      framePatternColors: ['#f43f5e', '#34d399', '#38bdf8', '#fbbf24', '#ffffff'],
       bezelOuter: 'rgba(30, 10, 5, 0.85)',
       bezelInner: 'rgba(251, 146, 60, 0.55)',
       cornerType: 'peppermint',
       cornerColors: ['#ffffff', '#ef4444', '#b91c1c'],
+      cornerGroove: '#b91c1c',
 
-      tileDark: '#381324',
-      tileLight: '#132824',
+      // (B1) The plum and mint tiles were only ~1 L* apart, so the checker read
+      // as noise. Both are nudged apart while keeping the berry/mint pairing.
+      tileDark: '#401627',
+      tileLight: '#0b1f1c',
       tileSheen: 'rgba(255, 255, 255, 0.12)',
       tileBorder: 'rgba(244, 63, 94, 0.3)',
+      tileGrain: 0.03,
+      vignette: 'rgba(0, 0, 0, 0.4)',
+      guideNotch: 'rgba(244, 63, 94, 0.55)',
 
       ladderStyle: 'candycane',
       ladderRailCore: '#dc2626',
@@ -575,6 +902,8 @@ export const THEMES: Record<ThemeId, BoardTheme> = {
       ladderRungShadow: 'rgba(60, 15, 10, 0.6)',
       ladderRungHighlight: '#fef08a',
       ladderRivetColor: '#ec4899',
+      ladderAmbientGlow: 'rgba(239, 68, 68, 0.2)',
+      ladderGlowColor: '#ef4444',
 
       snakeStyle: 'gummy',
       snakePalette: [
@@ -589,6 +918,10 @@ export const THEMES: Record<ThemeId, BoardTheme> = {
       snakeOutline: 'rgba(35, 10, 20, 0.95)',
       snakeDropShadow: 'rgba(244, 63, 94, 0.35)',
       snakeSpecular: 'rgba(255, 255, 255, 0.65)',
+      snakeDetailA: 'rgba(255, 255, 255, 0.7)',
+      snakeDetailB: 'rgba(251, 191, 36, 0.7)',
+      snakeDetailGlow: 'rgba(0, 0, 0, 0)',
+      snakeMouth: '#4c0519',
       eyeSclera: '#fff1f2',
       eyePupil: '#381324',
       eyeScleraActive: '#fee2e2',
@@ -603,6 +936,8 @@ export const THEMES: Record<ThemeId, BoardTheme> = {
       podiumRibbonGrad: ['#9d174d', '#db2777', '#be185d'],
       podiumRibbonText: '★ SWEET CROWN ★',
       podiumCupColors: ['#f43f5e', '#fff1f2', '#fbbf24', '#881337'],
+      podiumAura: 'rgba(255, 241, 242, 0.45)',
+      podiumSunburst: 'rgba(255, 255, 255, 0.2)',
 
       startBayTitle: '★ SWEET START ★',
       startBaySub: 'TRAY • SQ 0 ➔',
@@ -628,11 +963,55 @@ export const THEMES: Record<ThemeId, BoardTheme> = {
       badgeSnakeBg: 'rgba(38, 10, 22, 0.9)',
       badgeSnakeBorder: '#f43f5e',
       badgeSnakeText: '#fda4af',
+
+      hoverRing: 'rgba(244, 63, 94, 1)',
+      hoverRingGlow: '#f43f5e',
+      ambientMote: { color: '#fda4af', size: 2.4, alpha: 0.45, count: 18, speed: 0.05 },
     },
   },
 };
 
 export const DEFAULT_THEME_ID: ThemeId = 'jungle';
+
+/**
+ * Builds the complete set of `--theme-*` custom properties for a theme.
+ *
+ * These are injected onto the app root in App.tsx and consumed by:
+ *   - `index.css` (`.panel`, `.btn-theme`, scrollbar, selection, keyframes)
+ *   - the `@theme inline` remap, which repoints Tailwind's `emerald-*` and
+ *     `amber-*` utilities at the surface/accent ramps.
+ */
+export function themeCssVars(theme: BoardTheme): Record<string, string> {
+  const ui = theme.ui;
+  const vars: Record<string, string> = {
+    '--theme-panel-bg': ui.panelBg,
+    '--theme-panel-border': ui.panelBorder,
+    '--theme-accent': ui.accent,
+    '--theme-accent-glow': ui.accentGlow,
+    '--theme-btn-bg': ui.btnBg,
+    '--theme-btn-text': ui.btnText,
+    '--theme-btn-border': ui.btnBorder,
+    '--theme-btn-shadow': ui.btnShadow,
+    '--theme-btn-glow': ui.btnShadow,
+    '--theme-body-bg': ui.bodyBg,
+    '--theme-scrim': ui.scrim,
+    '--theme-shadow': ui.shadow,
+    '--theme-selection': ui.selection,
+    '--theme-pulse-ring': ui.pulseRing,
+    '--theme-pulse-blur': ui.pulseBlur,
+    '--theme-glow-soft': ui.ringGlowSoft,
+    '--theme-glow': ui.ringGlow,
+    '--theme-glow-strong': ui.ringGlowStrong,
+    '--theme-scrollbar-track': ui.scrollbarTrack,
+    '--theme-scrollbar-thumb': ui.scrollbarThumb,
+    '--theme-scrollbar-thumb-hover': ui.scrollbarThumbHover,
+  };
+  for (const key of SHADE_KEYS) {
+    vars[`--theme-surface-${key}`] = ui.ramps.surface[key];
+    vars[`--theme-accent-${key}`] = ui.ramps.accent[key];
+  }
+  return vars;
+}
 
 export function getSavedTheme(): ThemeId {
   try {

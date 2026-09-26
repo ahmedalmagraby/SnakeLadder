@@ -3,7 +3,7 @@ import Die from './components/Die';
 import OnlineLobby from './components/OnlineLobby';
 import OnlineHudBar from './components/OnlineHudBar';
 import ThemeModal from './components/ThemeModal';
-import { THEMES, type ThemeId, type BoardTheme } from './game/themes';
+import { THEMES, themeCssVars, type ThemeId, type BoardTheme } from './game/themes';
 import Dialog from './components/Dialog';
 import AriaLiveAnnouncer from './components/AriaLiveAnnouncer';
 import AccessibleBoardTable from './components/AccessibleBoardTable';
@@ -131,6 +131,52 @@ function PaletteIcon({ className }: { className?: string }) {
   );
 }
 
+/**
+ * (F2) Drawn replacement for the bare "➔" character.
+ *
+ * "➔" (U+2794) is not present in the bundled `latin` subset, so it fell back
+ * to whatever symbol font the OS happened to pick - a different arrow on
+ * Windows, macOS and Android. A stroke path is identical everywhere.
+ */
+function ArrowIcon({ className }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" className={`${ic} ${className ?? ''}`}>
+      <path d="M4 12h15M13 6l6 6-6 6" />
+    </svg>
+  );
+}
+
+/** (G1) Leader crown shown on whoever is currently furthest up the board. */
+function CrownIcon({ className }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true" className={`${ic} ${className ?? ''}`}>
+      <path d="M3 7.5 6.6 12 12 4.5 17.4 12 21 7.5 19.6 18H4.4L3 7.5Z" />
+    </svg>
+  );
+}
+
+/** (G3) Small clock glyph for log timestamps. */
+function ClockIcon({ className }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" className={`${ic} ${className ?? ''}`}>
+      <circle cx="12" cy="12" r="8.5" />
+      <path d="M12 7.5V12l3 2" />
+    </svg>
+  );
+}
+
+/** (G1) Draws a thin 25/50/75 tick track under a player's progress bar so the
+ *  bar can be read as "how far to 100" rather than just "some amount". */
+function ProgressTicks() {
+  return (
+    <div className="pointer-events-none absolute inset-0 flex justify-between px-[25%] items-center" aria-hidden="true">
+      <span className="w-px h-1.5 bg-emerald-100/25" />
+      <span className="w-px h-1.5 bg-emerald-100/25" />
+      <span className="w-px h-1.5 bg-emerald-100/25" />
+    </div>
+  );
+}
+
 /* ---------------- shared bits ---------------- */
 
 const btnGhost = 'btn-theme-ghost font-display tracking-wide px-6 py-3';
@@ -208,6 +254,7 @@ function PlayerCard({
   snakes,
   active,
   activeLabel,
+  isLeader,
 }: {
   player: PlayerConfig;
   pos: number;
@@ -216,12 +263,13 @@ function PlayerCard({
   snakes: number;
   active: boolean;
   activeLabel?: string;
+  isLeader: boolean;
 }) {
   const col = PLAYER_COLORS[player.colorId % PLAYER_COLORS.length];
   return (
     <div
       className={`panel p-2.5 transition-all duration-300 ${
-        active ? 'pulse-glow border-amber-400/80 shadow-[0_0_16px_rgba(251,191,36,0.3)]' : 'opacity-80'
+        active ? 'pulse-glow border-amber-400/80 shadow-[0_0_16px_var(--theme-accent-glow)]' : 'opacity-80'
       }`}
       style={active ? { borderColor: col.base } : undefined}
     >
@@ -236,6 +284,10 @@ function PlayerCard({
           {player.slotIndex + 1}
         </span>
         <span className="font-display text-xs sm:text-sm tracking-wide truncate">{player.name}</span>
+        {/* (G1) Crown the current leader so the standings are readable at a glance. */}
+        {isLeader && pos > 0 && (
+          <CrownIcon className="w-3 h-3 text-amber-300 shrink-0" />
+        )}
         <span
           className={`ml-auto text-[9px] font-black tracking-widest px-1.5 py-0.5 rounded border shrink-0 ${
             player.isCpu
@@ -249,13 +301,13 @@ function PlayerCard({
 
       <div className="mt-1.5 flex items-baseline justify-between">
         <span className="text-[9px] font-black tracking-widest text-emerald-300/60">SQUARE</span>
-        <span className="font-display text-2xl leading-none" style={{ color: active ? col.light : '#d1fae5' }}>
+        <span className="font-display tnum text-2xl leading-none" style={{ color: active ? col.light : '#d1fae5' }}>
           {pos === 0 ? 'START' : pos}
         </span>
       </div>
 
       {/* Progress bar to 100 */}
-      <div className="mt-1.5 h-1.5 rounded-full bg-emerald-950/80 overflow-hidden">
+      <div className="relative mt-1.5 h-1.5 rounded-full bg-emerald-950/80 overflow-hidden">
         <div
           className="h-full rounded-full transition-all duration-500"
           style={{
@@ -263,13 +315,14 @@ function PlayerCard({
             background: `linear-gradient(90deg, ${col.dark}, ${col.base})`,
           }}
         />
+        <ProgressTicks />
       </div>
 
       <div className="mt-1.5 flex justify-between items-center text-[9px] font-bold text-emerald-300/60">
         <div className="flex items-center gap-1.5">
-          <span>{rolls} rolls</span>
-          {ladders > 0 && <span className="text-amber-400">🪜 {ladders}</span>}
-          {snakes > 0 && <span className="text-red-400">🐍 {snakes}</span>}
+          <span className="tnum">{rolls} rolls</span>
+          {ladders > 0 && <span className="text-amber-400">🪜 <span className="tnum">{ladders}</span></span>}
+          {snakes > 0 && <span className="text-red-400">🐍 <span className="tnum">{snakes}</span></span>}
         </div>
         {active && activeLabel && (
           <span style={{ color: col.light }} className="font-black tracking-wider">
@@ -307,7 +360,7 @@ function MobilePlayerChip({
     <div
       className={`min-w-0 px-1.5 py-1 rounded-lg border transition-all duration-300 flex items-center gap-1 ${
         active
-          ? 'bg-amber-400/20 border-amber-400 shadow-[0_0_10px_rgba(251,191,36,0.35)] ring-1 ring-amber-400/60'
+          ? 'bg-amber-400/20 border-amber-400 shadow-[0_0_10px_var(--theme-accent-glow)] ring-1 ring-amber-400/60'
           : 'bg-emerald-950/60 border-emerald-800/40 opacity-80'
       }`}
       style={active ? { borderColor: col.base } : undefined}
@@ -400,6 +453,43 @@ function StartScreen({
     'CPU 3',
   ]);
 
+  // (H1) Gentle pointer parallax for the floating background icons. The value
+  // is damped toward the pointer each frame so the drift feels like inertia
+  // rather than a cursor glued to the artwork.
+  const [parallax, setParallax] = useState({ x: 0, y: 0 });
+  const parallaxTarget = useRef({ x: 0, y: 0 });
+  useEffect(() => {
+    let raf = 0;
+    const onMove = (e: PointerEvent) => {
+      parallaxTarget.current = {
+        x: Math.max(-1, Math.min(1, (e.clientX / window.innerWidth - 0.5) * 2)),
+        y: Math.max(-1, Math.min(1, (e.clientY / window.innerHeight - 0.5) * 2)),
+      };
+    };
+    const onLeave = () => {
+      parallaxTarget.current = { x: 0, y: 0 };
+    };
+    const tick = () => {
+      setParallax((prev) => ({
+        x: prev.x + (parallaxTarget.current.x - prev.x) * 0.06,
+        y: prev.y + (parallaxTarget.current.y - prev.y) * 0.06,
+      }));
+      raf = requestAnimationFrame(tick);
+    };
+    window.addEventListener('pointermove', onMove);
+    window.addEventListener('pointerleave', onLeave);
+    raf = requestAnimationFrame(tick);
+    return () => {
+      window.removeEventListener('pointermove', onMove);
+      window.removeEventListener('pointerleave', onLeave);
+      cancelAnimationFrame(raf);
+    };
+  }, []);
+
+  const drift = (depth: number) => ({
+    transform: `translate3d(${(-parallax.x * depth).toFixed(2)}px, ${(-parallax.y * depth).toFixed(2)}px, 0)`,
+  });
+
   const handleNameChange = (idx: number, val: string) => {
     setNames((prev) => {
       const next = [...prev];
@@ -440,10 +530,21 @@ function StartScreen({
 
   return (
     <div className="relative z-10 h-full w-full overflow-y-auto p-2.5 sm:p-6 flex flex-col items-center justify-start sm:justify-center">
-      <SnakeIcon className="pointer-events-none floaty absolute left-[5%] top-[8%] w-14 h-14 text-red-500/25" />
-      <LadderIcon className="pointer-events-none floaty absolute right-[6%] top-[14%] w-14 h-14 text-amber-400/25 [--fr:14deg]" />
-      <DiceIcon className="pointer-events-none floaty absolute left-[8%] bottom-[10%] w-12 h-12 text-emerald-400/25 [--fr:-10deg]" />
-      <SnakeIcon className="pointer-events-none floaty absolute right-[8%] bottom-[8%] w-12 h-12 text-lime-400/20 [--fr:160deg]" />
+      {/* (H1) Parallax wrapper divs carry the pointer-driven transform; the icons
+          inside keep their own `floaty` animation (a CSS animation outranks an
+          inline transform, so they have to be separate elements). */}
+      <div className="pointer-events-none absolute left-[5%] top-[8%]" style={drift(14)}>
+        <SnakeIcon className="floaty w-14 h-14 text-red-500/25" />
+      </div>
+      <div className="pointer-events-none absolute right-[6%] top-[14%]" style={drift(22)}>
+        <LadderIcon className="floaty w-14 h-14 text-amber-400/25 [--fr:14deg]" />
+      </div>
+      <div className="pointer-events-none absolute left-[8%] bottom-[10%]" style={drift(10)}>
+        <DiceIcon className="floaty w-12 h-12 text-emerald-400/25 [--fr:-10deg]" />
+      </div>
+      <div className="pointer-events-none absolute right-[8%] bottom-[8%]" style={drift(18)}>
+        <SnakeIcon className="floaty w-12 h-12 text-lime-400/20 [--fr:160deg]" />
+      </div>
 
       <div className="relative w-full max-w-xl panel p-4 sm:p-8 text-center border-amber-400/30 my-1 sm:my-auto shrink-0">
         <div className="flex items-center justify-center gap-3 mb-2">
@@ -478,13 +579,23 @@ function StartScreen({
               className="px-3.5 py-1.5 rounded-lg text-xs font-black bg-amber-400 text-stone-900 hover:bg-amber-300 transition-all cursor-pointer shadow flex items-center gap-1 min-h-[44px]"
             >
               <span>RESUME</span>
-              <span>➔</span>
+              <ArrowIcon className="w-3.5 h-3.5" />
             </button>
           </div>
         )}
 
+        {/* (H2) The panel used to be one long undifferentiated stack of controls.
+            Grouping it into labelled sections makes the scan order obvious:
+            how to play -> who is playing -> the rules -> the look. Every
+            control keeps its original aria-label, so this is purely additive. */}
+        <div className="mt-5 text-[10px] font-black tracking-[0.2em] text-emerald-300/50 uppercase flex items-center gap-2">
+          <span className="h-px flex-1 bg-emerald-800/40" />
+          How to play
+          <span className="h-px flex-1 bg-emerald-800/40" />
+        </div>
+
         {/* Mode Selector */}
-        <div className="mt-5 grid grid-cols-2 gap-3" role="group" aria-label="Game Mode">
+        <div className="mt-2.5 grid grid-cols-2 gap-3" role="group" aria-label="Game Mode">
           <button
             type="button"
             aria-pressed={mode === 'solo'}
@@ -495,7 +606,7 @@ function StartScreen({
             }}
             className={`p-3 rounded-xl border text-left transition-all cursor-pointer min-h-[48px] ${
               mode === 'solo'
-                ? 'bg-amber-400/15 border-amber-400/80 shadow-[0_0_14px_rgba(251,191,36,0.25)]'
+                ? 'bg-amber-400/15 border-amber-400/80 shadow-[0_0_14px_var(--theme-glow)]'
                 : 'bg-emerald-950/40 border-emerald-800/40 hover:border-emerald-700/60'
             }`}
           >
@@ -516,7 +627,7 @@ function StartScreen({
             }}
             className={`p-3 rounded-xl border text-left transition-all cursor-pointer min-h-[48px] ${
               mode === 'pass'
-                ? 'bg-amber-400/15 border-amber-400/80 shadow-[0_0_14px_rgba(251,191,36,0.25)]'
+                ? 'bg-amber-400/15 border-amber-400/80 shadow-[0_0_14px_var(--theme-glow)]'
                 : 'bg-emerald-950/40 border-emerald-800/40 hover:border-emerald-700/60'
             }`}
           >
@@ -533,7 +644,7 @@ function StartScreen({
           type="button"
           onClick={onOpenOnline}
           aria-label="Open online multiplayer lobby"
-          className="mt-3 w-full p-3 rounded-xl border border-amber-400/60 bg-gradient-to-r from-amber-500/20 via-emerald-900/40 to-amber-500/20 hover:border-amber-400/90 hover:from-amber-500/30 hover:to-amber-500/30 text-left transition-all cursor-pointer shadow-[0_0_16px_rgba(251,191,36,0.2)] flex items-center justify-between min-h-[48px]"
+          className="mt-3 w-full p-3 rounded-xl border border-amber-400/60 bg-gradient-to-r from-amber-500/20 via-emerald-900/40 to-amber-500/20 hover:border-amber-400/90 hover:from-amber-500/30 hover:to-amber-500/30 text-left transition-all cursor-pointer shadow-[0_0_16px_var(--theme-glow-soft)] flex items-center justify-between min-h-[48px]"
         >
           <div className="flex items-center gap-2.5">
             <span className="text-2xl" aria-hidden="true">🌐</span>
@@ -549,11 +660,18 @@ function StartScreen({
               </div>
             </div>
           </div>
-          <span className="text-amber-300 font-display text-lg">➔</span>
+          <ArrowIcon className="w-5 h-5 text-amber-300" />
         </button>
 
+        {/* (H2) Section divider */}
+        <div className="mt-4 text-[10px] font-black tracking-[0.2em] text-emerald-300/50 uppercase flex items-center gap-2">
+          <span className="h-px flex-1 bg-emerald-800/40" />
+          Players &amp; rules
+          <span className="h-px flex-1 bg-emerald-800/40" />
+        </div>
+
         {/* Player Count & Names */}
-        <div className="mt-4 p-3.5 rounded-xl bg-emerald-950/50 border border-emerald-800/30 text-left">
+        <div className="mt-2.5 p-3.5 rounded-xl bg-emerald-950/50 border border-emerald-800/30 text-left">
           <div className="flex items-center justify-between mb-2">
             <span className="text-xs font-black text-emerald-300/80 tracking-wider">PLAYERS:</span>
             <div className="flex gap-1.5" role="group" aria-label="Player count">
@@ -607,11 +725,14 @@ function StartScreen({
           </div>
         </div>
 
-        {/* Game Rules & Speed Settings */}
+        {/* Game Rules & Speed Settings
+            (H5) The pills themselves are unchanged; what changed is the
+            container - a recessed "track" with a subtle inner shadow, so the
+            group reads as one control rather than a row of loose buttons. */}
         <div className="mt-3 grid grid-cols-2 gap-2 text-left text-xs">
-          <div className="p-2.5 rounded-xl bg-emerald-950/50 border border-emerald-800/30">
-            <span className="text-[10px] font-black text-emerald-300/70 tracking-wider block mb-1">SPEED</span>
-            <div className="flex gap-1" role="group" aria-label="Game Speed">
+          <div className="p-2.5 rounded-xl bg-emerald-950/50 border border-emerald-800/30 shadow-[inset_0_2px_6px_rgba(0,0,0,0.35)]">
+            <span className="text-[10px] font-black text-emerald-300/70 tracking-wider block mb-1.5">SPEED</span>
+            <div className="flex gap-1 p-0.5 rounded-lg bg-emerald-950/60" role="group" aria-label="Game Speed">
               {(['normal', 'fast', 'turbo'] as GameSpeed[]).map((s) => (
                 <button
                   key={s}
@@ -619,10 +740,10 @@ function StartScreen({
                   aria-pressed={speed === s}
                   aria-label={`${s} speed`}
                   onClick={() => setSpeed(s)}
-                  className={`flex-1 py-1.5 rounded text-[10px] font-black uppercase transition-all cursor-pointer min-h-[36px] flex items-center justify-center ${
+                  className={`flex-1 py-1.5 rounded-md text-[10px] font-black uppercase transition-all cursor-pointer min-h-[36px] flex items-center justify-center ${
                     speed === s
-                      ? 'bg-amber-400 text-stone-900'
-                      : 'bg-emerald-900/50 text-emerald-300/80 hover:bg-emerald-800/50'
+                      ? 'bg-amber-400 text-stone-900 shadow-[0_2px_6px_var(--theme-btn-glow)]'
+                      : 'text-emerald-300/80 hover:bg-emerald-900/60'
                   }`}
                 >
                   {s}
@@ -631,9 +752,9 @@ function StartScreen({
             </div>
           </div>
 
-          <div className="p-2.5 rounded-xl bg-emerald-950/50 border border-emerald-800/30">
-            <span className="text-[10px] font-black text-emerald-300/70 tracking-wider block mb-1">WIN RULE</span>
-            <div className="flex gap-1" role="group" aria-label="Win Rule">
+          <div className="p-2.5 rounded-xl bg-emerald-950/50 border border-emerald-800/30 shadow-[inset_0_2px_6px_rgba(0,0,0,0.35)]">
+            <span className="text-[10px] font-black text-emerald-300/70 tracking-wider block mb-1.5">WIN RULE</span>
+            <div className="flex gap-1 p-0.5 rounded-lg bg-emerald-950/60" role="group" aria-label="Win Rule">
               {(['exact', 'bounce'] as WinRule[]).map((r) => (
                 <button
                   key={r}
@@ -641,10 +762,10 @@ function StartScreen({
                   aria-pressed={rule === r}
                   aria-label={r === 'exact' ? 'Exact 100 win rule' : 'Bounce back win rule'}
                   onClick={() => setRule(r)}
-                  className={`flex-1 py-1.5 rounded text-[10px] font-black uppercase transition-all cursor-pointer min-h-[36px] flex items-center justify-center ${
+                  className={`flex-1 py-1.5 rounded-md text-[10px] font-black uppercase transition-all cursor-pointer min-h-[36px] flex items-center justify-center ${
                     rule === r
-                      ? 'bg-amber-400 text-stone-900'
-                      : 'bg-emerald-900/50 text-emerald-300/80 hover:bg-emerald-800/50'
+                      ? 'bg-amber-400 text-stone-900 shadow-[0_2px_6px_var(--theme-btn-glow)]'
+                      : 'text-emerald-300/80 hover:bg-emerald-900/60'
                   }`}
                 >
                   {r === 'exact' ? 'Exact 100' : 'Bounce Back'}
@@ -683,7 +804,7 @@ function StartScreen({
                   title={`${t.name}: ${t.tagline}`}
                   className={`p-1.5 rounded-xl border flex flex-col items-center gap-1 transition-all cursor-pointer min-h-[44px] ${
                     isSelected
-                      ? 'bg-amber-400/20 border-amber-400 shadow-[0_0_12px_rgba(251,191,36,0.3)] ring-1 ring-amber-400/70 scale-[1.02]'
+                      ? 'bg-amber-400/20 border-amber-400 shadow-[0_0_12px_var(--theme-glow-strong)] ring-1 ring-amber-400/70 scale-[1.02]'
                       : 'bg-emerald-950/60 border-emerald-800/40 hover:border-emerald-700/70 hover:bg-emerald-900/30'
                   }`}
                 >
@@ -743,6 +864,7 @@ function WinOverlay({
   sixes,
   isOnline,
   isHost,
+  theme,
   onAgain,
   onMenu,
 }: {
@@ -754,6 +876,7 @@ function WinOverlay({
   sixes: number[];
   isOnline: boolean;
   isHost: boolean;
+  theme: BoardTheme;
   onAgain: () => void;
   onMenu: () => void;
 }) {
@@ -789,36 +912,56 @@ function WinOverlay({
       backdropClassName="z-40"
     >
       <div style={{ borderColor: col.base }}>
-        <TrophyIcon className="w-16 h-16 mx-auto text-amber-400 drop-shadow-[0_0_20px_rgba(251,191,36,0.7)]" />
+        {/* (H3) Staggered reveal: trophy, headline, stats and summary cascade in
+            so the result lands as an event rather than appearing all at once. */}
+        <TrophyIcon className="rise-in w-16 h-16 mx-auto text-amber-400 drop-shadow-[0_0_20px_var(--theme-accent-glow)]" />
         <h2
           id="win-dialog-title"
-          className="font-display text-4xl drop-title mt-2"
-          style={{ color: col.light, textShadow: `0 0 20px ${col.glow}` }}
+          className="font-display text-4xl drop-title mt-2 rise-in"
+          style={{ color: col.light, textShadow: `0 0 20px ${col.glow}`, animationDelay: '90ms' }}
         >
           {winner.name.toUpperCase()} WINS!
         </h2>
-        <p className="mt-1 font-bold text-emerald-100/90 text-sm">
+        <p
+          className="mt-1 font-bold text-emerald-100/90 text-sm rise-in"
+          style={{ animationDelay: '170ms' }}
+        >
           Conquered square 100 in {winnerRolls} {winnerRolls === 1 ? 'roll' : 'rolls'}!
         </p>
 
+        {/* (A6) The theme's podium title/subtitle were defined for all five
+            themes but never rendered anywhere. Surface them here. */}
+        <p
+          className="mt-1 text-[11px] font-black tracking-[0.18em] uppercase text-amber-300/80 rise-in"
+          style={{ animationDelay: '230ms' }}
+        >
+          {theme.board.podiumTitle} · {theme.board.podiumSubtitle}
+        </p>
+
         {/* Match breakdown stats */}
-        <div className="mt-4 grid grid-cols-3 gap-2 p-3 rounded-xl bg-emerald-950/70 border border-amber-400/30 text-center">
+        <div
+          className="mt-4 grid grid-cols-3 gap-2 p-3 rounded-xl bg-emerald-950/70 border border-amber-400/30 text-center rise-in"
+          style={{ animationDelay: '290ms' }}
+        >
           <div>
             <div className="text-[10px] font-black tracking-wider text-emerald-300/60">ROLLS</div>
-            <div className="font-display text-xl text-amber-300 mt-0.5">{winnerRolls}</div>
+            <div className="font-display tnum text-xl text-amber-300 mt-0.5">{winnerRolls}</div>
           </div>
           <div>
             <div className="text-[10px] font-black tracking-wider text-emerald-300/60">LADDERS</div>
-            <div className="font-display text-xl text-yellow-300 mt-0.5">🪜 {winnerLadders}</div>
+            <div className="font-display tnum text-xl text-yellow-300 mt-0.5">🪜 {winnerLadders}</div>
           </div>
           <div>
             <div className="text-[10px] font-black tracking-wider text-emerald-300/60">SNAKES</div>
-            <div className="font-display text-xl text-rose-300 mt-0.5">🐍 {winnerSnakes}</div>
+            <div className="font-display tnum text-xl text-rose-300 mt-0.5">🐍 {winnerSnakes}</div>
           </div>
         </div>
 
         {/* Full match score table */}
-        <div className="mt-3 p-2.5 rounded-xl bg-emerald-950/50 border border-emerald-800/30 text-left">
+        <div
+          className="mt-3 p-2.5 rounded-xl bg-emerald-950/50 border border-emerald-800/30 text-left rise-in"
+          style={{ animationDelay: '350ms' }}
+        >
           <div className="text-[10px] font-black text-emerald-300/60 uppercase mb-1.5">Match Summary</div>
           <div className="space-y-1 text-xs font-bold">
             {players.map((p, idx) => {
@@ -831,8 +974,8 @@ function WinOverlay({
                     {p.slotIndex === winner.slotIndex && <span className="text-[10px] text-amber-400">👑 WINNER</span>}
                   </div>
                   <div className="flex items-center gap-3 text-emerald-300/70 text-[11px]">
-                    <span>{rolls[idx] ?? 0} rolls</span>
-                    <span>{sixes[idx] ?? 0} sixes</span>
+                    <span className="tnum">{rolls[idx] ?? 0} rolls</span>
+                    <span className="tnum">{sixes[idx] ?? 0} sixes</span>
                   </div>
                 </div>
               );
@@ -840,7 +983,7 @@ function WinOverlay({
           </div>
         </div>
 
-        <div className="mt-5 flex gap-3 justify-center flex-wrap items-center">
+        <div className="mt-5 flex gap-3 justify-center flex-wrap items-center rise-in" style={{ animationDelay: '410ms' }}>
           {canRestart ? (
             <button
               type="button"
@@ -919,11 +1062,20 @@ function ConfirmModal({
 
 /* ---------------- app ---------------- */
 
+/** (G3) mm:ss timestamp for the game log. */
+function formatLogTime(at: number): string {
+  const d = new Date(at);
+  const mm = String(d.getMinutes()).padStart(2, '0');
+  const ss = String(d.getSeconds()).padStart(2, '0');
+  return `${mm}:${ss}`;
+}
+
 export default function App() {
   const [showOnlineModal, setShowOnlineModal] = useState(() => {
     return window.location.hash.startsWith('#room=');
   });
   const [showThemeModal, setShowThemeModal] = useState(false);
+  const [showFullLog, setShowFullLog] = useState(false);
 
   const gameRef = useRef<ReturnType<typeof useGame> | null>(null);
   const reconnectTimeoutRef = useRef<number | null>(null);
@@ -1135,6 +1287,20 @@ export default function App() {
   const isMyTurn =
     !multiplayer.isOnline || hud.players[hud.turn]?.slotIndex === multiplayer.mySlot;
 
+  // (G1) Who is furthest up the board right now?
+  const leaderIndex = (() => {
+    let best = -1;
+    let bestPos = -1;
+    for (let i = 0; i < hud.players.length; i++) {
+      const p = hud.pos[i] ?? 0;
+      if (p > bestPos) {
+        bestPos = p;
+        best = i;
+      }
+    }
+    return bestPos > 0 ? best : -1;
+  })();
+
   const cardLabel = (idx: number) => {
     if (hud.turn !== idx || hud.mode !== 'playing') return undefined;
     if (multiplayer.isPaused) return 'PAUSED';
@@ -1174,16 +1340,19 @@ export default function App() {
     return 'ROLL DICE';
   };
 
-  const themeVars = {
-    ['--theme-panel-bg' as string]: game.theme.ui.panelBg,
-    ['--theme-panel-border' as string]: game.theme.ui.panelBorder,
-    ['--theme-accent' as string]: game.theme.ui.accent,
-    ['--theme-accent-glow' as string]: game.theme.ui.accentGlow,
-    ['--theme-btn-bg' as string]: game.theme.ui.btnBg,
-    ['--theme-btn-text' as string]: game.theme.ui.btnText,
-    ['--theme-btn-border' as string]: game.theme.ui.btnBorder,
-    ['--theme-btn-shadow' as string]: game.theme.ui.btnShadow,
-  };
+  // (A1/A2) One-shot map of every `--theme-*` custom property for the active
+  // theme. The `@theme inline` block in index.css repoints Tailwind's
+  // `emerald-*` / `amber-*` utilities at these, which is what finally makes the
+  // whole UI (not just the canvas) follow the selected theme.
+  const themeVars = themeCssVars(game.theme) as React.CSSProperties;
+
+  // (A3) Keep the browser/OS chrome colour in step with the active theme, so
+  // the address bar (or the mobile status bar) never stays jungle-green while
+  // a different board theme is selected.
+  useEffect(() => {
+    const meta = document.querySelector('meta[name="theme-color"]');
+    if (meta) meta.setAttribute('content', game.theme.ui.bodyBg);
+  }, [game.themeId, game.theme]);
 
   return (
     <div
@@ -1357,7 +1526,19 @@ export default function App() {
               )}
 
               <div className="relative w-full flex-1 min-h-0 min-w-0 flex items-center justify-center overflow-hidden">
-                <div ref={game.wrapRef} className="w-full h-full min-h-0 min-w-0 flex items-center justify-center overflow-hidden">
+                {/* (G5) A soft halo behind the board so the eye is pulled to the
+                    play area rather than the chrome around it. */}
+                <div
+                  className="pointer-events-none absolute inset-0 board-glow"
+                  style={{
+                    background:
+                      'radial-gradient(closest-side, var(--theme-accent-glow), transparent 78%)',
+                    opacity: 0.28,
+                    mixBlendMode: 'screen',
+                  }}
+                  aria-hidden="true"
+                />
+                <div ref={game.wrapRef} className="relative w-full h-full min-h-0 min-w-0 flex items-center justify-center overflow-hidden">
                   <canvas ref={game.canvasRef} className="drop-shadow-[0_18px_44px_rgba(0,0,0,0.6)]" />
                 </div>
                 <ToastView toast={game.toast} />
@@ -1370,16 +1551,45 @@ export default function App() {
                   </div>
                 )}
 
+                {/* (G4) Turn banner across the top of the board. Previously
+                    "whose turn is it" was only expressed in the sidebar status
+                    label, which is off-screen on mobile and easy to miss. */}
+                {hud.mode === 'playing' && hud.phase !== 'over' && (
+                  <div
+                    className="pointer-events-none absolute top-1 left-1/2 -translate-x-1/2 z-20 flex items-center gap-2 px-3 py-1 rounded-full bg-slate-950/85 border backdrop-blur-md text-[11px] font-black tracking-wide shadow-lg max-w-[80%] truncate"
+                    style={{
+                      borderColor: `${activePal.base}66`,
+                      color: activePal.light,
+                    }}
+                    aria-hidden="true"
+                  >
+                    <span
+                      className="w-1.5 h-1.5 rounded-full shrink-0"
+                      style={{ background: activePal.base }}
+                    />
+                    <span className="truncate">
+                      {activePlayer?.name?.toUpperCase() ?? 'PLAYER'}&rsquo;
+                      {hud.phase === 'rolling'
+                        ? 'S TURN'
+                        : hud.phase === 'moving'
+                          ? 'S MOVE'
+                          : hud.phase === 'sliding'
+                            ? 'S SLIDE'
+                            : 'S TURN'}
+                    </span>
+                  </div>
+                )}
+
                 {/* Hover inspection badge */}
                 {game.hoveredSquare && (
                   <div className="absolute bottom-2 left-1/2 -translate-x-1/2 z-20 pointer-events-none px-3 py-1 rounded-full bg-slate-950/92 border border-amber-400/40 backdrop-blur-md text-xs font-bold shadow-2xl flex items-center gap-1.5">
-                    <span className="text-amber-300 font-display tracking-wide">
+                    <span className="text-amber-300 font-display tracking-wide tnum">
                       Square {game.hoveredSquare}
                     </span>
                     {PORTALS[game.hoveredSquare]?.type === 'snake' && (
                       <span className="text-rose-400 flex items-center gap-1">
                         <span>🐍 Drops to {PORTALS[game.hoveredSquare].to}</span>
-                        <span className="opacity-75 font-normal">
+                        <span className="opacity-75 font-normal tnum">
                           ({PORTALS[game.hoveredSquare].diff} squares)
                         </span>
                       </span>
@@ -1387,16 +1597,21 @@ export default function App() {
                     {PORTALS[game.hoveredSquare]?.type === 'ladder' && (
                       <span className="text-emerald-400 flex items-center gap-1">
                         <span>🪜 Climbs to {PORTALS[game.hoveredSquare].to}</span>
-                        <span className="opacity-75 font-normal">
+                        <span className="opacity-75 font-normal tnum">
                           (+{PORTALS[game.hoveredSquare].diff} squares)
                         </span>
                       </span>
                     )}
                     {!PORTALS[game.hoveredSquare] && game.hoveredSquare === 100 && (
-                      <span className="text-amber-200">★ FINISH PODIUM ★</span>
+                      /* (A7) Coloured with the active theme's accent instead of a
+                         hardcoded jungle amber. The wording is unchanged so the
+                         accessible board table and the hover badge stay in sync. */
+                      <span style={{ color: game.theme.ui.accent }}>
+                        ★ FINISH PODIUM ★
+                      </span>
                     )}
                     {!PORTALS[game.hoveredSquare] && game.hoveredSquare < 100 && (
-                      <span className="text-slate-400 font-medium">
+                      <span className="text-slate-400 font-medium tnum">
                         ({100 - game.hoveredSquare} to 100)
                       </span>
                     )}
@@ -1566,6 +1781,7 @@ export default function App() {
                     snakes={hud.snakesHit[idx] ?? 0}
                     active={hud.turn === idx && hud.mode === 'playing'}
                     activeLabel={cardLabel(idx)}
+                    isLeader={idx === leaderIndex}
                   />
                 ))}
               </div>
@@ -1625,27 +1841,58 @@ export default function App() {
 
               {/* Live Move Log (Desktop only - mobile uses floating overlay ticker) */}
               <div className="panel p-2.5 hidden lg:block">
-                <div className="text-[10px] font-black tracking-widest text-emerald-300/50 mb-1">GAME LOG</div>
-                <ul className="space-y-1">
-                  {game.log.slice(0, 5).map((e) => (
-                    <li key={e.id} className="text-[11px] sm:text-[12px] font-bold flex items-center gap-2 text-emerald-100/90 truncate">
-                      <span
-                        className={`w-1.5 h-1.5 rounded-full shrink-0 ${
-                          e.kind === 'p0'
-                            ? 'bg-cyan-400'
-                            : e.kind === 'p1'
-                            ? 'bg-rose-400'
-                            : e.kind === 'p2'
-                            ? 'bg-lime-400'
-                            : e.kind === 'p3'
-                            ? 'bg-amber-400'
-                            : 'bg-yellow-300'
+                <div className="flex items-center justify-between mb-1">
+                  <div className="text-[10px] font-black tracking-widest text-emerald-300/50">GAME LOG</div>
+                  {/* (G3) The log keeps up to 20 entries; reveal them on demand. */}
+                  {game.log.length > 5 && (
+                    <button
+                      type="button"
+                      onClick={() => setShowFullLog((v) => !v)}
+                      className="text-[10px] font-black text-amber-300/80 hover:text-amber-200 underline cursor-pointer"
+                    >
+                      {showFullLog ? 'COLLAPSE' : `SHOW ALL (${game.log.length})`}
+                    </button>
+                  )}
+                </div>
+                {/* (G6) Empty state so the panel never looks broken before the
+                    first roll. */}
+                {game.log.length === 0 ? (
+                  <p className="text-[11px] font-bold text-emerald-300/40 italic">
+                    No moves yet — roll the dice to begin.
+                  </p>
+                ) : (
+                  <ul className="space-y-1">
+                    {game.log.slice(0, showFullLog ? 20 : 5).map((e, i) => (
+                      <li
+                        key={e.id}
+                        /* (G2) The newest entry gets a brief highlight so the eye
+                           catches it without having to diff the list. */
+                        className={`text-[11px] sm:text-[12px] font-bold flex items-center gap-2 text-emerald-100/90 truncate ${
+                          i === 0 ? 'log-flash -mx-1.5 px-1.5' : ''
                         }`}
-                      />
-                      <span className="truncate">{e.text}</span>
-                    </li>
-                  ))}
-                </ul>
+                      >
+                        <span
+                          className={`w-1.5 h-1.5 rounded-full shrink-0 ${
+                            e.kind === 'p0'
+                              ? 'bg-cyan-400'
+                              : e.kind === 'p1'
+                                ? 'bg-rose-400'
+                                : e.kind === 'p2'
+                                  ? 'bg-lime-400'
+                                  : e.kind === 'p3'
+                                    ? 'bg-amber-400'
+                                    : 'bg-yellow-300'
+                          }`}
+                        />
+                        <span className="truncate">{e.text}</span>
+                        <span className="ml-auto shrink-0 text-[10px] font-bold text-emerald-300/40 tnum flex items-center gap-0.5">
+                          <ClockIcon className="w-2.5 h-2.5" />
+                          {formatLogTime(e.at)}
+                        </span>
+                      </li>
+                    ))}
+                  </ul>
+                )}
               </div>
 
               {/* Quick Strategy Legend */}
@@ -1685,6 +1932,7 @@ export default function App() {
               sixes={hud.sixesHit}
               isOnline={multiplayer.isOnline}
               isHost={multiplayer.isHost}
+              theme={game.theme}
               onAgain={() => {
                 if (multiplayer.isOnline) {
                   if (multiplayer.isHost) {
@@ -1699,16 +1947,20 @@ export default function App() {
               onMenu={handleLeaveOnline}
             />
           )}
-
-          {/* Theme Selector Modal */}
-          {showThemeModal && (
-            <ThemeModal
-              currentThemeId={game.themeId}
-              onSelectTheme={game.setTheme}
-              onClose={() => setShowThemeModal(false)}
-            />
-          )}
         </>
+      )}
+
+      {/* Theme Selector Modal.
+          This lives *outside* the menu/game ternary on purpose: it used to be
+          inside the in-game branch, which meant the start screen's
+          "View All (5)" button and the T shortcut silently did nothing until a
+          match had already started. */}
+      {showThemeModal && (
+        <ThemeModal
+          currentThemeId={game.themeId}
+          onSelectTheme={game.setTheme}
+          onClose={() => setShowThemeModal(false)}
+        />
       )}
     </div>
   );

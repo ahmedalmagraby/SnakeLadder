@@ -151,6 +151,12 @@ export interface GameState {
   particles: Particle[];
   emotes: FloatingEmote[];
   shake: number;
+  /** (E2) Screen-edge impact flash intensity, 0..1, decays each frame. */
+  flash: number;
+  /** Colour of the impact flash. */
+  flashColor: string;
+  /** (E4) Extra-turn celebration halo, 0..1, decays each frame. */
+  extraTurn: number;
   time: number;
 }
 
@@ -183,6 +189,9 @@ export const initialGameState = (): GameState => ({
   particles: [],
   emotes: [],
   shake: 0,
+  flash: 0,
+  flashColor: 'rgba(239, 68, 68, 0.55)',
+  extraTurn: 0,
   time: 0,
 });
 
@@ -396,6 +405,8 @@ export function gameReducer(state: GameState, action: GameAction): GameState {
         particles: [],
         emotes: [],
         shake: 0,
+        flash: 0,
+        extraTurn: 0,
       };
     }
 
@@ -761,6 +772,9 @@ export function gameReducer(state: GameState, action: GameAction): GameState {
         targetSquare: undefined,
         particles: [],
         emotes: [],
+        shake: 0,
+        flash: 0,
+        extraTurn: 0,
       };
     }
 

@@ -1,0 +1,40 @@
+/*
+ * Self-hosted display + UI fonts (F1).
+ *
+ * Previously these were pulled from the Google Fonts CDN with a blocking
+ * <link> in index.html. That meant:
+ *   - a network round-trip before any text could be painted,
+ *   - a completely different look when offline,
+ *   - and a race between font arrival and the canvas "board layer" bake,
+ *     which is why useGame has to re-render on document.fonts.ready.
+ *
+ * Bundling the files removes the network dependency and makes the first paint
+ * deterministic. Only the `latin` subset is shipped (the UI is English-only and
+ * the app already falls back to system-ui for anything else), which keeps the
+ * single-file production build small.
+ *
+ * NOTE: Nunito is served by Google as a *variable* font - the same woff2 file
+ * backs weights 500/700/800/900 - so one file covers every weight we use.
+ * `assetsInlineLimit` in vite.config.ts is raised so Vite base64-inlines these
+ * into dist/index.html and the single-file build keeps working.
+ */
+
+@font-face {
+  font-family: 'Lilita One';
+  font-style: normal;
+  font-weight: 400;
+  font-display: block;
+  src: url('./fonts/LilitaOne-latin.woff2') format('woff2');
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+00BB-00BF, U+2000-206F, U+2122,
+    U+2212, U+FEFF, U+FFFD;
+}
+
+@font-face {
+  font-family: 'Nunito';
+  font-style: normal;
+  font-weight: 200 1000;
+  font-display: block;
+  src: url('./fonts/Nunito-var-latin.woff2') format('woff2');
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+00BB-00BF, U+2000-206F, U+2122,
+    U+2212, U+FEFF, U+FFFD;
+}

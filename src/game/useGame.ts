@@ -22,17 +22,28 @@ import {
 import { sfx } from './audio';
 import { THEMES, getSavedTheme, saveTheme, type BoardTheme, type ThemeId } from './themes';
 import {
+  drawActivePlayerEdge,
+  drawAmbientMotes,
   drawAnimatedSnakes,
   drawBoardBadgesAndNumbers,
+  drawCornerPulse,
+  drawFrameSweep,
+  drawHopTrail,
   drawHoverHighlight,
+  drawImpactFlash,
+  drawLadderClimbGlow,
   drawParticles,
+  drawPodiumPresence,
+  drawPortalPreview,
   drawStaticBoard,
   drawTargetHighlight,
   drawToken,
+  drawTurnRing,
   roundRectPath,
   spawnConfetti,
   spawnDust,
   spawnFirework,
+  spawnRing,
   spawnSpark,
   updateParticles,
 } from './render';
@@ -87,6 +98,12 @@ export interface LogEntry {
   id: number;
   text: string;
   kind: 'p0' | 'p1' | 'p2' | 'p3' | 'event';
+  /**
+   * (G3) Wall-clock time the entry was created, for the sidebar log.
+   * Kept separate from `text` on purpose: `text` feeds the screen-reader live
+   * region, and a timestamp prefix there would make every announcement noisier.
+   */
+  at: number;
 }
 
 export interface UseGameOptions {
@@ -285,7 +302,7 @@ export function useGame(options: UseGameOptions = {}) {
   const pushLog = useCallback((text: string, kind: LogEntry['kind']) => {
     logId.current += 1;
     const id = logId.current;
-    setLog((l) => [{ id, text, kind }, ...l].slice(0, 8));
+    setLog((l) => [{ id, text, kind, at: Date.now() }, ...l].slice(0, 20));
   }, []);
 
   const showToast = useCallback(
@@ -322,6 +339,13 @@ export function useGame(options: UseGameOptions = {}) {
     if (!canvas || canvas.width < 10) return;
     const currentTheme = theme || themeRef.current;
 
+    // (F3) The board is drawn in a fixed 1040px logical space then scaled to
+    // fit, so on a 900px desktop board every label is scaled down ~0.86 and
+    // starts to look cramped. Nudge only the *font* sizes up as the board
+    // grows, clamped tightly so typical sizes are unchanged.
+    const cssSize = sizeRef.current || 640;
+    const fontScale = Math.max(1, Math.min(1.12, cssSize / 780));
+
     // 1. Static base board layer
     const c1 = document.createElement('canvas');
     c1.width = canvas.width;
@@ -330,7 +354,7 @@ export function useGame(options: UseGameOptions = {}) {
     if (ctx1) {
       const s = c1.width / LOGICAL;
       ctx1.setTransform(s, 0, 0, s, 0, 0);
-      drawStaticBoard(ctx1, currentTheme, gs.current.players);
+      drawStaticBoard(ctx1, currentTheme, gs.current.players, fontScale);
       boardLayer.current = c1;
     }
 
@@ -342,7 +366,7 @@ export function useGame(options: UseGameOptions = {}) {
     if (ctx2) {
       const s = c2.width / LOGICAL;
       ctx2.setTransform(s, 0, 0, s, 0, 0);
-      drawBoardBadgesAndNumbers(ctx2, currentTheme);
+      drawBoardBadgesAndNumbers(ctx2, currentTheme, fontScale);
       numberLayer.current = c2;
     }
   }, []);
@@ -427,19 +451,19 @@ export function useGame(options: UseGameOptions = {}) {
             'event',
           );
           sfx.win();
-          spawnConfetti(nextState.particles);
-          spawnFirework(nextState.particles, 520, 200);
+          spawnConfetti(nextState.particles, themeRef.current.ui.celebrate);
+          spawnFirework(nextState.particles, 520, 200, themeRef.current.ui.celebrate);
 
           scheduleUiTimer(500, () => {
             if (gs.current.mode === 'over') {
-              spawnConfetti(gs.current.particles);
-              spawnFirework(gs.current.particles, 300, 300);
+              spawnConfetti(gs.current.particles, themeRef.current.ui.celebrate);
+              spawnFirework(gs.current.particles, 300, 300, themeRef.current.ui.celebrate);
             }
           });
           scheduleUiTimer(1100, () => {
             if (gs.current.mode === 'over') {
-              spawnConfetti(gs.current.particles);
-              spawnFirework(gs.current.particles, 740, 260);
+              spawnConfetti(gs.current.particles, themeRef.current.ui.celebrate);
+              spawnFirework(gs.current.particles, 740, 260, themeRef.current.ui.celebrate);
             }
           });
           scheduleUiTimer(1500, () => {
@@ -492,19 +516,19 @@ export function useGame(options: UseGameOptions = {}) {
 
         pushLog(`🏆 ${playerName(player)} conquered square 100 and WON THE GAME!`, 'event');
         sfx.win();
-        spawnConfetti(nextState.particles);
-        spawnFirework(nextState.particles, 520, 200);
+        spawnConfetti(nextState.particles, themeRef.current.ui.celebrate);
+        spawnFirework(nextState.particles, 520, 200, themeRef.current.ui.celebrate);
 
         scheduleUiTimer(500, () => {
           if (gs.current.mode === 'over') {
-            spawnConfetti(gs.current.particles);
-            spawnFirework(gs.current.particles, 300, 300);
+            spawnConfetti(gs.current.particles, themeRef.current.ui.celebrate);
+            spawnFirework(gs.current.particles, 300, 300, themeRef.current.ui.celebrate);
           }
         });
         scheduleUiTimer(1100, () => {
           if (gs.current.mode === 'over') {
-            spawnConfetti(gs.current.particles);
-            spawnFirework(gs.current.particles, 740, 260);
+            spawnConfetti(gs.current.particles, themeRef.current.ui.celebrate);
+            spawnFirework(gs.current.particles, 740, 260, themeRef.current.ui.celebrate);
           }
         });
         scheduleUiTimer(1500, () => {
@@ -1160,10 +1184,28 @@ export function useGame(options: UseGameOptions = {}) {
     ro.observe(wrap);
 
     let alive = true;
-    if (document.fonts?.ready) {
-      document.fonts.ready.then(() => {
-        if (alive) renderBoardLayer();
-      });
+    // (F1) The board's text is *baked* into the cached board/number layers, so
+    // if the webfonts land after the bake, every label stays in the fallback
+    // face until the next resize. `document.fonts.ready` alone is not enough:
+    // CSS-declared fonts are only fetched once something uses them, so request
+    // the exact faces the canvas asks for and wait for them explicitly.
+    if (document.fonts) {
+      const faces = [
+        '400 12.5px "Lilita One"',
+        '400 12.5px "Nunito"',
+        '800 12.5px "Nunito"',
+        '900 12.5px "Nunito"',
+      ];
+      Promise.all(faces.map((f) => document.fonts.load(f).catch(() => undefined)))
+        .catch(() => undefined)
+        .then(() => {
+          if (alive) renderBoardLayer();
+        });
+      if (document.fonts.ready) {
+        document.fonts.ready.then(() => {
+          if (alive) renderBoardLayer();
+        });
+      }
     }
 
     const onPointerMove = (e: PointerEvent) => {
@@ -1303,12 +1345,17 @@ export function useGame(options: UseGameOptions = {}) {
       const g = gs.current;
       const w = canvas.width;
       const s = w / LOGICAL;
+      const theme = themeRef.current;
 
+      // (E7) Shake used to be pure per-frame white noise, which reads as a
+      // jitter rather than an impact. A decaying sine pair gives a punchy,
+      // directional thump instead.
       let ox = 0;
       let oy = 0;
       if (g.shake > 0.4) {
-        ox = (Math.random() - 0.5) * g.shake * s;
-        oy = (Math.random() - 0.5) * g.shake * s;
+        const t = g.time;
+        ox = Math.sin(t * 61) * g.shake * s;
+        oy = Math.cos(t * 47) * g.shake * s * 0.7;
       }
 
       // 1. Draw static board layer 1:1 pixel crisp with zero double-sampling blur
@@ -1321,7 +1368,7 @@ export function useGame(options: UseGameOptions = {}) {
 
       // 3. Draw animated living snakes (slither waves, breathing, eye blinking, flicking tongue, strike reaction)
       const activeSnakeHead = g.sliding?.kind === 'snake' ? g.sliding.from : undefined;
-      drawAnimatedSnakes(ctx, g.time, activeSnakeHead, themeRef.current);
+      drawAnimatedSnakes(ctx, g.time, activeSnakeHead, theme);
 
       // 4. Blit numbers & badges layer strictly ON TOP of the animated snakes!
       if (nLayer) {
@@ -1331,6 +1378,32 @@ export function useGame(options: UseGameOptions = {}) {
       }
 
       const now = g.time * 1000;
+      const activePal = PLAYER_COLORS[g.players[g.turn]?.colorId ?? g.turn];
+
+      // (C5 / E6) Frame-only ambience: drifting motes and a slow light sweep.
+      // Both stay on the frame by construction, so gameplay legibility is
+      // never affected.
+      drawAmbientMotes(ctx, g.time, theme);
+      drawFrameSweep(ctx, g.time, theme);
+
+      // (D6 / C6) Tie the active player to the board frame.
+      if (g.mode === 'playing') {
+        drawActivePlayerEdge(ctx, activePal.base, g.time);
+        drawCornerPulse(ctx, g.time, activePal.base, true);
+      }
+
+      // (E3) Ladder climb glow while a token is ascending a ladder.
+      if (g.sliding?.kind === 'ladder') {
+        const sl = g.sliding;
+        drawLadderClimbGlow(
+          ctx,
+          sl.from,
+          sl.to,
+          easeInOutCubic(clamp((g.time * 1000 - sl.t0) / sl.dur, 0, 1)),
+          g.time,
+          theme,
+        );
+      }
 
       // Active player square pulsing highlight
       if (
@@ -1357,19 +1430,24 @@ export function useGame(options: UseGameOptions = {}) {
 
       // Projected landing preview
       if (g.targetSquare && (g.phase === 'rolling' || g.phase === 'moving')) {
-        const pal = PLAYER_COLORS[g.players[g.turn]?.colorId ?? g.turn];
-        drawTargetHighlight(ctx, g.targetSquare, pal.base, g.time);
+        drawTargetHighlight(ctx, g.targetSquare, activePal.base, g.time);
       }
 
       // Hovered square inspection highlight
       if (g.hoveredSquare && g.hoveredSquare !== g.targetSquare) {
-        drawHoverHighlight(ctx, g.hoveredSquare, g.time);
+        drawHoverHighlight(ctx, g.hoveredSquare, g.time, theme);
+
+        // (B5 / B6) Trace the route the token would take.
+        const portal = PORTALS[g.hoveredSquare];
+        if (portal) {
+          drawPortalPreview(ctx, g.hoveredSquare, portal.to, g.time, theme);
+        }
       }
 
-      // Square 100 Finish Line ambient beacon
+      // Square 100 Finish Line ambient beacon + (C1/C7) ripple & winner halo
       if (g.mode === 'playing') {
         const c100 = squareCenter(100);
-        const beaconAccent = themeRef.current.ui.accent;
+        const beaconAccent = theme.ui.accent;
         const pulse = 0.35 + 0.25 * Math.sin(g.time * 3.5);
         ctx.save();
         ctx.strokeStyle = beaconAccent;
@@ -1378,6 +1456,33 @@ export function useGame(options: UseGameOptions = {}) {
         ctx.shadowColor = beaconAccent;
         ctx.shadowBlur = 14;
         roundRectPath(ctx, c100.x - CELL / 2 + 3, c100.y - CELL / 2 + 3, CELL - 6, CELL - 6, 8);
+        ctx.stroke();
+        ctx.restore();
+
+        let occupant: string | null = null;
+        for (let i = 0; i < g.players.length; i++) {
+          if (g.pos[i] === 100) {
+            occupant = PLAYER_COLORS[g.players[i]?.colorId ?? i].base;
+            break;
+          }
+        }
+        drawPodiumPresence(ctx, g.time, occupant, theme);
+      }
+
+      // (E4) Extra-turn halo for a rolled 6.
+      if (g.extraTurn > 0) {
+        const p = g.turn;
+        const n = g.pos[p];
+        const dockPos = START_POS[g.players[p]?.slotIndex ?? p] ?? START_POS[0];
+        const ref = n > 0 ? squareCenter(n) : dockPos;
+        ctx.save();
+        ctx.globalAlpha = g.extraTurn * 0.8;
+        ctx.strokeStyle = theme.ui.accent;
+        ctx.lineWidth = 3;
+        ctx.shadowColor = theme.ui.accent;
+        ctx.shadowBlur = 16;
+        ctx.beginPath();
+        ctx.arc(ref.x, ref.y, 26 + (1 - g.extraTurn) * 34, 0, Math.PI * 2);
         ctx.stroke();
         ctx.restore();
       }
@@ -1393,13 +1498,46 @@ export function useGame(options: UseGameOptions = {}) {
           g.phase === 'idle' || g.phase === 'rolling' || g.phase === 'over'
             ? Math.sin(g.time * 2.6 + p * 1.5) * 2.2
             : 0;
-        const r = 22 * (1 + 0.22 * tp.hopRatio);
+        // (D1) Tokens parked in the start bay are drawn slightly smaller so a
+        // 4-player start is not a stack of touching marbles.
+        const docked = g.pos[p] <= 0 && g.moving?.player !== p && g.sliding?.player !== p;
+        const baseR = 22 * (docked ? 0.82 : 1);
+        const r = baseR * (1 + 0.22 * tp.hopRatio);
         const pal = PLAYER_COLORS[g.players[p]?.colorId ?? p];
         const slotIndex = g.players[p]?.slotIndex ?? p;
-        drawToken(ctx, tp.x, tp.y + idleBob, r, pal, String(slotIndex + 1), tp.hopRatio);
+        const isActive = p === g.turn && g.mode === 'playing';
+
+        // (D2) Hop trail in the player's colour.
+        if (g.moving?.player === p && tp.hopRatio > 0) {
+          const m = g.moving;
+          const hopMs = SPEEDS[g.speed].hopMs;
+          const el = now - m.t0;
+          const i = Math.min(m.steps.length - 1, Math.max(0, Math.floor(el / hopMs)));
+          const f = clamp((el - i * hopMs) / hopMs, 0, 1);
+          const dockPos = START_POS[slotIndex] ?? START_POS[0];
+          const from =
+            i === 0 ? (m.base <= 0 ? dockPos : squareCenter(m.base)) : m.steps[i - 1];
+          drawHopTrail(ctx, from, { x: tp.x, y: tp.y + idleBob }, f, pal.base);
+        }
+
+        // (D3) Turn ring under the active token.
+        if (isActive) {
+          drawTurnRing(ctx, tp.x, tp.y + idleBob, r, g.time, pal.base);
+        }
+
+        drawToken(ctx, tp.x, tp.y + idleBob, r, pal, String(slotIndex + 1), {
+          hopRatio: tp.hopRatio,
+          // (D4) Emphasise the active token's number badge.
+          badgeGlow: isActive ? pal.glow : undefined,
+          // (D5) Cast shadow matching the snake/ladder light direction.
+          castShadow: theme.board.snakeDropShadow,
+        });
       }
 
       drawParticles(ctx, g.particles);
+
+      // (E2) Screen-edge impact flash, drawn last so it veils the whole board.
+      drawImpactFlash(ctx, g.flash, g.flashColor);
 
       // Draw floating reaction emotes
       for (const em of g.emotes) {
@@ -1442,7 +1580,7 @@ export function useGame(options: UseGameOptions = {}) {
               sfx.hop(m.idx - 1);
               played++;
             }
-            spawnDust(g.particles, curStep.x, curStep.y);
+            spawnDust(g.particles, curStep.x, curStep.y, themeRef.current.ui.particleDust);
           }
           if (m.idx >= m.steps.length) {
             const movingPlayer = m.player;
@@ -1455,6 +1593,23 @@ export function useGame(options: UseGameOptions = {}) {
               player: movingPlayer,
               target,
             });
+
+            // (C8) A themed landing ring for ordinary moves. Previously only
+            // snake/ladder arrivals had a payoff - a plain move just stopped.
+            // (E4) A 6 also fires the extra-turn halo.
+            const ui = themeRef.current.ui;
+            if (target > 0) {
+              const landing = squareCenter(target);
+              spawnRing(g.particles, landing.x, landing.y, ui.particleSpark, {
+                size: 15,
+                life: 0.5,
+                thickness: 3,
+              });
+            }
+            if (roll === 6) {
+              g.extraTurn = 1;
+            }
+
             afterMove(movingPlayer, target, roll, txId);
           }
         }
@@ -1475,16 +1630,31 @@ export function useGame(options: UseGameOptions = {}) {
             player: slidingPlayer,
             to,
           });
+          const ui = themeRef.current.ui;
           if (sl.kind === 'snake') {
+            // (E2) Screen-edge flash + shockwave rings at the landing square.
             g.shake = 14;
+            g.flash = 1;
+            g.flashColor = 'rgba(239, 68, 68, 0.55)';
             sfx.hit();
             const c = squareCenter(sl.to);
-            spawnDust(g.particles, c.x, c.y);
-            for (let i = 0; i < 9; i++) spawnSpark(g.particles, c.x, c.y, '#f87171');
+            spawnDust(g.particles, c.x, c.y, ui.particleDust);
+            for (let i = 0; i < 9; i++) spawnSpark(g.particles, c.x, c.y, ui.particleSnakeSpark);
+            spawnRing(g.particles, c.x, c.y, ui.particleSnakeSpark, {
+              size: 16,
+              life: 0.5,
+              thickness: 3.5,
+            });
+            spawnRing(g.particles, c.x, c.y, '#ffffff', { size: 8, life: 0.34, thickness: 2.5 });
           } else {
             sfx.ding();
             const c = squareCenter(sl.to);
-            for (let i = 0; i < 9; i++) spawnSpark(g.particles, c.x, c.y, '#fde047');
+            for (let i = 0; i < 9; i++) spawnSpark(g.particles, c.x, c.y, ui.particleLadderSpark);
+            spawnRing(g.particles, c.x, c.y, ui.particleLadderSpark, {
+              size: 18,
+              life: 0.6,
+              thickness: 3,
+            });
           }
           finishTurn(slidingPlayer, roll, txId);
         } else if (f > 0) {
@@ -1493,7 +1663,13 @@ export function useGame(options: UseGameOptions = {}) {
             ? getSnakeSlidePoint(sl.from, sl.to, f2, g.time, true)
             : pointAt(sl.pts, sl.cum, f2 * sl.total);
           if (Math.random() < 0.65) {
-            spawnSpark(g.particles, pt.x, pt.y, sl.kind === 'ladder' ? '#ffd75e' : '#f87171');
+            const ui = themeRef.current.ui;
+            spawnSpark(
+              g.particles,
+              pt.x,
+              pt.y,
+              sl.kind === 'ladder' ? ui.particleSpark : ui.particleSnakeSpark,
+            );
           }
         }
       }
@@ -1519,6 +1695,12 @@ export function useGame(options: UseGameOptions = {}) {
 
       g.shake *= Math.pow(0.88, dt / 16.7);
       if (g.shake < 0.4) g.shake = 0;
+
+      // (E2 / E4) Impact flash and extra-turn halo decay like the shake does.
+      g.flash *= Math.pow(0.86, dt / 16.7);
+      if (g.flash < 0.01) g.flash = 0;
+      g.extraTurn *= Math.pow(0.9, dt / 16.7);
+      if (g.extraTurn < 0.01) g.extraTurn = 0;
 
       draw();
 

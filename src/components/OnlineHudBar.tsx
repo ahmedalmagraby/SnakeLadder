@@ -61,7 +61,7 @@ export default function OnlineHudBar({
       {/* Center: Real-Time Turn Status */}
       <div className="flex-1 min-w-0 flex items-center justify-center px-1">
         {isMyTurn ? (
-          <div className="flex items-center gap-1 px-2.5 py-0.5 rounded-full bg-amber-400/20 border border-amber-400 text-amber-300 text-[11px] font-black animate-pulse truncate shadow-[0_0_12px_rgba(251,191,36,0.3)]">
+          <div className="flex items-center gap-1 px-2.5 py-0.5 rounded-full bg-amber-400/20 border border-amber-400 text-amber-300 text-[11px] font-black animate-pulse truncate shadow-[0_0_12px_var(--theme-glow-strong)]">
             <span className="w-1.5 h-1.5 rounded-full bg-amber-400 shrink-0" aria-hidden="true" />
             <span className="truncate">YOUR TURN!</span>
           </div>
