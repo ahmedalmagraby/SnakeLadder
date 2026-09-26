@@ -723,6 +723,19 @@ export function useMultiplayer({
             if (dcSlot >= 0) {
               const dcPlayer = roster.find((p) => p.slotIndex === dcSlot);
               if (dcPlayer && !dcPlayer.isCpu) {
+                /*
+                 * A data-channel `close` can be delivered seconds AFTER the player
+                 * has already reconnected on a fresh connection (guests retry after
+                 * 1s, while the host may only notice the dead socket much later).
+                 * Honouring that stale event would flip the live player back to
+                 * "not ready", leaving the UI stuck on
+                 * "WAITING FOR <name> TO RECONNECT..." even though they can roll.
+                 * Only trust a departure from the connection that still owns the seat.
+                 */
+                if (peerId && dcPlayer.peerId && dcPlayer.peerId !== peerId) {
+                  break;
+                }
+
                 const cleanName = stripCpuSuffix(dcPlayer.name);
                 // Do NOT convert to CPU bot; keep isCpu: false, mark isReady: false
                 const updated = commitPlayers(

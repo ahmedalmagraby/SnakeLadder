@@ -499,6 +499,223 @@ describe('Regression 3: disconnected players are reserved, never AI-controlled',
     expect(aliceConfig.name).not.toContain('CPU');
   });
 
+  it('ignores a LATE close from the connection that a rejoin already replaced', async () => {
+    const { result } = renderHook(() => useMultiplayer());
+    await act(async () => {
+      await result.current.createRoom('Host', 0, 4, 'normal', 'exact', 'LATE01');
+    });
+    await flush();
+
+    const guest = new PeerManager();
+    await guest.joinRoom('LATE01', 'Alice', 1);
+    await flush();
+
+    const seatOf = (slot: number) =>
+      result.current.players.find((p) => p.slotIndex === slot)!;
+    const readToken = () =>
+      JSON.parse(localStorage.getItem('snkladr_active_session')!)
+        .slotTokens[0][1] as string;
+
+    const stalePeerId = seatOf(1).peerId;
+    const staleConn = (peerManager as any).connections.get(stalePeerId).conn;
+
+    // The guest re-establishes a brand new connection (a new PeerJS id) and
+    // successfully reclaims its seat. This normally happens ~1s after the drop.
+    const returning = new PeerManager();
+    await returning.joinRoom('LATE01', 'Alice', 1, true, 1, readToken());
+    await flush();
+
+    expect(seatOf(1).isReady).toBe(true);
+    expect(seatOf(1).peerId).not.toBe(stalePeerId);
+
+    // The host now finally notices the ORIGINAL dropped socket. That close event
+    // belongs to a connection that no longer owns the seat, so it must not flip
+    // the live player back to "not ready".
+    await act(async () => {
+      staleConn._emit('close');
+      await flush();
+    });
+
+    expect(seatOf(1).isReady).toBe(true);
+    expect(seatOf(1).peerId).not.toBe(stalePeerId);
+    expect(seatOf(1).name).toBe('Alice');
+
+    returning.cleanup();
+  });
+
+  it('propagates the correction to every other client in the room', async () => {
+    const stub = new HostStub('snkladr-observe');
+    peerRegistry.set('snkladr-observe', stub);
+
+    const observerHook = renderHook(() => useMultiplayer());
+
+    let joinPromise: Promise<void>;
+    await act(async () => {
+      joinPromise = observerHook.result.current.joinRoom('OBSERVE', 'Observer', 2);
+      await flush();
+    });
+
+    // Hand the observer a real roster so it behaves like a joined client.
+    await act(async () => {
+      stub.conn!.send({
+        type: 'JOIN_ACCEPTED',
+        requestId: 'req_obs',
+        slotIndex: 2,
+        reconnectToken: 'secret_token_slot_2',
+        roomCode: 'OBSERVE',
+        speed: 'normal',
+        winRule: 'exact',
+        players: [
+          hostPlayer(),
+          {
+            playerId: 'p_a',
+            peerId: 'peer_a',
+            name: 'Alice',
+            slotIndex: 1,
+            colorId: 1,
+            isHost: false,
+            isCpu: false,
+            isReady: true,
+          },
+          {
+            playerId: 'p_obs',
+            peerId: 'observer_peer',
+            name: 'Observer',
+            slotIndex: 2,
+            colorId: 2,
+            isHost: false,
+            isCpu: false,
+            isReady: true,
+          },
+        ],
+        stateVersion: 5,
+        turnId: 1,
+        maxPlayers: 4,
+      });
+      await flush();
+    });
+    await act(async () => {
+      await joinPromise;
+    });
+
+    const observerSeat = (slot: number) =>
+      observerHook.result.current.players.find((p) => p.slotIndex === slot)!;
+
+    // Host reports Alice away, then Alice comes back.
+    await act(async () => {
+      stub.conn!.send({
+        type: 'LOBBY_UPDATE',
+        players: [
+          hostPlayer(),
+          {
+            playerId: 'p_a',
+            peerId: 'peer_a',
+            name: 'Alice',
+            slotIndex: 1,
+            colorId: 1,
+            isHost: false,
+            isCpu: false,
+            isReady: false,
+          },
+          {
+            playerId: 'p_obs',
+            peerId: 'observer_peer',
+            name: 'Observer',
+            slotIndex: 2,
+            colorId: 2,
+            isHost: false,
+            isCpu: false,
+            isReady: true,
+          },
+        ],
+        speed: 'normal',
+        winRule: 'exact',
+        stateVersion: 6,
+        maxPlayers: 4,
+      });
+      await flush();
+    });
+    expect(observerSeat(1).isReady).toBe(false);
+
+    // Alice reclaims her seat on a NEW connection; the host bumps stateVersion.
+    const newPeerId = 'peer_a_reconnected';
+    await act(async () => {
+      stub.conn!.send({
+        type: 'LOBBY_UPDATE',
+        players: [
+          hostPlayer(),
+          {
+            playerId: 'p_a',
+            peerId: newPeerId,
+            name: 'Alice',
+            slotIndex: 1,
+            colorId: 1,
+            isHost: false,
+            isCpu: false,
+            isReady: true,
+          },
+          {
+            playerId: 'p_obs',
+            peerId: 'observer_peer',
+            name: 'Observer',
+            slotIndex: 2,
+            colorId: 2,
+            isHost: false,
+            isCpu: false,
+            isReady: true,
+          },
+        ],
+        speed: 'normal',
+        winRule: 'exact',
+        stateVersion: 7,
+        maxPlayers: 4,
+      });
+      await flush();
+    });
+
+    expect(observerSeat(1).isReady).toBe(true);
+    expect(observerSeat(1).peerId).toBe(newPeerId);
+
+    // A stale LOBBY_UPDATE that predates the rejoin must be dropped outright.
+    await act(async () => {
+      stub.conn!.send({
+        type: 'LOBBY_UPDATE',
+        players: [
+          hostPlayer(),
+          {
+            playerId: 'p_a',
+            peerId: 'peer_a',
+            name: 'Alice',
+            slotIndex: 1,
+            colorId: 1,
+            isHost: false,
+            isCpu: false,
+            isReady: false,
+          },
+          {
+            playerId: 'p_obs',
+            peerId: 'observer_peer',
+            name: 'Observer',
+            slotIndex: 2,
+            colorId: 2,
+            isHost: false,
+            isCpu: false,
+            isReady: true,
+          },
+        ],
+        speed: 'normal',
+        winRule: 'exact',
+        stateVersion: 6,
+        maxPlayers: 4,
+      });
+      await flush();
+    });
+
+    expect(observerSeat(1).isReady).toBe(true);
+
+    observerHook.unmount();
+  });
+
   it('restores human control (and the seat) when the player comes back', async () => {
     const { result } = renderHook(() => useMultiplayer());
     await act(async () => {

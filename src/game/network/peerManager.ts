@@ -34,6 +34,13 @@ export interface ManagedConnection {
 export class PeerManager {
   private peer: Peer | null = null;
   private connections: Map<string, ManagedConnection> = new Map();
+  /**
+   * slotIndex -> peerId of the connection that currently owns that seat.
+   * A data-channel `close` can arrive long after the owner reconnected on a new
+   * connection; this lets us discard such stale departures instead of knocking a
+   * live player out of the roster.
+   */
+  private slotOwners: Map<number, string> = new Map();
   private hostConn: DataConnection | null = null; // Used by guest
   private isHost = false;
   private roomCode = '';
@@ -95,6 +102,10 @@ export class PeerManager {
     if (slotIndex !== undefined) {
       mc.slotIndex = slotIndex;
     }
+    if (state === 'joined' && slotIndex !== undefined) {
+      // This connection now owns the seat; any older connection for it is stale.
+      this.slotOwners.set(slotIndex, peerId);
+    }
 
     if (state === 'authenticated' || state === 'joined') {
       if (mc.pendingTimer) {
@@ -130,8 +141,11 @@ export class PeerManager {
       // Ignore
     }
 
-    // If connection was already joined to a slot, notify host logic that player left
-    if (this.isHost && mc.slotIndex >= 0) {
+    // If connection was already joined to a slot, notify host logic that player left.
+    // Skip when this connection no longer owns the seat: a guest that already
+    // reconnected on a fresh connection must NOT be reported as gone.
+    if (this.isHost && mc.slotIndex >= 0 && this.slotOwners.get(mc.slotIndex) === peerId) {
+      this.slotOwners.delete(mc.slotIndex);
       this.emitPacket(
         {
           type: 'PLAYER_DISCONNECTED',
@@ -710,6 +724,7 @@ export class PeerManager {
       }
     });
     this.connections.clear();
+    this.slotOwners.clear();
     if (this.hostConn) {
       try {
         this.hostConn.close();

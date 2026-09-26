@@ -1,7 +1,7 @@
 # 🎲 Snake & Ladder — Modern Cross-Device Web Game
 
 [![Live Demo](https://img.shields.io/badge/Live_Demo-Play_Now-emerald?style=for-the-badge&logo=googlechrome)](https://ahmedalmagraby.github.io/SnakeLadder/)
-[![Tests](https://img.shields.io/badge/Tests-162%20Passing-brightgreen?style=for-the-badge&logo=vitest&logoColor=white)](tests/)
+[![Tests](https://img.shields.io/badge/Tests-164%20Passing-brightgreen?style=for-the-badge&logo=vitest&logoColor=white)](tests/)
 [![React](https://img.shields.io/badge/React_19-20232A?style=for-the-badge&logo=react&logoColor=61DAFB)](https://react.dev/)
 [![TypeScript](https://img.shields.io/badge/TypeScript_5.9-3178C6?style=for-the-badge&logo=typescript&logoColor=white)](https://www.typescriptlang.org/)
 [![Vite](https://img.shields.io/badge/Vite_7-646CFF?style=for-the-badge&logo=vite&logoColor=FFD62E)](https://vitejs.dev/)
