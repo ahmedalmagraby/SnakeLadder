@@ -858,6 +858,7 @@ function StartScreen({
 function WinOverlay({
   winner,
   players,
+  positions,
   rolls,
   ladders,
   snakes,
@@ -870,6 +871,7 @@ function WinOverlay({
 }: {
   winner: PlayerConfig;
   players: PlayerConfig[];
+  positions: number[];
   rolls: number[];
   ladders: number[];
   snakes: number[];
@@ -886,6 +888,23 @@ function WinOverlay({
   const winnerRolls = rolls[safeWinnerIndex] ?? 0;
   const winnerLadders = ladders[safeWinnerIndex] ?? 0;
   const winnerSnakes = snakes[safeWinnerIndex] ?? 0;
+
+  /* (J6) Real standings. The summary used to list players in roster order with
+     no square numbers at all, so "who actually got close" was unreadable. Now
+     it is sorted by final square (winner first) with a rank, the square itself
+     and a 0-100 bar.
+     A *copy* is sorted: roster order is what the rest of the app - and the
+     online checkpoint payloads - index by, and it must not be disturbed. Ties
+     keep roster order via the `idx` tiebreak. */
+  const standings = players
+    .map((p, idx) => ({
+      player: p,
+      idx,
+      pos: positions[idx] ?? 0,
+      rolls: rolls[idx] ?? 0,
+      sixes: sixes[idx] ?? 0,
+    }))
+    .sort((a, b) => b.pos - a.pos || a.idx - b.idx);
 
   const canRestart = !isOnline || isHost;
 
@@ -957,25 +976,55 @@ function WinOverlay({
           </div>
         </div>
 
-        {/* Full match score table */}
+        {/* Full match score table (J6: ordered standings) */}
         <div
           className="mt-3 p-2.5 rounded-xl bg-emerald-950/50 border border-emerald-800/30 text-left rise-in"
           style={{ animationDelay: '350ms' }}
         >
-          <div className="text-[10px] font-black text-emerald-300/60 uppercase mb-1.5">Match Summary</div>
-          <div className="space-y-1 text-xs font-bold">
-            {players.map((p, idx) => {
-              const pal = PLAYER_COLORS[p.colorId % PLAYER_COLORS.length];
+          <div className="text-[10px] font-black text-emerald-300/60 uppercase mb-1.5">
+            Final Standings
+          </div>
+          <div className="space-y-1.5 text-xs font-bold">
+            {standings.map((row, rank) => {
+              const pal = PLAYER_COLORS[row.player.colorId % PLAYER_COLORS.length];
+              const isWinner = row.player.slotIndex === winner.slotIndex;
               return (
-                <div key={p.id} className="flex items-center justify-between py-0.5 text-emerald-100/90">
-                  <div className="flex items-center gap-2">
-                    <span className="w-2.5 h-2.5 rounded-full" style={{ background: pal.base }} aria-hidden="true" />
-                    <span>{p.name}</span>
-                    {p.slotIndex === winner.slotIndex && <span className="text-[10px] text-amber-400">👑 WINNER</span>}
+                <div key={row.player.id}>
+                  <div className="flex items-center gap-2 text-emerald-100/90">
+                    <span
+                      className="w-4 shrink-0 text-center text-[10px] font-black tnum"
+                      style={{ color: pal.base }}
+                      aria-hidden="true"
+                    >
+                      {rank + 1}
+                    </span>
+                    <span
+                      className="w-2.5 h-2.5 rounded-full shrink-0"
+                      style={{ background: pal.base }}
+                      aria-hidden="true"
+                    />
+                    <span className="truncate max-w-[110px]">{row.player.name}</span>
+                    {isWinner && (
+                      <span className="text-[10px] text-amber-400 shrink-0">👑 WINNER</span>
+                    )}
+                    <span className="ml-auto flex items-center gap-2.5 text-[11px] text-emerald-300/70 shrink-0">
+                      <span className="tnum font-black text-emerald-100">
+                        SQ {row.pos}
+                      </span>
+                      <span className="tnum">{row.rolls} rolls</span>
+                      <span className="tnum">{row.sixes} sixes</span>
+                    </span>
                   </div>
-                  <div className="flex items-center gap-3 text-emerald-300/70 text-[11px]">
-                    <span className="tnum">{rolls[idx] ?? 0} rolls</span>
-                    <span className="tnum">{sixes[idx] ?? 0} sixes</span>
+                  {/* Distance-to-100 bar, same visual language as the sidebar
+                      player cards so the two read as one system. */}
+                  <div className="relative mt-1 h-1 rounded-full bg-emerald-950/80 overflow-hidden">
+                    <div
+                      className="h-full rounded-full"
+                      style={{
+                        width: `${row.pos}%`,
+                        background: `linear-gradient(90deg, ${pal.dark}, ${pal.base})`,
+                      }}
+                    />
                   </div>
                 </div>
               );
@@ -1543,42 +1592,50 @@ export default function App() {
                 </div>
                 <ToastView toast={game.toast} />
 
-                {/* Floating latest move ticker on mobile/tablet */}
-                {game.log[0] && (
-                  <div className="landscape:hidden lg:hidden absolute top-1 left-1/2 -translate-x-1/2 z-20 pointer-events-none px-2.5 py-0.5 rounded-full bg-slate-950/85 border border-amber-400/30 backdrop-blur-md text-[10px] font-bold text-emerald-100 shadow-lg flex items-center gap-1.5 max-w-[85%] truncate">
-                    <span className="w-1.5 h-1.5 rounded-full bg-amber-400 shrink-0" />
-                    <span className="truncate">{game.log[0].text}</span>
-                  </div>
-                )}
+                {/* (J1) One top-centre stack for the turn banner + move ticker.
+                    They used to be two independent `absolute top-1 left-1/2`
+                    elements, so in portrait both landed on the same spot and
+                    covered each other. Only their *container* is positioned now;
+                    each pill keeps its own look, and they can no longer collide
+                    at any breakpoint. */}
+                <div className="pointer-events-none absolute top-1 left-1/2 -translate-x-1/2 z-20 flex flex-col items-center gap-1 max-w-[92%]">
+                  {/* (G4) Turn banner across the top of the board. Previously
+                      "whose turn is it" was only expressed in the sidebar status
+                      label, which is off-screen on mobile and easy to miss. */}
+                  {hud.mode === 'playing' && hud.phase !== 'over' && (
+                    <div
+                      className="pointer-events-none flex items-center gap-2 px-3 py-1 rounded-full bg-slate-950/85 border backdrop-blur-md text-[11px] font-black tracking-wide shadow-lg max-w-full truncate"
+                      style={{
+                        borderColor: `${activePal.base}66`,
+                        color: activePal.light,
+                      }}
+                      aria-hidden="true"
+                    >
+                      <span
+                        className="w-1.5 h-1.5 rounded-full shrink-0"
+                        style={{ background: activePal.base }}
+                      />
+                      <span className="truncate">
+                        {activePlayer?.name?.toUpperCase() ?? 'PLAYER'}&rsquo;
+                        {hud.phase === 'rolling'
+                          ? 'S TURN'
+                          : hud.phase === 'moving'
+                            ? 'S MOVE'
+                            : hud.phase === 'sliding'
+                              ? 'S SLIDE'
+                              : 'S TURN'}
+                      </span>
+                    </div>
+                  )}
 
-                {/* (G4) Turn banner across the top of the board. Previously
-                    "whose turn is it" was only expressed in the sidebar status
-                    label, which is off-screen on mobile and easy to miss. */}
-                {hud.mode === 'playing' && hud.phase !== 'over' && (
-                  <div
-                    className="pointer-events-none absolute top-1 left-1/2 -translate-x-1/2 z-20 flex items-center gap-2 px-3 py-1 rounded-full bg-slate-950/85 border backdrop-blur-md text-[11px] font-black tracking-wide shadow-lg max-w-[80%] truncate"
-                    style={{
-                      borderColor: `${activePal.base}66`,
-                      color: activePal.light,
-                    }}
-                    aria-hidden="true"
-                  >
-                    <span
-                      className="w-1.5 h-1.5 rounded-full shrink-0"
-                      style={{ background: activePal.base }}
-                    />
-                    <span className="truncate">
-                      {activePlayer?.name?.toUpperCase() ?? 'PLAYER'}&rsquo;
-                      {hud.phase === 'rolling'
-                        ? 'S TURN'
-                        : hud.phase === 'moving'
-                          ? 'S MOVE'
-                          : hud.phase === 'sliding'
-                            ? 'S SLIDE'
-                            : 'S TURN'}
-                    </span>
-                  </div>
-                )}
+                  {/* Floating latest move ticker on mobile/tablet */}
+                  {game.log[0] && (
+                    <div className="landscape:hidden lg:hidden pointer-events-none px-2.5 py-0.5 rounded-full bg-slate-950/85 border border-amber-400/30 backdrop-blur-md text-[10px] font-bold text-emerald-100 shadow-lg flex items-center gap-1.5 max-w-full truncate">
+                      <span className="w-1.5 h-1.5 rounded-full bg-amber-400 shrink-0" />
+                      <span className="truncate">{game.log[0].text}</span>
+                    </div>
+                  )}
+                </div>
 
                 {/* Hover inspection badge */}
                 {game.hoveredSquare && (
@@ -1926,6 +1983,7 @@ export default function App() {
                 }
               }
               players={hud.players}
+              positions={hud.pos}
               rolls={hud.rolls}
               ladders={hud.laddersHit}
               snakes={hud.snakesHit}

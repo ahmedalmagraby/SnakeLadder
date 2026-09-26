@@ -456,19 +456,21 @@ export function drawAnimatedSnake(
   time: number,
   isActive: boolean,
   theme: BoardTheme = THEMES.jungle,
+  ampScale = 1,
 ) {
   const tb = theme.board;
   const palette = tb.snakePalette;
   const [main, dark] = palette[idx % palette.length];
-  const pts = getSnakeSpine(headNum, tailNum, time, isActive);
+  const pts = getSnakeSpine(headNum, tailNum, time, isActive, undefined, ampScale);
   const n = pts.length - 1;
   const params = SNAKE_PARAMS[headNum] || { phase: 0 };
   const phase = params.phase;
 
-  // Breathing oscillation
+  // Breathing oscillation. (J5) Scaled with the spine so a reduced-motion board
+  // does not keep a body that has stopped undulating.
   const breathe = isActive
-    ? Math.sin(time * 7.5) * 2.2
-    : Math.sin(time * 2.4 + phase) * 1.2;
+    ? Math.sin(time * 7.5) * 2.2 * ampScale
+    : Math.sin(time * 2.4 + phase) * 1.2 * ampScale;
 
   const wAt = (f: number) =>
     Math.max(4, 24 * (1 - f * 0.65) + 5 + breathe * Math.sin(f * Math.PI));
@@ -769,12 +771,13 @@ export function drawAnimatedSnakes(
   time: number,
   activeSnakeHead?: number,
   theme: BoardTheme = THEMES.jungle,
+  ampScale = 1,
 ) {
   const snakeHeads = Object.keys(SNAKES).map(Number);
   snakeHeads.forEach((head, idx) => {
     const tail = SNAKES[head];
     const isActive = activeSnakeHead === head;
-    drawAnimatedSnake(ctx, head, tail, idx, time, isActive, theme);
+    drawAnimatedSnake(ctx, head, tail, idx, time, isActive, theme, ampScale);
   });
 }
 
@@ -1174,11 +1177,18 @@ export function drawStaticBoard(
     }
   }
 
-  /* (B4) Progress notches on the frame at the 25 / 50 / 75 / 100 bands.
+  /* (B4) Progress notches on the frame at the quarter bands.
      Squares 1 and 100 both sit in the leftmost column, so the boustrophedon
      numbering is genuinely hard to read at a glance. These little marks live
      on the frame - they never intrude on the play area - and give the eye an
      instant read of "how far along the race am I". */
+  /* (J3) ...and now they are *labelled*. The three interior bands sit at 75% /
+     50% / 25% of the way up the board (square 100 is at the top-left, so the
+     top quarter band is the 75% mark - hence counting down from the top), which
+     turns the notches into a readable progress ruler. The 4th band is the
+     bottom edge of the play area, i.e. the start line, so it stays unlabelled
+     rather than implying a square number. Drawn in the cached layer only, and
+     engraved (dark offset + light face) so it reads as part of the frame. */
   const boardTop = ORIGIN;
   const boardBottom = LOGICAL - ORIGIN;
   for (let band = 1; band <= 4; band++) {
@@ -1194,6 +1204,21 @@ export function drawStaticBoard(
     ctx.fillRect(ORIGIN - 6, y - 0.75, 6, 1.5);
     ctx.fillRect(LOGICAL - ORIGIN, y - 0.75, 6, 1.5);
     ctx.globalAlpha = 1;
+
+    // (J3) Engraved percentage on the left frame rail, just inboard of its
+    // notch. Only the three interior bands are labelled.
+    if (band <= 3) {
+      ctx.save();
+      ctx.font = `800 ${(9.5 * fs).toFixed(1)}px "Lilita One", sans-serif`;
+      ctx.textAlign = 'right';
+      ctx.textBaseline = 'middle';
+      ctx.shadowColor = 'rgba(0, 0, 0, 0.8)';
+      ctx.shadowBlur = 3;
+      ctx.shadowOffsetY = 1;
+      ctx.fillStyle = tb.numberTextNormal;
+      ctx.fillText(`${100 - band * 25}`, ORIGIN / 2 - 4, y + 0.5);
+      ctx.restore();
+    }
   }
 
   /* 1. Square Backgrounds & Borders */
@@ -1960,27 +1985,34 @@ export function drawActivePlayerEdge(ctx: CanvasRenderingContext2D, color: strin
 /**
  * (C1 / C7) Winner halo plus a slow expanding ripple over the finish square.
  * Per-frame, so it can react to a token actually standing there.
+ *
+ * (J5) `animateRipple = false` freezes the beacon for `prefers-reduced-motion`
+ * users: the ripple is decoration, while the occupant pool below it is a real
+ * "someone is standing on the podium" cue and is always drawn.
  */
 export function drawPodiumPresence(
   ctx: CanvasRenderingContext2D,
   time: number,
   occupiedBy: string | null,
   theme: BoardTheme = THEMES.jungle,
+  animateRipple = true,
 ) {
   const c = squareCenter(100);
   ctx.save();
 
   // (C7) Ripple
-  for (let i = 0; i < 2; i++) {
-    const t = (time * 0.42 + i * 0.5) % 1;
-    ctx.globalAlpha = (1 - t) * 0.3;
-    ctx.strokeStyle = theme.ui.accent;
-    ctx.lineWidth = 2;
-    ctx.beginPath();
-    ctx.arc(c.x, c.y, 14 + t * 34, 0, Math.PI * 2);
-    ctx.stroke();
+  if (animateRipple) {
+    for (let i = 0; i < 2; i++) {
+      const t = (time * 0.42 + i * 0.5) % 1;
+      ctx.globalAlpha = (1 - t) * 0.3;
+      ctx.strokeStyle = theme.ui.accent;
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.arc(c.x, c.y, 14 + t * 34, 0, Math.PI * 2);
+      ctx.stroke();
+    }
+    ctx.globalAlpha = 1;
   }
-  ctx.globalAlpha = 1;
 
   // (C1) A token parked on the finish square draws straight over the trophy.
   // A soft player-coloured pool underneath keeps it reading as "standing on

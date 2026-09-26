@@ -15,6 +15,7 @@ import {
   lerp,
   pathCum,
   pointAt,
+  prefersReducedMotion,
   squareCenter,
   squareFromPoint,
   getSnakeSlidePoint,
@@ -46,6 +47,7 @@ import {
   spawnRing,
   spawnSpark,
   updateParticles,
+  type Particle,
 } from './render';
 import type { CheckpointMode, GameStateSnapshot } from './network/types';
 import {
@@ -116,6 +118,16 @@ export interface UseGameOptions {
   onTurnSettled?: (snapshot: GameStateSnapshot) => void;
 }
 
+/* (J5) Undulation kept when the OS asks for reduced motion: enough that the
+ * snakes still read as snakes, not enough to undulate across a cell. The exact
+ * same value has to reach the renderer and the slide sampler in the same frame,
+ * or a sliding token would visibly detach from the body it is riding. */
+const REDUCED_SNAKE_AMP = 0.35;
+
+function snakeAmpScale(): number {
+  return prefersReducedMotion() ? REDUCED_SNAKE_AMP : 1;
+}
+
 export function useGame(options: UseGameOptions = {}) {
   const optionsRef = useRef(options);
   optionsRef.current = options;
@@ -179,6 +191,18 @@ export function useGame(options: UseGameOptions = {}) {
     saveTheme(id);
     themeRef.current = THEMES[id];
     setThemeIdState(id);
+  }, []);
+
+  /* (J5) The confetti + firework shower is by far the largest burst of motion
+   * in the game and covers the entire board, which is precisely what
+   * `prefers-reduced-motion` asks us to drop. The win moment still has its
+   * toast, its landing rings, the podium beacon and the winner modal - only the
+   * full-screen shower is skipped. Also collapses the six duplicated spawn
+   * calls this used to take. */
+  const celebrate = useCallback((ps: Particle[], cx: number, cy: number) => {
+    if (prefersReducedMotion()) return;
+    spawnConfetti(ps, themeRef.current.ui.celebrate);
+    spawnFirework(ps, cx, cy, themeRef.current.ui.celebrate);
   }, []);
 
   const cancelObsoleteTimers = useCallback((currentTxId?: number) => {
@@ -451,19 +475,16 @@ export function useGame(options: UseGameOptions = {}) {
             'event',
           );
           sfx.win();
-          spawnConfetti(nextState.particles, themeRef.current.ui.celebrate);
-          spawnFirework(nextState.particles, 520, 200, themeRef.current.ui.celebrate);
+          celebrate(nextState.particles, 520, 200);
 
           scheduleUiTimer(500, () => {
             if (gs.current.mode === 'over') {
-              spawnConfetti(gs.current.particles, themeRef.current.ui.celebrate);
-              spawnFirework(gs.current.particles, 300, 300, themeRef.current.ui.celebrate);
+              celebrate(gs.current.particles, 300, 300);
             }
           });
           scheduleUiTimer(1100, () => {
             if (gs.current.mode === 'over') {
-              spawnConfetti(gs.current.particles, themeRef.current.ui.celebrate);
-              spawnFirework(gs.current.particles, 740, 260, themeRef.current.ui.celebrate);
+              celebrate(gs.current.particles, 740, 260);
             }
           });
           scheduleUiTimer(1500, () => {
@@ -476,7 +497,7 @@ export function useGame(options: UseGameOptions = {}) {
         }
       }
     },
-    [cancelObsoleteTimers, dispatch, playerName, pushLog, recordStableSnapshot, scheduleUiTimer, setAwaitingRoll],
+    [cancelObsoleteTimers, celebrate, dispatch, playerName, pushLog, recordStableSnapshot, scheduleUiTimer, setAwaitingRoll],
   );
 
   const switchTurn = useCallback(
@@ -516,19 +537,16 @@ export function useGame(options: UseGameOptions = {}) {
 
         pushLog(`🏆 ${playerName(player)} conquered square 100 and WON THE GAME!`, 'event');
         sfx.win();
-        spawnConfetti(nextState.particles, themeRef.current.ui.celebrate);
-        spawnFirework(nextState.particles, 520, 200, themeRef.current.ui.celebrate);
+        celebrate(nextState.particles, 520, 200);
 
         scheduleUiTimer(500, () => {
           if (gs.current.mode === 'over') {
-            spawnConfetti(gs.current.particles, themeRef.current.ui.celebrate);
-            spawnFirework(gs.current.particles, 300, 300, themeRef.current.ui.celebrate);
+            celebrate(gs.current.particles, 300, 300);
           }
         });
         scheduleUiTimer(1100, () => {
           if (gs.current.mode === 'over') {
-            spawnConfetti(gs.current.particles, themeRef.current.ui.celebrate);
-            spawnFirework(gs.current.particles, 740, 260, themeRef.current.ui.celebrate);
+            celebrate(gs.current.particles, 740, 260);
           }
         });
         scheduleUiTimer(1500, () => {
@@ -585,6 +603,7 @@ export function useGame(options: UseGameOptions = {}) {
     },
     [
       applyCheckpoint,
+      celebrate,
       dispatch,
       playerName,
       pushLog,
@@ -1287,7 +1306,9 @@ export function useGame(options: UseGameOptions = {}) {
           const sl = g.sliding;
           const f = easeInOutCubic(clamp((now - sl.t0) / sl.dur, 0, 1));
           if (sl.kind === 'snake') {
-            const pt = getSnakeSlidePoint(sl.from, sl.to, f, g.time, true);
+            // (J5) Same undulation scale the renderer used this frame, so the
+            // token stays welded to the body it is sliding down.
+            const pt = getSnakeSlidePoint(sl.from, sl.to, f, g.time, true, snakeAmpScale());
             return { x: pt.x, y: pt.y, hopRatio: 0 };
           }
           const pt = pointAt(sl.pts, sl.cum, f * sl.total);
@@ -1347,12 +1368,20 @@ export function useGame(options: UseGameOptions = {}) {
       const s = w / LOGICAL;
       const theme = themeRef.current;
 
+      // (J5) One read per frame. `prefersReducedMotion()` is a single
+      // `matchMedia` read - microseconds, and it must not be cached because a
+      // cached MediaQueryList goes stale if `matchMedia` is ever replaced.
+      const reduced = prefersReducedMotion();
+      const amp = reduced ? REDUCED_SNAKE_AMP : 1;
+
       // (E7) Shake used to be pure per-frame white noise, which reads as a
       // jitter rather than an impact. A decaying sine pair gives a punchy,
-      // directional thump instead.
+      // directional thump instead. (J5) ...and it is skipped entirely under
+      // reduced motion, since moving the whole board is the definition of
+      // large-area motion.
       let ox = 0;
       let oy = 0;
-      if (g.shake > 0.4) {
+      if (g.shake > 0.4 && !reduced) {
         const t = g.time;
         ox = Math.sin(t * 61) * g.shake * s;
         oy = Math.cos(t * 47) * g.shake * s * 0.7;
@@ -1368,7 +1397,7 @@ export function useGame(options: UseGameOptions = {}) {
 
       // 3. Draw animated living snakes (slither waves, breathing, eye blinking, flicking tongue, strike reaction)
       const activeSnakeHead = g.sliding?.kind === 'snake' ? g.sliding.from : undefined;
-      drawAnimatedSnakes(ctx, g.time, activeSnakeHead, theme);
+      drawAnimatedSnakes(ctx, g.time, activeSnakeHead, theme, amp);
 
       // 4. Blit numbers & badges layer strictly ON TOP of the animated snakes!
       if (nLayer) {
@@ -1382,14 +1411,19 @@ export function useGame(options: UseGameOptions = {}) {
 
       // (C5 / E6) Frame-only ambience: drifting motes and a slow light sweep.
       // Both stay on the frame by construction, so gameplay legibility is
-      // never affected.
-      drawAmbientMotes(ctx, g.time, theme);
-      drawFrameSweep(ctx, g.time, theme);
+      // never affected. (J5) Both are pure decoration, so reduced motion skips
+      // them - they are always moving and never convey information.
+      if (!reduced) {
+        drawAmbientMotes(ctx, g.time, theme);
+        drawFrameSweep(ctx, g.time, theme);
+      }
 
-      // (D6 / C6) Tie the active player to the board frame.
+      // (D6 / C6) Tie the active player to the board frame. (J5) The corner
+      // studs keep their colour coding but freeze at a static alpha instead of
+      // breathing, so the "whose turn" signal survives reduced motion.
       if (g.mode === 'playing') {
-        drawActivePlayerEdge(ctx, activePal.base, g.time);
-        drawCornerPulse(ctx, g.time, activePal.base, true);
+        drawActivePlayerEdge(ctx, activePal.base, reduced ? 0 : g.time);
+        drawCornerPulse(ctx, reduced ? 0 : g.time, activePal.base, true);
       }
 
       // (E3) Ladder climb glow while a token is ascending a ladder.
@@ -1466,7 +1500,7 @@ export function useGame(options: UseGameOptions = {}) {
             break;
           }
         }
-        drawPodiumPresence(ctx, g.time, occupant, theme);
+        drawPodiumPresence(ctx, g.time, occupant, theme, !reduced);
       }
 
       // (E4) Extra-turn halo for a rolled 6.
@@ -1494,8 +1528,10 @@ export function useGame(options: UseGameOptions = {}) {
 
       for (const p of order) {
         const tp = tokenPoint(p, now);
+        // (J5) The idle bob is a decorative float, so reduced motion holds the
+        // token still. Hops and slides are untouched - they *are* the game.
         const idleBob =
-          g.phase === 'idle' || g.phase === 'rolling' || g.phase === 'over'
+          !reduced && (g.phase === 'idle' || g.phase === 'rolling' || g.phase === 'over')
             ? Math.sin(g.time * 2.6 + p * 1.5) * 2.2
             : 0;
         // (D1) Tokens parked in the start bay are drawn slightly smaller so a
@@ -1537,7 +1573,11 @@ export function useGame(options: UseGameOptions = {}) {
       drawParticles(ctx, g.particles);
 
       // (E2) Screen-edge impact flash, drawn last so it veils the whole board.
-      drawImpactFlash(ctx, g.flash, g.flashColor);
+      // (J5) Skipped under reduced motion - it is a full-screen flash, and the
+      // shake + shockwave rings already carry the bite.
+      if (!reduced) {
+        drawImpactFlash(ctx, g.flash, g.flashColor);
+      }
 
       // Draw floating reaction emotes
       for (const em of g.emotes) {
@@ -1659,8 +1699,9 @@ export function useGame(options: UseGameOptions = {}) {
           finishTurn(slidingPlayer, roll, txId);
         } else if (f > 0) {
           const f2 = easeInOutCubic(clamp(f, 0, 1));
+          // (J5) Matches the renderer + tokenPoint for this frame.
           const pt = sl.kind === 'snake'
-            ? getSnakeSlidePoint(sl.from, sl.to, f2, g.time, true)
+            ? getSnakeSlidePoint(sl.from, sl.to, f2, g.time, true, snakeAmpScale())
             : pointAt(sl.pts, sl.cum, f2 * sl.total);
           if (Math.random() < 0.65) {
             const ui = themeRef.current.ui;

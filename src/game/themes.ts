@@ -155,6 +155,20 @@ export interface BoardTheme {
     particleSpark: string;
     particleLadderSpark: string;
     particleSnakeSpark: string;
+    /* --- 3D dice (J4) ---------------------------------------------------
+     * The die used to be a hardcoded ivory cube with red pips in all five
+     * themes, so it was the one object on screen that never changed with the
+     * board. These four values replace the literals in `.die-face`/`.die-pip`
+     * in index.css. Jungle's are the *exact* CSS that was there before, so the
+     * default look is unchanged and the other four themes are a pure win. */
+    /** Face fill (a gradient). */
+    dieFace: string;
+    /** Face border colour. */
+    dieEdge: string;
+    /** Inset shadow colour cast into the face. */
+    dieInner: string;
+    /** Pip fill (a gradient). */
+    diePip: string;
   };
   board: {
     frameGrad: [string, string, string, string];
@@ -296,6 +310,11 @@ export const THEMES: Record<ThemeId, BoardTheme> = {
       particleSpark: '#ffd75e',
       particleLadderSpark: '#fde047',
       particleSnakeSpark: '#f87171',
+      /* (J4) Verbatim the pre-existing `.die-face` / `.die-pip` CSS. */
+      dieFace: 'linear-gradient(145deg, #fffef7, #ede2c8)',
+      dieEdge: '#d4c49b',
+      dieInner: 'rgba(160, 120, 50, 0.32)',
+      diePip: 'radial-gradient(circle at 35% 30%, #ef4444, #991b1b 75%, #7f1d1d)',
     },
     board: {
       frameGrad: ['#78350f', '#92400e', '#713f12', '#451a03'],
@@ -443,6 +462,12 @@ export const THEMES: Record<ThemeId, BoardTheme> = {
       particleSpark: '#67e8f9',
       particleLadderSpark: '#a5f3fc',
       particleSnakeSpark: '#ec4899',
+      /* (J4) Holographic cyan face with neon-magenta pips - the synthwave
+         counterpart to the board's pink/cyan serpents. */
+      dieFace: 'linear-gradient(145deg, #ecfeff, #a5f3fc)',
+      dieEdge: '#0e7490',
+      dieInner: 'rgba(8, 145, 178, 0.34)',
+      diePip: 'radial-gradient(circle at 35% 30%, #f472b6, #be185d 75%, #4c0519)',
     },
     board: {
       frameGrad: ['#090d16', '#1e1b4b', '#0f172a', '#020617'],
@@ -587,6 +612,12 @@ export const THEMES: Record<ThemeId, BoardTheme> = {
       particleSpark: '#fbbf24',
       particleLadderSpark: '#fde68a',
       particleSnakeSpark: '#fb923c',
+      /* (J4) Sun-bleached sandstone face with lapis lazuli pips, matching the
+         board's brown/lapis tomb palette. */
+      dieFace: 'linear-gradient(145deg, #fffbeb, #fcd9a4)',
+      dieEdge: '#b45309',
+      dieInner: 'rgba(180, 83, 9, 0.3)',
+      diePip: 'radial-gradient(circle at 35% 30%, #60a5fa, #1d4ed8 75%, #1e3a8a)',
     },
     board: {
       frameGrad: ['#78350f', '#b45309', '#92400e', '#451a03'],
@@ -730,6 +761,11 @@ export const THEMES: Record<ThemeId, BoardTheme> = {
       particleSpark: '#c4b5fd',
       particleLadderSpark: '#bae6fd',
       particleSnakeSpark: '#f472b6',
+      /* (J4) Pale starlight face with violet pips. */
+      dieFace: 'linear-gradient(145deg, #eef2ff, #a5b4fc)',
+      dieEdge: '#4338ca',
+      dieInner: 'rgba(67, 56, 202, 0.32)',
+      diePip: 'radial-gradient(circle at 35% 30%, #e879f9, #7c3aed 75%, #2e1065)',
     },
     board: {
       frameGrad: ['#030712', '#1e1b4b', '#0f172a', '#020617'],
@@ -872,6 +908,12 @@ export const THEMES: Record<ThemeId, BoardTheme> = {
       particleSpark: '#fda4af',
       particleLadderSpark: '#fde68a',
       particleSnakeSpark: '#fb7185',
+      /* (J4) Icing face with mint pips - the sweet counterpart to the
+         berry/mint board. */
+      dieFace: 'linear-gradient(145deg, #fff1f2, #fecdd3)',
+      dieEdge: '#be185d',
+      dieInner: 'rgba(190, 24, 93, 0.28)',
+      diePip: 'radial-gradient(circle at 35% 30%, #34d399, #059669 75%, #064e3b)',
     },
     board: {
       frameGrad: ['#5c2c16', '#78350f', '#451a03', '#2d1205'],
@@ -1005,6 +1047,11 @@ export function themeCssVars(theme: BoardTheme): Record<string, string> {
     '--theme-scrollbar-track': ui.scrollbarTrack,
     '--theme-scrollbar-thumb': ui.scrollbarThumb,
     '--theme-scrollbar-thumb-hover': ui.scrollbarThumbHover,
+    /* (J4) 3D dice. */
+    '--theme-die-face': ui.dieFace,
+    '--theme-die-edge': ui.dieEdge,
+    '--theme-die-inner': ui.dieInner,
+    '--theme-die-pip': ui.diePip,
   };
   for (const key of SHADE_KEYS) {
     vars[`--theme-surface-${key}`] = ui.ramps.surface[key];

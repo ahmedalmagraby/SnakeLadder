@@ -169,6 +169,32 @@ export const clamp = (v: number, a: number, b: number) => Math.max(a, Math.min(b
 export const easeInOutCubic = (t: number) =>
   t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
 
+/* (J5) Reduced-motion support. ------------------------------------------------
+ * The OS-level `prefers-reduced-motion` setting used to be ignored entirely,
+ * which matters for a board that is on screen continuously: the snakes
+ * undulate, the frame sweeps, the motes drift, the camera shakes on a bite and
+ * the win shower covers the whole screen.
+ *
+ * This only ever gates *decoration*. Turn order, hop timing, slide timing and
+ * every roll outcome come from `SPEEDS` and the reducer, never from the
+ * animation, so a reduced-motion match plays identically - it just stops
+ * moving things that move for no informational reason.
+ *
+ * Deliberately *not* memoised: the render loop calls this once per frame, but
+ * `matchMedia` costs microseconds, and caching the MediaQueryList would go
+ * stale in any environment that replaces `window.matchMedia` (test harnesses,
+ * embedded webviews). The guard also keeps this safe in node/jsdom-less runs,
+ * where the answer is simply "no preference".
+ */
+export function prefersReducedMotion(): boolean {
+  if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return false;
+  try {
+    return window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  } catch {
+    return false;
+  }
+}
+
 export function mulberry32(seed: number) {
   let a = seed >>> 0;
   return () => {
@@ -215,6 +241,11 @@ Object.keys(SNAKES).forEach((headStr, idx) => {
 /**
  * Shared mathematical spine generator for both animated snake rendering
  * and token movement during snake slides.
+ *
+ * (J5) `ampScale` damps the undulation for `prefers-reduced-motion` users. It
+ * defaults to 1, so every existing caller - including the tests - is bit-for-bit
+ * unchanged. It must never be 0 while a token is *sliding* along the spine,
+ * because `getSnakeSlidePoint` reads positions straight off this geometry.
  */
 export function getSnakeSpine(
   head: number,
@@ -222,6 +253,7 @@ export function getSnakeSpine(
   time = 0,
   isActive = false,
   customN?: number,
+  ampScale = 1,
 ): Pt[] {
   const a = squareCenter(head);
   const b = squareCenter(tail);
@@ -240,7 +272,7 @@ export function getSnakeSpine(
     speed: 2.5,
   };
 
-  const amp = isActive ? params.baseAmp * 1.3 : params.baseAmp;
+  const amp = (isActive ? params.baseAmp * 1.3 : params.baseAmp) * ampScale;
   const speed = isActive ? 5.5 : params.speed;
   const headBob = isActive
     ? Math.sin(time * 16) * 4.2
@@ -272,6 +304,9 @@ export function getSnakeSpine(
 /**
  * Samples a precise coordinate along the animated snake spine at frame time `time`.
  * Guaranteed to match the rendered snake geometry at that exact moment.
+ *
+ * (J5) `ampScale` must be the same value the renderer used for this frame,
+ * otherwise the token visibly detaches from the body while it slides.
  */
 export function getSnakeSlidePoint(
   head: number,
@@ -279,8 +314,9 @@ export function getSnakeSlidePoint(
   progress: number, // 0..1
   time = 0,
   isActive = true,
+  ampScale = 1,
 ): Pt {
-  const pts = getSnakeSpine(head, tail, time, isActive);
+  const pts = getSnakeSpine(head, tail, time, isActive, undefined, ampScale);
   const { cum, total } = pathCum(pts);
   return pointAt(pts, cum, clamp(progress, 0, 1) * total);
 }

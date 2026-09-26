@@ -15,6 +15,24 @@ interface OnlineHudBarProps {
 
 const REACTION_EMOJIS = ['🐍', '🪜', '🎲', '👑', '😱', '😂', '🔥', '🎯'];
 
+/**
+ * (J2) Latency colour ramp.
+ *
+ * The badge used to print a literal "🟢 {ping}ms", so a 900ms round-trip looked
+ * identical to a 20ms one. The dot is now a plain span tinted by threshold, and
+ * the emoji is gone - which also means it renders the same on every platform
+ * instead of depending on the OS emoji font (same reasoning as F2/F4).
+ */
+function pingTone(ping: number): { dot: string; text: string; label: string } {
+  if (ping <= 120) {
+    return { dot: '#4ade80', text: 'text-emerald-300', label: 'Excellent' };
+  }
+  if (ping <= 300) {
+    return { dot: '#fbbf24', text: 'text-amber-300', label: 'Fair' };
+  }
+  return { dot: '#fb7185', text: 'text-rose-300', label: 'Poor' };
+}
+
 export default function OnlineHudBar({
   roomCode,
   mySlot,
@@ -52,8 +70,16 @@ export default function OnlineHudBar({
         </button>
 
         {ping > 0 && (
-          <span className="hidden sm:inline-block text-[10px] font-bold text-emerald-400/80 bg-emerald-900/40 px-1.5 py-0.5 rounded-full border border-emerald-700/40">
-            🟢 {ping}ms
+          <span
+            className={`hidden sm:inline-flex items-center gap-1 text-[10px] font-bold bg-emerald-900/40 px-1.5 py-0.5 rounded-full border border-emerald-700/40 ${pingTone(ping).text}`}
+            title={`Connection quality: ${pingTone(ping).label}`}
+          >
+            <span
+              className="w-1.5 h-1.5 rounded-full shrink-0"
+              style={{ background: pingTone(ping).dot }}
+              aria-hidden="true"
+            />
+            <span className="tnum">{ping}ms</span>
           </span>
         )}
       </div>

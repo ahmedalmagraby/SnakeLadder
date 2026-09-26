@@ -106,6 +106,12 @@
   --theme-btn-glow: rgba(251, 191, 36, 0.28);
   --theme-scrim: rgba(0, 0, 0, 0.8);
   --theme-shadow: rgba(0, 0, 0, 0.35);
+
+  /* ---- 3D dice (J4): verbatim the pre-theme `.die-face` / `.die-pip` CSS ---- */
+  --theme-die-face: linear-gradient(145deg, #fffef7, #ede2c8);
+  --theme-die-edge: #d4c49b;
+  --theme-die-inner: rgba(160, 120, 50, 0.32);
+  --theme-die-pip: radial-gradient(circle at 35% 30%, #ef4444, #991b1b 75%, #7f1d1d);
 }
 
 html,
@@ -234,10 +240,13 @@ body {
   position: absolute;
   inset: 0;
   border-radius: 12px;
-  background: linear-gradient(145deg, #fffef7, #ede2c8);
-  border: 1.5px solid #d4c49b;
+  /* (J4) The die now follows the active board theme. These four vars are
+     injected by themeCssVars(); the :root defaults are the exact CSS that
+     lived here before, so the Jungle die is unchanged. */
+  background: var(--theme-die-face);
+  border: 1.5px solid var(--theme-die-edge);
   box-shadow:
-    inset 0 0 16px rgba(160, 120, 50, 0.32),
+    inset 0 0 16px var(--theme-die-inner),
     0 2px 6px rgba(0, 0, 0, 0.3);
   display: grid;
   grid-template-columns: repeat(3, 1fr);
@@ -251,7 +260,7 @@ body {
   height: 10.5px;
   border-radius: 50%;
   margin: auto;
-  background: radial-gradient(circle at 35% 30%, #ef4444, #991b1b 75%, #7f1d1d);
+  background: var(--theme-die-pip);
   box-shadow:
     inset 0 -1.5px 2px rgba(0, 0, 0, 0.6),
     0 1px 1.5px rgba(255, 255, 255, 0.5);
@@ -324,6 +333,20 @@ body {
 }
 .toast-pop {
   animation: toastPop 1.5s cubic-bezier(0.2, 0.8, 0.3, 1) forwards;
+}
+
+/* (J5) Motion-free twin of `toastPop`: same duration and same fade-out, but it
+   only changes opacity. Used by the reduced-motion block below so a toast is
+   never lost - the blanket duration override would otherwise snap it to its
+   `forwards` end state, i.e. invisible. */
+@keyframes toastFade {
+  0%,
+  78% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+  }
 }
 
 @keyframes popIn {
@@ -441,5 +464,57 @@ body {
 }
 .extra-turn-halo {
   animation: extraTurn 1.1s ease-out 1;
+}
+
+/* ============================================================================
+ * (J5) REDUCED MOTION
+ * ============================================================================
+ * The OS-level `prefers-reduced-motion` setting was previously ignored. The
+ * blanket rule below is the standard one: collapse animation/transition
+ * *durations* rather than removing rules, so every end state still applies and
+ * nothing disappears.
+ *
+ * Two on-purpose corrections:
+ *   1. `.toast-pop` keeps a real 1.5s opacity fade. Without this it would jump
+ *      straight to `opacity: 0` (its `forwards` end state) and a toast like
+ *      "LUCKY SIX!" or "SNAKE BITE!" would never be seen at all.
+ *   2. `.log-flash` gets a *static* tint instead of an animation, so the newest
+ *      log entry is still identifiable - the highlight is information, the
+ *      4px slide is not.
+ *
+ * The canvas half of reduced motion lives in `useGame.ts` / `render.ts`: the
+ * motes, frame sweep, camera shake, impact flash, idle bob, podium ripple,
+ * win confetti and snake undulation are all gated there. Gameplay motion (hops,
+ * slides, rolls) is deliberately left alone - it is the game, not decoration.
+ * ========================================================================== */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+    scroll-behavior: auto !important;
+  }
+
+  /* Keep the celebration, lose the movement. */
+  .toast-pop {
+    animation: toastFade 1.5s linear forwards !important;
+  }
+
+  /* Infinite decorative loops simply hold still. */
+  .floaty,
+  .pulse-glow,
+  .board-glow,
+  .die-stage.rolling,
+  .animate-pulse {
+    animation: none !important;
+  }
+
+  /* Newest log entry stays marked, without the 4px slide. */
+  .log-flash {
+    animation: none !important;
+    background-color: var(--theme-accent-glow);
+  }
 }
 
