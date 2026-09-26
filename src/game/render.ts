@@ -274,9 +274,26 @@ function drawTriUp(ctx: CanvasRenderingContext2D, x: number, y: number, s: numbe
   ctx.fill();
 }
 
-/** Solid triangle pointing down (used for snake "-N" badges). */
+/**
+ * Solid triangle pointing down (used for snake "-N" badges).
+ *
+ * (V16) This used to be a one-line `drawTriUp(...)` call, so every snake-head
+ * badge on the board rendered an UP arrow - the same glyph as the ladders,
+ * directly contradicting the direction the snake actually sends you. A snake
+ * drops you to a *lower* square, so the head badge has to point down.
+ *
+ * The path is the exact vertical mirror of `drawTriUp` (apex at y+s, base at
+ * y-0.72s), which keeps the glyph optically centred in the 18px badge: up
+ * occupies y-5..y+3.6, down occupies y-3.6..y+5.
+ */
 function drawTriDown(ctx: CanvasRenderingContext2D, x: number, y: number, s: number, color: string) {
-  drawTriUp(ctx, x, y, s, color);
+  ctx.beginPath();
+  ctx.moveTo(x, y + s);
+  ctx.lineTo(x + s * 0.92, y - s * 0.72);
+  ctx.lineTo(x - s * 0.92, y - s * 0.72);
+  ctx.closePath();
+  ctx.fillStyle = color;
+  ctx.fill();
 }
 
 /** Horizontal chevron arrow pointing right (START bay navigation). */
@@ -1457,46 +1474,75 @@ export function drawBoardBadgesAndNumbers(
   const tb = theme.board;
 
   /* 1. Badges on Snake heads & Ladder bottoms */
+  /* (V15) These were a hardcoded 30x18 pill with the arrow pinned at `bx + 8`
+   * and the destination centred at `bx + 20`. That geometry only holds while
+   * the label is one or two digits wide, and it was already at the very edge:
+   *
+   *     1 digit  @ fs 1.00 ->  4.1px clear of the arrow
+   *     2 digits @ fs 1.00 ->  0.8px clear
+   *     2 digits @ fs 1.12 ->  0.02px clear (visually touching)
+   *     3 digits @ fs 1.00 ->  2.5px OVERLAP, 0.1px left inside the pill
+   *     3 digits @ fs 1.12 ->  3.7px OVERLAP, 1.1px past the pill's edge
+   *
+   * 80 -> 100 is the only three-digit portal on the classic layout, which is
+   * exactly the square that read as broken. Rather than special-case it, the
+   * pill is now measured from the label, which also repairs the 2-digit badges
+   * on large boards (fs scales font size by up to 1.12).
+   *
+   * A label that still fits the old 30px pill keeps its historical centre, so
+   * every one- and two-digit badge is pixel-identical to before. A wider label
+   * widens the pill instead. The right edge stays anchored 4px inside the tile
+   * - where it has always been - so the pill grows *leftwards* and can never
+   * spill onto the neighbouring tile. */
+  const ARROW_CX = 8; // historical arrow centre, relative to bx
+  const ARROW_HALF = 4.6; // drawTriUp/Down half-width at size 5 (0.92 * 5)
+  const ARROW_GAP = 1;
+  const BADGE_PAD_R = 3;
+  const BADGE_MIN_W = 30;
+
   for (const [fromStr, portal] of Object.entries(PORTALS)) {
     const from = Number(fromStr);
     const c = squareCenter(from);
     const x = c.x - CELL / 2;
     const y = c.y - CELL / 2;
 
+    const isLadder = portal.type === 'ladder';
+    const label = String(portal.to);
+
     ctx.save();
-    const bx = x + CELL - 34;
+    // Font and metrics must be resolved before the measureText call below.
+    ctx.font = `900 ${(11 * fs).toFixed(1)}px "Nunito", sans-serif`;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+
+    const textW = ctx.measureText(label).width;
+    const badgeW = Math.max(
+      BADGE_MIN_W,
+      ARROW_CX + ARROW_HALF + ARROW_GAP + textW + BADGE_PAD_R,
+    );
+    // Right edge pinned at CELL - 4, matching the old `x + CELL - 34` + 30.
+    const bx = x + CELL - 4 - badgeW;
     const by = y + CELL - 22;
-    if (portal.type === 'ladder') {
-      ctx.fillStyle = tb.badgeLadderBg;
-      roundRectPath(ctx, bx, by, 30, 18, 6);
-      ctx.fill();
-      ctx.strokeStyle = tb.badgeLadderBorder;
-      ctx.lineWidth = 1.2;
-      ctx.stroke();
+    const textCx =
+      badgeW > BADGE_MIN_W
+        ? ARROW_CX + ARROW_HALF + ARROW_GAP + textW / 2
+        : 20; // unchanged centre for labels that fit the original pill
 
-      // (F4) Triangle drawn as a path instead of typed as "\u25B2" so it can
-      // never fall back to an arbitrary system font.
-      drawTriUp(ctx, bx + 8, by + 9, 5, tb.badgeLadderText);
-      ctx.fillStyle = tb.badgeLadderText;
-      ctx.font = `900 ${(11 * fs).toFixed(1)}px "Nunito", sans-serif`;
-      ctx.textAlign = 'center';
-      ctx.textBaseline = 'middle';
-      ctx.fillText(String(portal.to), bx + 20, by + 9.5);
-    } else {
-      ctx.fillStyle = tb.badgeSnakeBg;
-      roundRectPath(ctx, bx, by, 30, 18, 6);
-      ctx.fill();
-      ctx.strokeStyle = tb.badgeSnakeBorder;
-      ctx.lineWidth = 1.2;
-      ctx.stroke();
+    ctx.fillStyle = isLadder ? tb.badgeLadderBg : tb.badgeSnakeBg;
+    roundRectPath(ctx, bx, by, badgeW, 18, 6);
+    ctx.fill();
+    ctx.strokeStyle = isLadder ? tb.badgeLadderBorder : tb.badgeSnakeBorder;
+    ctx.lineWidth = 1.2;
+    ctx.stroke();
 
-      drawTriDown(ctx, bx + 8, by + 9, 5, tb.badgeSnakeText);
-      ctx.fillStyle = tb.badgeSnakeText;
-      ctx.font = `900 ${(11 * fs).toFixed(1)}px "Nunito", sans-serif`;
-      ctx.textAlign = 'center';
-      ctx.textBaseline = 'middle';
-      ctx.fillText(String(portal.to), bx + 20, by + 9.5);
-    }
+    // (F4) Triangle drawn as a path instead of typed as "\u25B2" so it can
+    // never fall back to an arbitrary system font.
+    const textColor = isLadder ? tb.badgeLadderText : tb.badgeSnakeText;
+    if (isLadder) drawTriUp(ctx, bx + ARROW_CX, by + 9, 5, textColor);
+    else drawTriDown(ctx, bx + ARROW_CX, by + 9, 5, textColor);
+
+    ctx.fillStyle = textColor;
+    ctx.fillText(label, bx + textCx, by + 9.5);
     ctx.restore();
   }
 

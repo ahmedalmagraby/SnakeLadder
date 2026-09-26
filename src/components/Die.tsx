@@ -125,7 +125,7 @@ export default function Die({
           <div
             className={`pop-in flex items-center gap-1 px-2 py-0.5 rounded-full font-black text-[10px] leading-none transition-all ${
               value === 6
-                ? 'bg-amber-500/25 border border-amber-300 text-amber-200 shadow-[0_0_12px_rgba(251,191,36,0.6)] animate-pulse'
+                ? 'bg-amber-500/25 border border-amber-300 text-amber-200 shadow-[0_0_12px_var(--theme-accent-glow)] animate-pulse'
                 : 'bg-emerald-950/90 border border-amber-400/40 text-amber-300'
             }`}
           >

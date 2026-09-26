@@ -398,6 +398,28 @@ export function useGame(options: UseGameOptions = {}) {
     renderBoardLayer(THEMES[themeId] || THEMES.jungle);
   }, [themeId, renderBoardLayer]);
 
+  /* (V3) Re-bake when the Start Bay's docking dishes go stale.
+   *
+   * `drawStaticBoard` bakes the four P1..P4 dish rings from the player roster
+   * (`players[idx].colorId`), but the board layer was only ever re-rasterised on
+   * theme change, game start, resize and web-font load. So when a player took a
+   * reserved seat or switched colour in the online lobby, their dish kept the
+   * *previous* colour until the window happened to be resized.
+   *
+   * Keyed on the slot -> colour mapping itself rather than on `hud.players`, so
+   * it costs one re-bake only when that mapping genuinely changes and never
+   * during ordinary play (positions and names are deliberately not part of the
+   * signature - the dishes do not draw either).
+   *
+   * Safe to read `gs.current` here: `dispatch` assigns `gs.current` before it
+   * calls `setHud`, so by the time this effect runs the roster is already
+   * current. `renderBoardLayer` also no-ops when the canvas is missing or
+   * unsized, which is the case in the menu. */
+  const dockSignature = hud.players.map((p) => `${p.slotIndex}:${p.colorId}`).join(',');
+  useEffect(() => {
+    renderBoardLayer();
+  }, [dockSignature, renderBoardLayer]);
+
   /* ---------- game flow ---------- */
 
   const startGame = useCallback(

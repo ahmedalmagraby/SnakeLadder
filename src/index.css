@@ -112,6 +112,17 @@
   --theme-die-edge: #d4c49b;
   --theme-die-inner: rgba(160, 120, 50, 0.32);
   --theme-die-pip: radial-gradient(circle at 35% 30%, #ef4444, #991b1b 75%, #7f1d1d);
+
+  /* ---- (V4) centre-screen toasts: verbatim the old hardcoded TOAST_COLORS ---- */
+  --theme-toast-gold: #fbbf24;
+  --theme-toast-red: #fb7185;
+  --theme-toast-pink: #f9a8d4;
+  --theme-toast-cyan: #67e8f9;
+  --theme-toast-info: #a7f3d0;
+  --theme-toast-lime: #a3e635;
+
+  /* ---- (V13) wordmark snake glyph: #f87171 == Tailwind's `text-red-400` ---- */
+  --theme-snake-glyph: #f87171;
 }
 
 html,
@@ -316,13 +327,21 @@ body {
   animation: dieShockwave 0.45s ease-out forwards;
 }
 
-/* C2: Lucky 6 Golden Shimmer */
+/* C2: Lucky 6 Golden Shimmer
+   (V5) These were hardcoded rgba(251, 191, 36, ...) — jungle gold in all five
+   themes — even though the die face and pips immediately above were thematised
+   by the J4 pass. They now derive from the theme accent via color-mix, which
+   Tailwind v4 already relies on for every `/opacity` utility in this project.
+   Jungle's accent is #fbbf24, so the default shimmer is unchanged. */
 @keyframes luckySixGlow {
-  0%, 100% {
-    filter: drop-shadow(0 0 10px rgba(251, 191, 36, 0.75)) drop-shadow(0 0 22px rgba(251, 191, 36, 0.45));
+  0%,
+  100% {
+    filter: drop-shadow(0 0 10px color-mix(in srgb, var(--theme-accent) 75%, transparent))
+      drop-shadow(0 0 22px color-mix(in srgb, var(--theme-accent) 45%, transparent));
   }
   50% {
-    filter: drop-shadow(0 0 18px rgba(251, 191, 36, 0.95)) drop-shadow(0 0 32px rgba(251, 191, 36, 0.7));
+    filter: drop-shadow(0 0 18px color-mix(in srgb, var(--theme-accent) 95%, transparent))
+      drop-shadow(0 0 32px color-mix(in srgb, var(--theme-accent) 70%, transparent));
   }
 }
 .die-stage.lucky-six:not(.rolling) {

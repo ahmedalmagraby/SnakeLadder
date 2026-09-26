@@ -17,7 +17,7 @@ import {
   type GameSpeed,
   type WinRule,
 } from './game/constants';
-import { useGame, type PlayerConfig, type Toast } from './game/useGame';
+import { useGame, type PlayerConfig, type Toast, type LogEntry } from './game/useGame';
 
 /* ---------------- icons ---------------- */
 
@@ -234,24 +234,48 @@ function BgGlow({ bgGlow, themeId = 'jungle' }: { bgGlow?: string; themeId?: The
   );
 }
 
-const TOAST_COLORS: Record<Toast['kind'], string> = {
-  gold: '#fbbf24',
-  red: '#fb7185',
-  cyan: '#67e8f9',
-  pink: '#f9a8d4',
-  lime: '#a3e635',
-  info: '#a7f3d0',
+/* (V4) The six toast colours used to be hardcoded jungle literals here, so
+ * "LUCKY SIX!" stayed gold on the Cyber, Cosmic and Candy boards while the
+ * board, sidebar and dice around it had all changed. They are now theme
+ * variables keyed by semantic role (reward / snake / warning / neutral), which
+ * is what `useGame` actually means by each kind. */
+const TOAST_VARS: Record<Toast['kind'], string> = {
+  gold: 'var(--theme-toast-gold)',
+  red: 'var(--theme-toast-red)',
+  pink: 'var(--theme-toast-pink)',
+  cyan: 'var(--theme-toast-cyan)',
+  info: 'var(--theme-toast-info)',
+  lime: 'var(--theme-toast-lime)',
+};
+
+/* (V7) Game-log bullets, built from the real player palette so a log dot is
+ * exactly the colour of that player's token, card ring and avatar. Derived
+ * rather than hand-written so a palette change can never desync them again. */
+const LOG_DOT_COLORS: Record<LogEntry['kind'], string> = {
+  p0: PLAYER_COLORS[0].base,
+  p1: PLAYER_COLORS[1].base,
+  p2: PLAYER_COLORS[2].base,
+  p3: PLAYER_COLORS[3].base,
+  /* Match-level events aren't anyone's turn, so they get a neutral surface
+   * tone instead of the old fifth colour (`bg-yellow-300`). */
+  event: 'var(--theme-surface-300)',
 };
 
 function ToastView({ toast }: { toast: Toast | null }) {
   if (!toast) return null;
-  const c = TOAST_COLORS[toast.kind];
+  const c = TOAST_VARS[toast.kind];
   return (
     <div className="pointer-events-none absolute inset-0 z-30 flex items-center justify-center p-4">
       <div key={toast.id} className="toast-pop text-center">
         <div
           className="font-display text-5xl sm:text-6xl"
-          style={{ color: c, textShadow: `0 5px 0 rgba(0,0,0,0.5), 0 0 44px ${c}66` }}
+          /* (V4) `${c}66` was a hex-alpha suffix and cannot follow a `var()`
+           * reference, so the outer glow is mixed instead. 40% over black is
+           * what `#xxxxxx66` resolved to for every one of the old literals. */
+          style={{
+            color: c,
+            textShadow: `0 5px 0 rgba(0,0,0,0.5), 0 0 44px color-mix(in srgb, ${c} 40%, transparent)`,
+          }}
         >
           {toast.title}
         </div>
@@ -341,7 +365,13 @@ function PlayerCard({
 
       <div className="mt-1.5 flex items-baseline justify-between">
         <span className="text-[9px] font-black tracking-widest text-emerald-300/60">SQUARE</span>
-        <span className="font-display tnum text-2xl leading-none" style={{ color: active ? col.light : '#d1fae5' }}>
+        {/* (V6) `#d1fae5` is Tailwind's emerald-100 verbatim, so the inactive
+            player's square stayed mint-green on the Cyber/Cosmic/Candy boards.
+            The surface ramp is the themeable equivalent. */}
+        <span
+          className="font-display tnum text-2xl leading-none"
+          style={{ color: active ? col.light : 'var(--theme-surface-100)' }}
+        >
           {pos === 0 ? 'START' : pos}
         </span>
       </div>
@@ -356,8 +386,12 @@ function PlayerCard({
           }}
         >
           {pos > 0 && (
+            /* (V11) This numeral was 7.5px inside a 14px circle - the single
+               hardest glyph to read in the UI, on the one control that answers
+               "which player am I". The pin is now 16px and the numeral 9px,
+               which still clears the 2px bar it rides on. */
             <span
-              className="absolute -right-1.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 rounded-full border border-white/80 shadow-md flex items-center justify-center text-[7.5px] font-black text-white pointer-events-none"
+              className="absolute -right-2 top-1/2 -translate-y-1/2 w-4 h-4 rounded-full border border-white/80 shadow-md flex items-center justify-center text-[9px] font-black text-white pointer-events-none"
               style={{
                 background: `radial-gradient(circle at 35% 30%, ${col.light}, ${col.base} 55%, ${col.dark})`,
                 boxShadow: `0 0 6px ${col.glow}`,
@@ -433,13 +467,15 @@ function MobilePlayerChip({
             {player.name}
           </span>
           {player.isCpu && (
-            <span className="text-[7px] font-black px-0.5 rounded bg-purple-950/80 text-purple-300 border border-purple-800/40 shrink-0">
+            /* (V11) was text-[7px] */
+            <span className="text-[8px] font-black px-0.5 rounded bg-purple-950/80 text-purple-300 border border-purple-800/40 shrink-0">
               AI
             </span>
           )}
         </div>
         {!is4p ? (
-          <div className="text-[8px] text-emerald-300/70 font-bold flex items-center gap-1 truncate">
+          /* (V11) was text-[8px] */
+          <div className="text-[9px] text-emerald-300/70 font-bold flex items-center gap-1 truncate">
             {active && activeLabel ? (
               <span className="font-black text-amber-300 uppercase tracking-tight truncate">
                 {activeLabel}
@@ -453,7 +489,8 @@ function MobilePlayerChip({
             )}
           </div>
         ) : (
-          <div className="text-[7.5px] text-emerald-300/60 font-bold leading-none truncate">
+          /* (V11) was text-[7.5px] */
+          <div className="text-[8.5px] text-emerald-300/60 font-bold leading-none truncate">
             {ladders > 0 && <span className="text-amber-400">🪜{ladders} </span>}
             {snakes > 0 && <span className="text-rose-400">🐍{snakes} </span>}
             {ladders === 0 && snakes === 0 && <span>{rolls}r</span>}
@@ -462,9 +499,11 @@ function MobilePlayerChip({
       </div>
 
       <div className="shrink-0 text-right leading-none pl-0.5">
+        {/* (V6) `#a7f3d0` is Tailwind's emerald-200 verbatim - see the note on
+            the PlayerCard equivalent above. */}
         <span
           className="font-display text-xs sm:text-sm font-black"
-          style={{ color: active ? col.light : '#a7f3d0' }}
+          style={{ color: active ? col.light : 'var(--theme-surface-200)' }}
         >
           {pos === 0 ? '0' : pos}
         </span>
@@ -586,7 +625,7 @@ function StartScreen({
           inside keep their own `floaty` animation (a CSS animation outranks an
           inline transform, so they have to be separate elements). */}
       <div className="pointer-events-none absolute left-[5%] top-[8%]" style={drift(14)}>
-        <SnakeIcon className="floaty w-14 h-14 text-red-500/25" />
+        <SnakeIcon className="floaty w-14 h-14 text-[var(--theme-snake-glyph)]/25" />
       </div>
       <div className="pointer-events-none absolute right-[6%] top-[14%]" style={drift(22)}>
         <LadderIcon className="floaty w-14 h-14 text-amber-400/25 [--fr:14deg]" />
@@ -600,7 +639,10 @@ function StartScreen({
 
       <div className="relative w-full max-w-xl panel p-4 sm:p-8 text-center border-amber-400/30 my-1 sm:my-auto shrink-0">
         <div className="flex items-center justify-center gap-3 mb-2">
-          <SnakeIcon className="w-8 h-8 text-red-400" />
+          {/* (V13) was `text-red-400`, which put a red snake glyph next to a
+            cyan/violet/pink board. The var resolves to the board's own
+            snake-badge colour; for Jungle it is #f87171, i.e. unchanged. */}
+        <SnakeIcon className="w-8 h-8 text-[var(--theme-snake-glyph)]" />
           <DiceIcon className="w-8 h-8 text-amber-300" />
           <LadderIcon className="w-8 h-8 text-amber-400" />
         </div>
@@ -609,7 +651,11 @@ function StartScreen({
           <span className="block text-3.5xl sm:text-4.5xl text-amber-400 drop-title mt-0.5">&amp; LADDER</span>
         </h1>
         <p className="mt-2 text-emerald-200/80 font-bold tracking-wide text-xs sm:text-sm">
-          Race to square 100 — climb golden ladders, dodge jungle snakes!
+          {/* (V14) "golden ladders" and "jungle snakes" were literal in all five
+              themes, so the Cyber, Cosmic and Candy menus described themselves
+              as jungle. Dropping the two palette-specific adjectives keeps the
+              line accurate everywhere and reads the same. */}
+          Race to square 100 — climb the ladders, dodge the snakes!
         </p>
 
         {/* Active Session Reconnect Banner */}
@@ -1078,7 +1124,7 @@ function WinOverlay({
                 <div className="relative mb-1 flex flex-col items-center">
                   <span className="text-xs mb-0.5" aria-hidden="true">🥉</span>
                   <div
-                    className="w-7 h-7 sm:w-8 sm:h-8 rounded-full flex items-center justify-center font-black text-xs text-white border-2 border-amber-600 shadow-md"
+                    className="w-7 h-7 sm:w-8 sm:h-8 rounded-full flex items-center justify-center font-black text-xs text-white border-2 border-orange-700 shadow-md"
                     style={{
                       background: `radial-gradient(circle at 35% 30%, ${col3.light}, ${col3.base} 55%, ${col3.dark})`,
                       boxShadow: `0 0 10px ${col3.glow}`,
@@ -1086,12 +1132,17 @@ function WinOverlay({
                   >
                     {p3.player.slotIndex + 1}
                   </div>
-                  <span className="text-[10px] font-bold text-amber-200 mt-1 truncate max-w-full">
+                  <span className="text-[10px] font-bold text-orange-200 mt-1 truncate max-w-full">
                     {p3.player.name}
                   </span>
                 </div>
-                <div className="w-full h-10 sm:h-12 rounded-t-xl bg-gradient-to-t from-amber-950/80 via-amber-800/70 to-amber-700/60 border-t-2 border-x border-amber-600/60 flex flex-col items-center justify-center shadow-md">
-                  <span className="font-display text-base sm:text-lg text-amber-200 leading-none">3</span>
+                {/* (V10) 3rd place was `from-amber-950 via-amber-800 to-amber-700`
+                    with an amber-600 border - the same gold family as 1st place,
+                    so third never read as bronze. These are Tailwind's `orange`
+                    ramp, which is untouched by the emerald/amber remap and so
+                    stays bronze in all five themes. */}
+                <div className="w-full h-10 sm:h-12 rounded-t-xl bg-gradient-to-t from-orange-950/80 via-orange-800/70 to-orange-700/60 border-t-2 border-x border-orange-600/60 flex flex-col items-center justify-center shadow-md">
+                  <span className="font-display text-base sm:text-lg text-orange-200 leading-none">3</span>
                   <span className="text-[8px] font-black text-amber-300/80 tnum">SQ {p3.pos}</span>
                 </div>
               </div>
@@ -1545,6 +1596,37 @@ export default function App() {
     if (meta) meta.setAttribute('content', game.theme.ui.bodyBg);
   }, [game.themeId, game.theme]);
 
+  /* (V1) The theme variables must ALSO be written to <html>.
+   *
+   * They were only ever set as an inline style on the app root <div> above,
+   * and CSS custom properties inherit *downward* - so anything outside that div
+   * never saw them and silently fell back to the `:root` Jungle defaults in
+   * index.css. Two things live outside it:
+   *
+   *   1. `Dialog` portals to `document.body` (Dialog.tsx:168). Verified live:
+   *      with Cyber Neon active, the Theme Picker rendered with a jungle-green
+   *      panel, gold title, gold ACTIVE badge and gold selection ring on top of
+   *      a fully cyan board. The same hit the exit/restart confirm dialog and
+   *      the modal scrim.
+   *   2. `body { background: var(--theme-body-bg) }` (index.css:126) is the
+   *      *parent* of the root div, so it always resolved to jungle #06120d.
+   *      That one was merely hidden, because <BgGlow> paints `inset-0` over
+   *      it - but it also meant the `transition: background-color .7s` declared
+   *      there was a no-op.
+   *
+   * Writing to `document.documentElement` fixes both at once. The `:root`
+   * declarations stay exactly as they are, so the very first paint (before
+   * this effect runs) is still the Jungle values, and the default look is
+   * unchanged. The inline style on the div is left in place deliberately: it
+   * costs nothing and guarantees the correct values even if this effect is
+   * somehow skipped. */
+  useEffect(() => {
+    const root = document.documentElement;
+    for (const [key, value] of Object.entries(themeVars)) {
+      root.style.setProperty(key, value);
+    }
+  }, [game.themeId, game.theme]);
+
   return (
     <div
       className="h-[100dvh] w-full overflow-hidden font-ui text-emerald-50 relative select-none"
@@ -1622,7 +1704,7 @@ export default function App() {
             {/* Mobile Top Header (Portrait only) */}
             <div className="landscape:hidden lg:hidden shrink-0 flex items-center justify-between gap-1 px-2 py-1 rounded-xl bg-emerald-950/80 border border-emerald-800/40 backdrop-blur-md">
               <div className="flex items-center gap-1.5 min-w-0">
-                <SnakeIcon className="w-4.5 h-4.5 text-red-400 shrink-0" />
+                <SnakeIcon className="w-4.5 h-4.5 text-[var(--theme-snake-glyph)] shrink-0" />
                 <span className="font-display text-xs sm:text-sm tracking-wide text-emerald-100 truncate">
                   SNAKE <span className="text-amber-400">&amp; LADDER</span>
                 </span>
@@ -1770,9 +1852,15 @@ export default function App() {
                     </div>
                   )}
 
-                  {/* Floating latest move ticker on mobile/tablet */}
+                  {/* Floating latest move ticker on mobile/tablet.
+                      (V12) This was `landscape:hidden lg:hidden`, so it only
+                      appeared in portrait: below `lg` the sidebar log is
+                      `hidden lg:block` and this pill was hidden in landscape,
+                      which left landscape phones with no move log at all.
+                      Dropping `landscape:hidden` closes that gap - `lg:hidden`
+                      still keeps it off desktop, where the real log is shown. */}
                   {game.log[0] && (
-                    <div className="landscape:hidden lg:hidden pointer-events-none px-2.5 py-0.5 rounded-full bg-slate-950/85 border border-amber-400/30 backdrop-blur-md text-[10px] font-bold text-emerald-100 shadow-lg flex items-center gap-1.5 max-w-full truncate">
+                    <div className="lg:hidden pointer-events-none px-2.5 py-0.5 rounded-full bg-slate-950/85 border border-amber-400/30 backdrop-blur-md text-[10px] font-bold text-emerald-100 shadow-lg flex items-center gap-1.5 max-w-full truncate">
                       <span className="w-1.5 h-1.5 rounded-full bg-amber-400 shrink-0" />
                       <span className="truncate">{game.log[0].text}</span>
                     </div>
@@ -1848,7 +1936,7 @@ export default function App() {
               <div className="hidden lg:flex panel p-2.5 flex-col gap-2 shrink-0">
                 <div className="flex items-center justify-between gap-2">
                   <div className="flex items-center gap-2 min-w-0">
-                    <SnakeIcon className="w-5.5 h-5.5 text-red-400 shrink-0" />
+                    <SnakeIcon className="w-5.5 h-5.5 text-[var(--theme-snake-glyph)] shrink-0" />
                     <span className="font-display text-base sm:text-lg tracking-wide whitespace-nowrap">
                       <span className="text-emerald-100">SNAKE</span>{' '}
                       <span className="text-amber-400">&amp; LADDER</span>
@@ -2039,8 +2127,10 @@ export default function App() {
               </div>
 
               {/* Live Move Log (Desktop only - mobile uses floating overlay ticker) */}
-              <div className="panel p-2.5 hidden lg:block">
-                <div className="flex items-center justify-between mb-1">
+              {/* (V9) The log now absorbs the leftover column height instead of
+                  leaving ~500px of empty panel below it on a desktop viewport. */}
+              <div className="panel p-2.5 hidden lg:flex lg:flex-col lg:min-h-0 lg:flex-1">
+                <div className="flex items-center justify-between mb-1 shrink-0">
                   <div className="text-[10px] font-black tracking-widest text-emerald-300/50">GAME LOG</div>
                   {/* (G3) The log keeps up to 20 entries; reveal them on demand. */}
                   {game.log.length > 5 && (
@@ -2060,7 +2150,7 @@ export default function App() {
                     No moves yet — roll the dice to begin.
                   </p>
                 ) : (
-                  <ul className="space-y-1">
+                  <ul className="space-y-1 lg:min-h-0 lg:flex-1 lg:overflow-y-auto lg:pr-1">
                     {game.log.slice(0, showFullLog ? 20 : 5).map((e, i) => (
                       <li
                         key={e.id}
@@ -2070,18 +2160,18 @@ export default function App() {
                           i === 0 ? 'log-flash -mx-1.5 px-1.5' : ''
                         }`}
                       >
+                        {/* (V7) These were `bg-cyan-400 / rose-400 / lime-400 /
+                            amber-400`, each exactly one Tailwind step lighter
+                            than the matching `PLAYER_COLORS` entry, so a
+                            player's log dot was a *different colour* from their
+                            token, card border and avatar. The palette also had
+                            a fifth `bg-yellow-300` fallback that meant nothing.
+                            Reading the real palette makes the dot an exact
+                            match; 'event' now falls back to a neutral surface
+                            tone rather than a fifth competing colour. */}
                         <span
-                          className={`w-1.5 h-1.5 rounded-full shrink-0 ${
-                            e.kind === 'p0'
-                              ? 'bg-cyan-400'
-                              : e.kind === 'p1'
-                                ? 'bg-rose-400'
-                                : e.kind === 'p2'
-                                  ? 'bg-lime-400'
-                                  : e.kind === 'p3'
-                                    ? 'bg-amber-400'
-                                    : 'bg-yellow-300'
-                          }`}
+                          className="w-1.5 h-1.5 rounded-full shrink-0"
+                          style={{ background: LOG_DOT_COLORS[e.kind] }}
                         />
                         <span className="truncate">{e.text}</span>
                         <span className="ml-auto shrink-0 text-[10px] font-bold text-emerald-300/40 tnum flex items-center gap-0.5">

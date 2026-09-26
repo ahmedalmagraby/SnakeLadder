@@ -169,6 +169,29 @@ export interface BoardTheme {
     dieInner: string;
     /** Pip fill (a gradient). */
     diePip: string;
+    /* --- (V4) centre-screen toasts ---------------------------------------
+     * The six big toasts ("LUCKY SIX!", "SNAKE BITE!", ...) were six
+     * hardcoded jungle literals in App.tsx, so they stayed gold/red/mint on
+     * the Cyber, Cosmic and Candy boards while everything around them
+     * followed the theme. These are keyed by *semantic role*, not by hue, so
+     * "reward" and "snake" keep their meaning in all five palettes.
+     *
+     * Jungle's values are the exact literals that were there before, so the
+     * default look is unchanged. */
+    toast: {
+      /** Rewards: lucky six, golden ladder. */
+      gold: string;
+      /** Snake bite. */
+      red: string;
+      /** Bounced back off 100. */
+      pink: string;
+      /** Opening-turn announcement. */
+      cyan: string;
+      /** Neutral rules reminder. */
+      info: string;
+      /** Positive/green variant. */
+      lime: string;
+    };
   };
   board: {
     frameGrad: [string, string, string, string];
@@ -315,6 +338,15 @@ export const THEMES: Record<ThemeId, BoardTheme> = {
       dieEdge: '#d4c49b',
       dieInner: 'rgba(160, 120, 50, 0.32)',
       diePip: 'radial-gradient(circle at 35% 30%, #ef4444, #991b1b 75%, #7f1d1d)',
+      /* (V4) Verbatim the six hardcoded literals from App.tsx's TOAST_COLORS. */
+      toast: {
+        gold: '#fbbf24',
+        red: '#fb7185',
+        pink: '#f9a8d4',
+        cyan: '#67e8f9',
+        info: '#a7f3d0',
+        lime: '#a3e635',
+      },
     },
     board: {
       frameGrad: ['#78350f', '#92400e', '#713f12', '#451a03'],
@@ -468,6 +500,15 @@ export const THEMES: Record<ThemeId, BoardTheme> = {
       dieEdge: '#0e7490',
       dieInner: 'rgba(8, 145, 178, 0.34)',
       diePip: 'radial-gradient(circle at 35% 30%, #f472b6, #be185d 75%, #4c0519)',
+      /* (V4) Synthwave cyan "reward", neon magenta "snake". */
+      toast: {
+        gold: '#67e8f9',
+        red: '#f472b6',
+        pink: '#ec4899',
+        cyan: '#22d3ee',
+        info: '#a5f3fc',
+        lime: '#4ade80',
+      },
     },
     board: {
       frameGrad: ['#090d16', '#1e1b4b', '#0f172a', '#020617'],
@@ -618,6 +659,15 @@ export const THEMES: Record<ThemeId, BoardTheme> = {
       dieEdge: '#b45309',
       dieInner: 'rgba(180, 83, 9, 0.3)',
       diePip: 'radial-gradient(circle at 35% 30%, #60a5fa, #1d4ed8 75%, #1e3a8a)',
+      /* (V4) Sunlit gold "reward", lapis blue for neutral reads. */
+      toast: {
+        gold: '#fbbf24',
+        red: '#fca5a5',
+        pink: '#fdba74',
+        cyan: '#60a5fa',
+        info: '#bae6fd',
+        lime: '#84cc16',
+      },
     },
     board: {
       frameGrad: ['#78350f', '#b45309', '#92400e', '#451a03'],
@@ -766,6 +816,15 @@ export const THEMES: Record<ThemeId, BoardTheme> = {
       dieEdge: '#4338ca',
       dieInner: 'rgba(67, 56, 202, 0.32)',
       diePip: 'radial-gradient(circle at 35% 30%, #e879f9, #7c3aed 75%, #2e1065)',
+      /* (V4) Starlight violet "reward", pulsar blue for neutral reads. */
+      toast: {
+        gold: '#c4b5fd',
+        red: '#fda4af',
+        pink: '#f0abfc',
+        cyan: '#38bdf8',
+        info: '#e0e7ff',
+        lime: '#34d399',
+      },
     },
     board: {
       frameGrad: ['#030712', '#1e1b4b', '#0f172a', '#020617'],
@@ -914,6 +973,15 @@ export const THEMES: Record<ThemeId, BoardTheme> = {
       dieEdge: '#be185d',
       dieInner: 'rgba(190, 24, 93, 0.28)',
       diePip: 'radial-gradient(circle at 35% 30%, #34d399, #059669 75%, #064e3b)',
+      /* (V4) Butterscotch "reward", mint for neutral reads. */
+      toast: {
+        gold: '#fbbf24',
+        red: '#fda4af',
+        pink: '#f9a8d4',
+        cyan: '#67e8f9',
+        info: '#a7f3d0',
+        lime: '#4ade80',
+      },
     },
     board: {
       frameGrad: ['#5c2c16', '#78350f', '#451a03', '#2d1205'],
@@ -1052,6 +1120,19 @@ export function themeCssVars(theme: BoardTheme): Record<string, string> {
     '--theme-die-edge': ui.dieEdge,
     '--theme-die-inner': ui.dieInner,
     '--theme-die-pip': ui.diePip,
+    /* (V4) Centre-screen toasts. */
+    '--theme-toast-gold': ui.toast.gold,
+    '--theme-toast-red': ui.toast.red,
+    '--theme-toast-pink': ui.toast.pink,
+    '--theme-toast-cyan': ui.toast.cyan,
+    '--theme-toast-info': ui.toast.info,
+    '--theme-toast-lime': ui.toast.lime,
+    /* (V13) The little snake glyph in the wordmark. It was hardcoded to
+       `text-red-400`, which put a red snake next to a cyan/violet/pink board.
+       Reusing the board's own snake-badge colour keeps the "red = snake"
+       *semantics* while letting each palette speak for itself. Jungle's is
+       #f87171, which is exactly what `text-red-400` resolved to. */
+    '--theme-snake-glyph': theme.board.badgeSnakeText,
   };
   for (const key of SHADE_KEYS) {
     vars[`--theme-surface-${key}`] = ui.ramps.surface[key];
