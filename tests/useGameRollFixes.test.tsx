@@ -4,8 +4,10 @@
  * Regression suite for online roll-path bugs in the game engine.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { act, renderHook } from '@testing-library/react';
+import { act, render, renderHook } from '@testing-library/react';
 import { useGame, type PlayerConfig } from '../src/game/useGame';
+import Die from '../src/components/Die';
+import { gameReducer, initialGameState } from '../src/game/gameReducer';
 
 /** Roster using SPARSE slots so dense index != slot index. */
 const sparseRoster: PlayerConfig[] = [
@@ -188,5 +190,61 @@ describe('Regression 7: rolling flag self-heal', () => {
     });
     expect(result.current.hud.rolls[0]).toBe(1);
     expect(result.current.hud.rolling).toBe(false);
+  });
+});
+
+describe('Regression 8: Die landed badge, reducer active-turn cleanup & rule dispatch', () => {
+  it('renders ROLLED badge and lucky-six class when rolling transitions from true to false', () => {
+    const { container, rerender } = render(
+      <Die value={6} rolling={true} onRoll={() => {}} canRoll={false} rollMs={950} />,
+    );
+    expect(container.textContent).not.toContain('ROLLED 6');
+
+    // When useGame's ROLL_LANDED fires at rollMs, rolling flips to false before Die's internal timer
+    rerender(
+      <Die value={6} rolling={false} onRoll={() => {}} canRoll={false} rollMs={950} />,
+    );
+    expect(container.textContent).toContain('ROLLED 6');
+    expect(container.textContent).toContain('★ +1');
+    expect(container.querySelector('.lucky-six')).not.toBeNull();
+  });
+
+  it('dispatches setSpeed and setWinRule through gameReducer cleanly', () => {
+    const { result } = renderHook(() => useGame());
+    act(() => {
+      result.current.startGame(sparseRoster, 'normal', 'exact');
+    });
+    act(() => {
+      result.current.setSpeed('fast');
+      result.current.setWinRule('bounce');
+    });
+    expect(result.current.hud.speed).toBe('fast');
+    expect(result.current.hud.winRule).toBe('bounce');
+  });
+
+  it('bumps txId and clears roll/targetSquare when the active player is removed via UPDATE_PLAYERS', () => {
+    const init = initialGameState();
+    const started = gameReducer(init, {
+      type: 'START_GAME',
+      players: sparseRoster,
+      speed: 'normal',
+      winRule: 'exact',
+    });
+    const rolling = gameReducer(started, {
+      type: 'START_ROLL',
+      player: 0,
+      roll: 5,
+    });
+    expect(rolling.rolling).toBe(true);
+    expect(rolling.roll).toBe(5);
+
+    const updated = gameReducer(rolling, {
+      type: 'UPDATE_PLAYERS',
+      players: sparseRoster.slice(1),
+    });
+    expect(updated.phase).toBe('idle');
+    expect(updated.rolling).toBe(false);
+    expect(updated.roll).toBe(0);
+    expect(updated.txId).toBeGreaterThan(rolling.txId);
   });
 });

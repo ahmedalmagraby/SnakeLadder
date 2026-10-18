@@ -396,7 +396,7 @@ export function useMultiplayer({
         } else if (roomMembershipRef.current === 'joining') {
           setRoomMembership('none');
           setAuthStatus(st === 'error' ? 'rejected' : 'unauthenticated');
-        } else if (roomMembershipRef.current === 'joined' && stateRef.current.isHost) {
+        } else if (roomMembershipRef.current === 'joined' && !stateRef.current.isHost) {
           /* (P1) A guest that drops out while the room is still in the *lobby*.
            *
            * The recovery logic above is gated on the match being `playing` or
@@ -408,8 +408,11 @@ export function useMultiplayer({
            * Match state is irrelevant to the connection being gone, so handle
            * it explicitly and say what happened. */
           console.warn('[useMultiplayer] Host lost while still in the lobby');
+          setStatus('error');
           setTransportStatus('failed');
           setAuthStatus('unauthenticated');
+          setRoomMembership('left');
+          setGameStatus('none');
           setStatusDetail('The host left before the match started.');
           /* (P1) Keep the room claim: if they re-host the same code, returning
            * players are re-admitted to their own seat rather than treated as
@@ -777,11 +780,20 @@ export function useMultiplayer({
             });
 
             // Persist the new palette so a host refresh restores it.
+            const configs: PlayerConfig[] = updated.map((p) => ({
+              id: p.playerId || `p_${p.slotIndex}`,
+              slotIndex: p.slotIndex,
+              name: p.isCpu ? `${stripCpuSuffix(p.name)} (CPU)` : stripCpuSuffix(p.name),
+              isCpu: p.isCpu,
+              colorId: p.colorId,
+            }));
+            callbacksRef.current.onPlayersUpdated?.(configs);
+
             saveSession({
               roomCode: s.roomCode,
-              playerId: roster[0]?.playerId || getOrCreatePlayerId(),
-              playerName: roster[0]?.name || 'Host',
-              colorId: roster[0]?.colorId || 0,
+              playerId: updated[0]?.playerId || getOrCreatePlayerId(),
+              playerName: updated[0]?.name || 'Host',
+              colorId: updated[0]?.colorId ?? 0,
               slotIndex: 0,
               isHost: true,
               maxPlayers: s.maxPlayers,
@@ -1147,6 +1159,19 @@ export function useMultiplayer({
             setSpeed(packet.speed);
             setWinRule(packet.winRule);
             setMaxPlayers(packet.maxPlayers);
+
+            const existing = getSavedSession();
+            const me = packet.players.find((p) => p.slotIndex === stateRef.current.mySlot);
+            if (existing && !existing.isHost && existing.roomCode === stateRef.current.roomCode) {
+              saveSession({
+                ...existing,
+                colorId: me?.colorId ?? existing.colorId,
+                maxPlayers: packet.maxPlayers,
+                speed: packet.speed,
+                winRule: packet.winRule,
+              });
+              refreshSavedSession();
+            }
 
             const configs: PlayerConfig[] = packet.players.map((p) => ({
               id: p.playerId || `p_${p.slotIndex}`,
@@ -1602,6 +1627,33 @@ export function useMultiplayer({
           stateVersion: stateVersionRef.current,
           maxPlayers: s.maxPlayers,
         });
+
+        const configs: PlayerConfig[] = updated.map((p) => ({
+          id: p.playerId || `p_${p.slotIndex}`,
+          slotIndex: p.slotIndex,
+          name: p.isCpu ? `${stripCpuSuffix(p.name)} (CPU)` : stripCpuSuffix(p.name),
+          isCpu: p.isCpu,
+          colorId: p.colorId,
+        }));
+        callbacksRef.current.onPlayersUpdated?.(configs);
+
+        saveSession({
+          roomCode: s.roomCode,
+          playerId: updated[0]?.playerId || getOrCreatePlayerId(),
+          playerName: updated[0]?.name || 'Host',
+          colorId: updated[0]?.colorId ?? 0,
+          slotIndex: 0,
+          isHost: true,
+          maxPlayers: s.maxPlayers,
+          speed: s.speed,
+          winRule: s.winRule,
+          players: updated,
+          slotTokens: Array.from(slotTokensRef.current.entries()),
+          gameState: callbacksRef.current.getGameStateSnapshot?.(),
+          turnId: turnIdRef.current,
+          stateVersion: stateVersionRef.current,
+        });
+        refreshSavedSession();
       } else {
         const reqId = generateRequestId('color');
         peerManager.sendToPeer('host', {
@@ -1612,7 +1664,7 @@ export function useMultiplayer({
         });
       }
     },
-    [commitPlayers],
+    [commitPlayers, refreshSavedSession],
   );
 
   /*
@@ -1720,7 +1772,10 @@ export function useMultiplayer({
   /* Update room rules (Host only) */
   const updateRoomRules = useCallback(
     (newSpeed: GameSpeed, newRule: WinRule) => {
-      if (!isHost) return;
+      const s = stateRef.current;
+      if (!s.isHost) return;
+      stateRef.current.speed = newSpeed;
+      stateRef.current.winRule = newRule;
       setSpeed(newSpeed);
       setWinRule(newRule);
       stateVersionRef.current += 1;
@@ -1730,10 +1785,28 @@ export function useMultiplayer({
         speed: newSpeed,
         winRule: newRule,
         stateVersion: stateVersionRef.current,
-        maxPlayers,
+        maxPlayers: s.maxPlayers,
       });
+
+      saveSession({
+        roomCode: s.roomCode,
+        playerId: playersRef.current[0]?.playerId || getOrCreatePlayerId(),
+        playerName: playersRef.current[0]?.name || 'Host',
+        colorId: playersRef.current[0]?.colorId ?? 0,
+        slotIndex: 0,
+        isHost: true,
+        maxPlayers: s.maxPlayers,
+        speed: newSpeed,
+        winRule: newRule,
+        players: playersRef.current,
+        slotTokens: Array.from(slotTokensRef.current.entries()),
+        gameState: callbacksRef.current.getGameStateSnapshot?.(),
+        turnId: turnIdRef.current,
+        stateVersion: stateVersionRef.current,
+      });
+      refreshSavedSession();
     },
-    [isHost, maxPlayers],
+    [refreshSavedSession],
   );
 
   /* Host starts the game */

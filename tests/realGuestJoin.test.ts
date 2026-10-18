@@ -184,11 +184,13 @@ async function guestJoins(code: string, name = 'Guest', colorId = 1) {
   // A JOIN_REJECTED resolves this promise by rejecting it - that is correct
   // behaviour (the guest is told, rather than hanging), so capture it.
   let joinError: string | null = null;
-  try {
-    await guest.joinRoom(code, name, colorId);
-  } catch (e) {
-    joinError = e instanceof Error ? e.message : String(e);
-  }
+  await act(async () => {
+    try {
+      await guest.joinRoom(code, name, colorId);
+    } catch (e) {
+      joinError = e instanceof Error ? e.message : String(e);
+    }
+  });
   return { guest, seen, statuses, joinError };
 }
 
@@ -259,8 +261,8 @@ it('a real guest can join a real host, at every room capacity', async () => {
         acc2 && acc2.type === 'JOIN_ACCEPTED' ? acc2.slotIndex : -1,
         `cap=${capacity} guest2 saw [${describeSeen(g2.seen)}]`,
       ).toBe(2);
-      g2.guest.cleanup();
       await act(async () => {
+        g2.guest.cleanup();
         await flush();
       });
     }
@@ -276,14 +278,16 @@ it('a real guest can join a real host, at every room capacity', async () => {
         `cap=2 second guest saw [${describeSeen(g2.seen)}] err=${g2.joinError} - expected an explicit rejection`,
       ).toBe(true);
       expect(g2.joinError ?? '').toMatch(/full/i);
-      g2.guest.cleanup();
+      act(() => {
+        g2.guest.cleanup();
+      });
     }
 
-    g1.guest.cleanup();
     await act(async () => {
+      g1.guest.cleanup();
       await flush();
+      mod.peerManager.cleanup();
     });
-    mod.peerManager.cleanup();
     // `peerManager` is a module singleton and every mounted `useMultiplayer`
     // subscribes to it, so the previous host must be unmounted before the next
     // one boots - otherwise both packet handlers see each JOIN_REQUEST and the

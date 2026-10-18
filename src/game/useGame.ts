@@ -498,15 +498,19 @@ export function useGame(options: UseGameOptions = {}) {
     });
   }, []);
 
-  const setSpeed = useCallback((spd: GameSpeed) => {
-    gs.current.speed = spd;
-    setHud((h) => ({ ...h, speed: spd }));
-  }, []);
+  const setSpeed = useCallback(
+    (spd: GameSpeed) => {
+      dispatch({ type: 'SET_SPEED', speed: spd });
+    },
+    [dispatch],
+  );
 
-  const setWinRule = useCallback((rule: WinRule) => {
-    gs.current.winRule = rule;
-    setHud((h) => ({ ...h, winRule: rule }));
-  }, []);
+  const setWinRule = useCallback(
+    (rule: WinRule) => {
+      dispatch({ type: 'SET_WIN_RULE', winRule: rule });
+    },
+    [dispatch],
+  );
 
   /* ---------- board layer rendering ---------- */
 
@@ -954,7 +958,7 @@ export function useGame(options: UseGameOptions = {}) {
           sfx.buzz();
           pushLog(
             `↩️ ${playerName(player)} overshot 100 and bounced back to square ${bounceTarget}`,
-            'event',
+            logKindFor(player),
           );
 
           dispatch({
@@ -977,7 +981,7 @@ export function useGame(options: UseGameOptions = {}) {
             showToast('LUCKY SIX!', `Can't move (need ${100 - pos}), but ${playerName(player)} earns an extra roll!`, 'gold');
             pushLog(
               `🎲 ${playerName(player)} rolled a 6 on square ${pos} (needs ${100 - pos}) — earns an extra roll!`,
-              'event',
+              logKindFor(player),
             );
             sfx.ding();
             const cfg = SPEEDS[g.speed];
@@ -1028,7 +1032,7 @@ export function useGame(options: UseGameOptions = {}) {
           showToast('NEED EXACT ROLL', `Must land on 100 exactly (need ${100 - pos})`, 'info');
           pushLog(
             `⚠️ ${playerName(player)} needs exactly ${100 - pos} to win — turn passed`,
-            'event',
+            logKindFor(player),
           );
           sfx.buzz();
           const cfg = SPEEDS[g.speed];
@@ -1087,6 +1091,7 @@ export function useGame(options: UseGameOptions = {}) {
     [
       applyCheckpoint,
       dispatch,
+      logKindFor,
       playerName,
       pushLog,
       recordStableSnapshot,
@@ -1443,7 +1448,8 @@ export function useGame(options: UseGameOptions = {}) {
       p = Math.max(0, Math.min(g.players.length - 1, player));
     }
     const pos = g.pos[p] || 0;
-    const c = pos === 0 ? (START_POS[p] || { x: 251, y: 1017 }) : squareCenter(pos);
+    const slotIdx = g.players[p]?.slotIndex ?? p;
+    const c = pos === 0 ? (START_POS[slotIdx] || { x: 251, y: 1017 }) : squareCenter(pos);
     sfx.pop();
     if (g.emotes.length >= 10) {
       g.emotes.shift();
@@ -2016,6 +2022,16 @@ export function useGame(options: UseGameOptions = {}) {
        * second for a 4-element ordering. At most one index is out of place, so
        * walk the others forward and draw the active token last. Zero
        * allocation, same result. */
+      let maxPos = 0;
+      let leaderIdx = -1;
+      for (let i = 0; i < g.players.length; i++) {
+        const pPos = g.pos[i] ?? 0;
+        if (pPos > maxPos) {
+          maxPos = pPos;
+          leaderIdx = i;
+        }
+      }
+
       const activeIdx = g.turn;
       for (let p = 0; p < g.players.length; p++) {
         if (p === activeIdx) continue;
@@ -2034,19 +2050,30 @@ export function useGame(options: UseGameOptions = {}) {
         drawImpactFlash(ctx, g.flash, g.flashColor);
       }
 
-      // Draw floating reaction emotes
+      // Draw floating reaction emotes with a player-tinted badge pill
       for (const em of g.emotes) {
         const progress = em.life / em.maxLife;
         const alpha = Math.min(1, progress * 2.2);
         const popScale = progress > 0.8 ? 1 + (1 - progress) * 2 : 1;
+        const emPal = playerPalette(em.player);
+        const bubbleR = 24 * popScale;
         ctx.save();
         ctx.globalAlpha = alpha;
-        ctx.font = `${Math.round(36 * popScale)}px "Apple Color Emoji", "Segoe UI Emoji", "Noto Color Emoji", sans-serif`;
+        ctx.fillStyle = 'rgba(15, 23, 42, 0.78)';
+        ctx.strokeStyle = emPal.base;
+        ctx.lineWidth = 2.2 * popScale;
+        ctx.shadowColor = 'rgba(0, 0, 0, 0.55)';
+        ctx.shadowBlur = 10;
+        ctx.beginPath();
+        ctx.arc(em.x, em.y, bubbleR, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.stroke();
+
+        ctx.shadowBlur = 4;
+        ctx.font = `${Math.round(30 * popScale)}px "Apple Color Emoji", "Segoe UI Emoji", "Noto Color Emoji", sans-serif`;
         ctx.textAlign = 'center';
         ctx.textBaseline = 'middle';
-        ctx.shadowColor = 'rgba(0, 0, 0, 0.6)';
-        ctx.shadowBlur = 10;
-        ctx.fillText(em.emoji, em.x, em.y);
+        ctx.fillText(em.emoji, em.x, em.y + 1);
         ctx.restore();
       }
 
@@ -2093,6 +2120,8 @@ export function useGame(options: UseGameOptions = {}) {
           badgeGlow: isActive ? pal.glow : undefined,
           // (D5) Cast shadow matching the snake/ladder light direction.
           castShadow: theme.board.snakeDropShadow,
+          isLeader: p === leaderIdx,
+          leaderTime: reduced ? 0 : g.time,
         });
       }
     };

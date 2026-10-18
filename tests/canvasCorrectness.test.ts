@@ -10,9 +10,16 @@ import {
   easeInOutCubic,
   pathCum,
   pointAt,
+  PLAYER_COLORS,
   type Pt,
 } from '../src/game/constants';
-import { getSegmentColors } from '../src/game/render';
+import {
+  getSegmentColors,
+  drawToken,
+  drawTargetHighlight,
+  drawHoverHighlight,
+} from '../src/game/render';
+import { THEMES } from '../src/game/themes';
 
 describe('Snake Spine & Slide Point Consistency', () => {
   const snakeEntries = Object.entries(PORTALS)
@@ -142,5 +149,56 @@ describe('Render Math & Helpers', () => {
     // Memoization test: subsequent call returns identical reference
     const colors2 = getSegmentColors(main, dark, 20);
     expect(colors1).toBe(colors2);
+  });
+
+  it('draws tokens (including leader crown), target reticle, and portal hover trajectory without error', () => {
+    const gradientStub = { addColorStop: () => {} };
+    const calls: string[] = [];
+    const ctx = {
+      save: () => calls.push('save'),
+      restore: () => calls.push('restore'),
+      translate: () => calls.push('translate'),
+      scale: () => calls.push('scale'),
+      beginPath: () => calls.push('beginPath'),
+      closePath: () => calls.push('closePath'),
+      moveTo: () => {},
+      lineTo: () => {},
+      arc: () => calls.push('arc'),
+      arcTo: () => {},
+      ellipse: () => calls.push('ellipse'),
+      fill: () => calls.push('fill'),
+      stroke: () => calls.push('stroke'),
+      fillText: () => calls.push('fillText'),
+      setLineDash: () => calls.push('setLineDash'),
+      createRadialGradient: () => gradientStub,
+      createLinearGradient: () => gradientStub,
+      fillStyle: '',
+      strokeStyle: '',
+      lineWidth: 1,
+      lineJoin: 'round',
+      lineCap: 'round',
+      lineDashOffset: 0,
+      globalAlpha: 1,
+      shadowColor: '',
+      shadowBlur: 0,
+      shadowOffsetY: 0,
+      font: '',
+      textAlign: 'center',
+      textBaseline: 'middle',
+    } as unknown as CanvasRenderingContext2D;
+
+    drawToken(ctx, 120, 120, 22, PLAYER_COLORS[0], '1', {
+      hopRatio: 0.3,
+      badgeGlow: PLAYER_COLORS[0].glow,
+      isLeader: true,
+      leaderTime: 2.5,
+    });
+    expect(calls).toContain('fillText');
+
+    drawTargetHighlight(ctx, 14, 1.2, '#f59e0b');
+    drawHoverHighlight(ctx, 2, 1.5, THEMES.jungle); // ladder portal square
+    drawHoverHighlight(ctx, 16, 1.5, THEMES.jungle); // snake portal square
+    drawHoverHighlight(ctx, 5, 1.5, THEMES.jungle); // normal square
+    expect(calls.filter((c) => c === 'save').length).toBe(calls.filter((c) => c === 'restore').length);
   });
 });

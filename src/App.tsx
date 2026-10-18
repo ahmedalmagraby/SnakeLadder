@@ -266,20 +266,26 @@ function ToastView({ toast }: { toast: Toast | null }) {
   const c = TOAST_VARS[toast.kind];
   return (
     <div className="pointer-events-none absolute inset-0 z-30 flex items-center justify-center p-4">
-      <div key={toast.id} className="toast-pop text-center">
+      <div
+        key={toast.id}
+        className="toast-pop text-center px-6 py-3 rounded-2xl bg-slate-950/75 backdrop-blur-md border shadow-[0_16px_48px_rgba(0,0,0,0.65)]"
+        style={{
+          borderColor: `color-mix(in srgb, ${c} 45%, transparent)`,
+        }}
+      >
         <div
-          className="font-display text-5xl sm:text-6xl"
+          className="font-display text-4xl sm:text-6xl tracking-wide"
           /* (V4) `${c}66` was a hex-alpha suffix and cannot follow a `var()`
            * reference, so the outer glow is mixed instead. 40% over black is
            * what `#xxxxxx66` resolved to for every one of the old literals. */
           style={{
             color: c,
-            textShadow: `0 5px 0 rgba(0,0,0,0.5), 0 0 44px color-mix(in srgb, ${c} 40%, transparent)`,
+            textShadow: `0 4px 0 rgba(0,0,0,0.6), 0 0 36px color-mix(in srgb, ${c} 45%, transparent)`,
           }}
         >
           {toast.title}
         </div>
-        {toast.sub && <div className="font-display text-2xl text-amber-50 mt-1 drop-title">{toast.sub}</div>}
+        {toast.sub && <div className="font-display text-xl sm:text-2xl text-amber-50 mt-1 drop-title">{toast.sub}</div>}
       </div>
     </div>
   );
@@ -429,6 +435,7 @@ function MobilePlayerChip({
   snakes,
   activeLabel,
   totalPlayers = 2,
+  isLeader = false,
 }: {
   player: PlayerConfig;
   pos: number;
@@ -438,6 +445,7 @@ function MobilePlayerChip({
   snakes: number;
   activeLabel?: string;
   totalPlayers?: number;
+  isLeader?: boolean;
 }) {
   const col = PLAYER_COLORS[player.colorId % PLAYER_COLORS.length];
   const is4p = totalPlayers >= 4;
@@ -466,6 +474,9 @@ function MobilePlayerChip({
           <span className="font-display text-[10px] sm:text-[11px] text-white truncate">
             {player.name}
           </span>
+          {isLeader && pos > 0 && (
+            <CrownIcon className="w-2.5 h-2.5 text-amber-300 shrink-0" />
+          )}
           {player.isCpu && (
             /* (V11) was text-[7px] */
             <span className="text-[8px] font-black px-0.5 rounded bg-purple-950/80 text-purple-300 border border-purple-800/40 shrink-0">
@@ -1712,7 +1723,14 @@ export default function App() {
             }}
             onOpenOnline={() => setShowOnlineModal(true)}
             savedSession={multiplayer.savedSession}
-            onResumeSession={() => setShowOnlineModal(true)}
+            onResumeSession={() => {
+              setShowOnlineModal(true);
+              if (multiplayer.savedSession?.roomCode) {
+                multiplayer.reconnectRoom(multiplayer.savedSession.roomCode).catch(() => {
+                  // OnlineLobby displays the statusDetail / errorMsg when reconnect fails
+                });
+              }
+            }}
             currentThemeId={game.themeId}
             onSelectTheme={game.setTheme}
             onOpenThemeModal={() => setShowThemeModal(true)}
@@ -1799,6 +1817,7 @@ export default function App() {
                     active={hud.turn === idx && hud.mode === 'playing'}
                     activeLabel={cardLabel(idx)}
                     totalPlayers={hud.players.length}
+                    isLeader={idx === leaderIndex}
                   />
                 ))}
               </div>
@@ -2114,6 +2133,7 @@ export default function App() {
                     active={hud.turn === idx && hud.mode === 'playing'}
                     activeLabel={cardLabel(idx)}
                     totalPlayers={hud.players.length}
+                    isLeader={idx === leaderIndex}
                   />
                 ))}
               </div>

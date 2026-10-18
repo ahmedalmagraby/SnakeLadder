@@ -265,6 +265,20 @@ body {
   padding: 8.5px;
   gap: 3px;
   backface-visibility: hidden;
+  overflow: hidden;
+}
+.die-face::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  background: linear-gradient(
+    135deg,
+    rgba(255, 255, 255, 0.28) 0%,
+    rgba(255, 255, 255, 0.06) 38%,
+    transparent 60%
+  );
+  pointer-events: none;
 }
 .die-pip {
   width: 10.5px;

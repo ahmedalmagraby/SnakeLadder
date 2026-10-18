@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import type { NetworkPlayer } from '../game/network/types';
 import { getShareUrl } from '../game/network/sessionStorage';
 import { copyToClipboard } from '../utils/clipboard';
@@ -43,15 +43,30 @@ export default function OnlineHudBar({
   onLeaveRoom,
 }: OnlineHudBarProps) {
   const [copied, setCopied] = useState(false);
+  const copyTimerRef = useRef<number | null>(null);
   const activePlayer = players[currentTurn];
   const isMyTurn = activePlayer ? activePlayer.slotIndex === mySlot : currentTurn === mySlot;
+
+  useEffect(() => {
+    return () => {
+      if (copyTimerRef.current !== null) {
+        window.clearTimeout(copyTimerRef.current);
+      }
+    };
+  }, []);
 
   const handleCopyLink = async () => {
     const url = getShareUrl(roomCode);
     const ok = await copyToClipboard(url);
     if (ok) {
       setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
+      if (copyTimerRef.current !== null) {
+        window.clearTimeout(copyTimerRef.current);
+      }
+      copyTimerRef.current = window.setTimeout(() => {
+        setCopied(false);
+        copyTimerRef.current = null;
+      }, 2000);
     }
   };
 

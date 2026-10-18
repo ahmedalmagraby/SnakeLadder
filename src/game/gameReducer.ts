@@ -967,8 +967,9 @@ export function gameReducer(state: GameState, action: GameAction): GameState {
       let nextPhase = state.phase;
       let nextMoving = state.moving;
       let nextSliding = state.sliding;
+      const activePlayerRemoved = nextTurn === -1;
 
-      if (nextTurn === -1) {
+      if (activePlayerRemoved) {
         nextTurn = Math.min(state.turn, newPlayers.length - 1);
         if (nextTurn < 0) nextTurn = 0;
         nextPhase = 'idle';
@@ -991,7 +992,7 @@ export function gameReducer(state: GameState, action: GameAction): GameState {
 
       return {
         ...state,
-        txId: state.txId,
+        txId: activePlayerRemoved ? state.txId + 1 : state.txId,
         players: newPlayers,
         pos: nextPos,
         rolls: nextRolls,
@@ -1002,6 +1003,8 @@ export function gameReducer(state: GameState, action: GameAction): GameState {
         winner: nextWinner,
         phase: nextPhase,
         rolling: nextPhase === 'idle' ? false : state.rolling,
+        roll: activePlayerRemoved ? 0 : state.roll,
+        targetSquare: activePlayerRemoved ? undefined : state.targetSquare,
         moving: nextMoving,
         sliding: nextSliding,
       };
@@ -1055,12 +1058,13 @@ export function gameReducer(state: GameState, action: GameAction): GameState {
       const nextSnakes = state.snakesHit.filter((_, i) => i !== idx);
       const nextSixes = state.sixesHit.filter((_, i) => i !== idx);
 
+      const activePlayerRemoved = state.turn === idx;
       let nextTurn = state.turn;
       let nextPhase = state.phase;
       let nextMoving = state.moving;
       let nextSliding = state.sliding;
 
-      if (state.turn === idx) {
+      if (activePlayerRemoved) {
         nextTurn = idx % newPlayers.length;
         nextPhase = 'idle';
         nextMoving = null;
@@ -1090,6 +1094,9 @@ export function gameReducer(state: GameState, action: GameAction): GameState {
         turn: nextTurn,
         winner: nextWinner,
         phase: nextPhase,
+        rolling: activePlayerRemoved ? false : state.rolling,
+        roll: activePlayerRemoved ? 0 : state.roll,
+        targetSquare: activePlayerRemoved ? undefined : state.targetSquare,
         moving: nextMoving,
         sliding: nextSliding,
       };

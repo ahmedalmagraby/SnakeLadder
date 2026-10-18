@@ -1678,6 +1678,14 @@ export interface TokenOpts {
    * snakes and ladders (light from the top-left).
    */
   castShadow?: string;
+  /**
+   * Draws a floating golden crown above the leading player's token on the board.
+   */
+  isLeader?: boolean;
+  /**
+   * Animation timestamp for the leader crown bob/glint (0 under reduced motion).
+   */
+  leaderTime?: number;
 }
 
 export function drawToken(
@@ -1756,6 +1764,13 @@ export function drawToken(
   ctx.lineWidth = 2;
   ctx.stroke();
 
+  // Soft lower-right bounce light rim
+  ctx.strokeStyle = 'rgba(255, 255, 255, 0.22)';
+  ctx.lineWidth = 1.25;
+  ctx.beginPath();
+  ctx.arc(0, 0, r - 1.5, Math.PI * 0.12, Math.PI * 0.58);
+  ctx.stroke();
+
   // Inner badge center with player number
   if (opts.badgeGlow) {
     // (D4) A coloured bloom behind the white disc lifts the active token out
@@ -1775,6 +1790,13 @@ export function drawToken(
     ctx.fill();
   }
 
+  // Crisp enamel ring around the inner number medallion
+  ctx.strokeStyle = colors.dark;
+  ctx.lineWidth = 1.1;
+  ctx.beginPath();
+  ctx.arc(0, 1, r * 0.52, 0, Math.PI * 2);
+  ctx.stroke();
+
   ctx.fillStyle = colors.dark;
   ctx.font = `900 ${Math.round(r * 0.72)}px "Lilita One", sans-serif`;
   ctx.textAlign = 'center';
@@ -1786,6 +1808,55 @@ export function drawToken(
   ctx.beginPath();
   ctx.ellipse(-r * 0.32, -r * 0.44, r * 0.35, r * 0.22, -0.6, 0, Math.PI * 2);
   ctx.fill();
+
+  // Floating 3D Leader Crown above the race leader's token
+  if (opts.isLeader) {
+    const lt = opts.leaderTime ?? 0;
+    const crownBob = lt > 0 ? Math.sin(lt * 4.2) * 1.6 : 0;
+    const cy = -r - 7 + crownBob;
+    const cw = r * 0.56;
+    const ch = r * 0.42;
+
+    ctx.save();
+    ctx.shadowColor = 'rgba(0, 0, 0, 0.65)';
+    ctx.shadowBlur = 4;
+    ctx.shadowOffsetY = 1.5;
+
+    const cg = ctx.createLinearGradient(0, cy - ch, 0, cy + 2);
+    cg.addColorStop(0, '#fef08a');
+    cg.addColorStop(0.55, '#fbbf24');
+    cg.addColorStop(1, '#d97706');
+    ctx.fillStyle = cg;
+
+    ctx.beginPath();
+    ctx.moveTo(-cw * 0.82, cy + 2);
+    ctx.lineTo(-cw, cy - ch * 0.75);
+    ctx.lineTo(-cw * 0.42, cy - ch * 0.22);
+    ctx.lineTo(0, cy - ch);
+    ctx.lineTo(cw * 0.42, cy - ch * 0.22);
+    ctx.lineTo(cw, cy - ch * 0.75);
+    ctx.lineTo(cw * 0.82, cy + 2);
+    ctx.closePath();
+    ctx.fill();
+
+    ctx.shadowColor = 'transparent';
+    ctx.strokeStyle = '#78350f';
+    ctx.lineWidth = 1.2;
+    ctx.stroke();
+
+    // Crown jewel tips
+    ctx.fillStyle = '#ffffff';
+    for (const [jx, jy] of [
+      [-cw, cy - ch * 0.75],
+      [0, cy - ch],
+      [cw, cy - ch * 0.75],
+    ]) {
+      ctx.beginPath();
+      ctx.arc(jx, jy, 1.5, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    ctx.restore();
+  }
 
   ctx.restore();
 }
@@ -1809,7 +1880,16 @@ export function drawTargetHighlight(
   roundRectPath(ctx, c.x - CELL / 2 + 5, c.y - CELL / 2 + 5, CELL - 10, CELL - 10, 12);
   ctx.stroke();
 
+  // Inner converging reticle ring
+  const innerRadius = 11 + 3 * Math.cos(time * 6);
+  ctx.lineWidth = 2;
+  ctx.globalAlpha = pulse * 0.75;
+  ctx.beginPath();
+  ctx.arc(c.x, c.y, innerRadius, 0, Math.PI * 2);
+  ctx.stroke();
+
   // Golden beacon center dot
+  ctx.globalAlpha = pulse;
   ctx.fillStyle = color;
   ctx.beginPath();
   ctx.arc(c.x, c.y, 4, 0, Math.PI * 2);
@@ -1818,7 +1898,9 @@ export function drawTargetHighlight(
 }
 
 /* Hovered cell border highlight - (A4) colour now comes from the theme, so it
-   no longer shows jungle amber while playing Candy/Cosmic/Cyber/Desert. */
+   no longer shows jungle amber while playing Candy/Cosmic/Cyber/Desert.
+   When hovering over a snake head or ladder base, also previews the destination
+   square and draws an animated trajectory guide line. */
 export function drawHoverHighlight(
   ctx: CanvasRenderingContext2D,
   square: number,
@@ -1829,16 +1911,56 @@ export function drawHoverHighlight(
   const c = squareCenter(square);
   const x = c.x - CELL / 2;
   const y = c.y - CELL / 2;
+  const tb = theme.board;
 
   ctx.save();
   const pulse = 0.55 + 0.25 * Math.sin(time * 7);
-  ctx.strokeStyle = theme.board.hoverRing;
+  ctx.strokeStyle = tb.hoverRing;
   ctx.globalAlpha = pulse;
   ctx.lineWidth = 2.5;
-  ctx.shadowColor = theme.board.hoverRingGlow;
+  ctx.shadowColor = tb.hoverRingGlow;
   ctx.shadowBlur = 10;
   roundRectPath(ctx, x + 3, y + 3, CELL - 6, CELL - 6, 8);
   ctx.stroke();
+
+  const portal = PORTALS[square];
+  if (portal) {
+    const dest = squareCenter(portal.to);
+    const dx = dest.x - CELL / 2;
+    const dy = dest.y - CELL / 2;
+    const portalColor = portal.type === 'ladder' ? tb.badgeLadderText : tb.badgeSnakeText;
+
+    // Animated dashed trajectory line from hovered portal to its destination
+    ctx.save();
+    ctx.strokeStyle = portalColor;
+    ctx.shadowColor = portalColor;
+    ctx.shadowBlur = 8;
+    ctx.globalAlpha = 0.65;
+    ctx.lineWidth = 2.5;
+    ctx.lineCap = 'round';
+    ctx.setLineDash([8, 6]);
+    ctx.lineDashOffset = -time * 32;
+    ctx.beginPath();
+    ctx.moveTo(c.x, c.y);
+    ctx.lineTo(dest.x, dest.y);
+    ctx.stroke();
+    ctx.restore();
+
+    // Destination square highlight ring & center marker
+    ctx.strokeStyle = portalColor;
+    ctx.shadowColor = portalColor;
+    ctx.shadowBlur = 12;
+    ctx.globalAlpha = pulse * 0.9;
+    ctx.lineWidth = 2.5;
+    roundRectPath(ctx, dx + 4, dy + 4, CELL - 8, CELL - 8, 9);
+    ctx.stroke();
+
+    ctx.fillStyle = portalColor;
+    ctx.beginPath();
+    ctx.arc(dest.x, dest.y, 4.5, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
   ctx.restore();
 }
 

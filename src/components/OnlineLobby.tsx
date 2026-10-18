@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { PLAYER_COLORS, type GameSpeed, type WinRule } from '../game/constants';
 import type { NetworkPlayer, ConnectionStatus } from '../game/network/types';
 import {
@@ -12,6 +12,16 @@ import {
   type SavedSession,
 } from '../game/network/sessionStorage';
 import { copyToClipboard } from '../utils/clipboard';
+
+function lobbyPingTone(ping: number): { dot: string; text: string; label: string } {
+  if (ping <= 120) {
+    return { dot: '#4ade80', text: 'text-emerald-300', label: 'Excellent' };
+  }
+  if (ping <= 300) {
+    return { dot: '#fbbf24', text: 'text-amber-300', label: 'Fair' };
+  }
+  return { dot: '#fb7185', text: 'text-rose-300', label: 'Poor' };
+}
 
 interface OnlineLobbyProps {
   isOnline: boolean;
@@ -75,11 +85,20 @@ export default function OnlineLobby({
   const [localSpeed, setLocalSpeed] = useState<GameSpeed>(speed);
   const [localRule, setLocalRule] = useState<WinRule>(winRule);
   const [copied, setCopied] = useState<'code' | 'link' | null>(null);
+  const copyTimerRef = useRef<number | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [errorMsg, setErrorMsg] = useState('');
   const [lanIp, setLocalLanIp] = useState(getLanIp);
   const [editingIp, setEditingIp] = useState(false);
   const [sessionDismissed, setSessionDismissed] = useState(false);
+
+  useEffect(() => {
+    return () => {
+      if (copyTimerRef.current !== null) {
+        window.clearTimeout(copyTimerRef.current);
+      }
+    };
+  }, []);
 
   // Pre-fill if room code in hash
   useEffect(() => {
@@ -113,7 +132,13 @@ export default function OnlineLobby({
     const ok = await copyToClipboard(roomCode);
     if (ok) {
       setCopied('code');
-      setTimeout(() => setCopied(null), 2000);
+      if (copyTimerRef.current !== null) {
+        window.clearTimeout(copyTimerRef.current);
+      }
+      copyTimerRef.current = window.setTimeout(() => {
+        setCopied(null);
+        copyTimerRef.current = null;
+      }, 2000);
     }
   };
 
@@ -122,7 +147,13 @@ export default function OnlineLobby({
     const ok = await copyToClipboard(url);
     if (ok) {
       setCopied('link');
-      setTimeout(() => setCopied(null), 2000);
+      if (copyTimerRef.current !== null) {
+        window.clearTimeout(copyTimerRef.current);
+      }
+      copyTimerRef.current = window.setTimeout(() => {
+        setCopied(null);
+        copyTimerRef.current = null;
+      }, 2000);
     }
   };
 
@@ -194,8 +225,16 @@ export default function OnlineLobby({
 
             <div className="flex items-center gap-2">
               {ping > 0 && (
-                <span className="text-[11px] font-bold text-emerald-400/80 bg-emerald-950/80 px-2 py-0.5 rounded-full border border-emerald-800/50">
-                  🟢 {ping}ms
+                <span
+                  className={`inline-flex items-center gap-1.5 text-[11px] font-bold bg-emerald-950/80 px-2 py-0.5 rounded-full border border-emerald-800/50 ${lobbyPingTone(ping).text}`}
+                  title={`Connection quality: ${lobbyPingTone(ping).label}`}
+                >
+                  <span
+                    className="w-1.5 h-1.5 rounded-full shrink-0"
+                    style={{ background: lobbyPingTone(ping).dot }}
+                    aria-hidden="true"
+                  />
+                  <span className="tnum">{ping}ms</span>
                 </span>
               )}
               <button

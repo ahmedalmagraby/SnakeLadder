@@ -311,14 +311,18 @@ describe('Regression 1: host refresh keeps the restored roster broadcast-safe', 
     await flush();
 
     const g1 = new PeerManager();
-    await g1.joinRoom('REFR01', 'Alice', 1, true, 1, 'secret_token_slot_1');
+    await act(async () => {
+      await g1.joinRoom('REFR01', 'Alice', 1, true, 1, 'secret_token_slot_1');
+    });
     await flush();
 
     expect(g1.getSlotIndex()).toBe(1);
     expect(result.current.players.find((p) => p.slotIndex === 1)?.isCpu).toBe(false);
     expect(result.current.players.find((p) => p.slotIndex === 1)?.isReady).toBe(true);
 
-    g1.cleanup();
+    act(() => {
+      g1.cleanup();
+    });
   });
 });
 
@@ -362,7 +366,9 @@ describe('Regression 2: host rejects duplicate and out-of-turn roll requests', (
     await flush();
 
     const guest = new PeerManager();
-    await guest.joinRoom('ROLL01', 'Alice', 1);
+    await act(async () => {
+      await guest.joinRoom('ROLL01', 'Alice', 1);
+    });
     await flush();
 
     act(() => {
@@ -397,7 +403,9 @@ describe('Regression 2: host rejects duplicate and out-of-turn roll requests', (
     await flush();
     expect(onRemoteRoll).toHaveBeenCalledTimes(1);
 
-    guest.cleanup();
+    act(() => {
+      guest.cleanup();
+    });
     hook.unmount();
   });
 
@@ -420,7 +428,9 @@ describe('Regression 2: host rejects duplicate and out-of-turn roll requests', (
 
     expect(onRemoteRoll).not.toHaveBeenCalled();
 
-    guest.cleanup();
+    act(() => {
+      guest.cleanup();
+    });
     hook.unmount();
   });
 
@@ -440,7 +450,9 @@ describe('Regression 2: host rejects duplicate and out-of-turn roll requests', (
 
     expect(onRemoteRoll).not.toHaveBeenCalled();
 
-    guest.cleanup();
+    act(() => {
+      guest.cleanup();
+    });
     hook.unmount();
   });
 
@@ -457,7 +469,9 @@ describe('Regression 2: host rejects duplicate and out-of-turn roll requests', (
 
     expect(onRemoteRoll).not.toHaveBeenCalled();
 
-    guest.cleanup();
+    act(() => {
+      guest.cleanup();
+    });
     hook.unmount();
   });
 });
@@ -476,7 +490,9 @@ describe('Regression 3: disconnected players are reserved, never AI-controlled',
     await flush();
 
     const guest = new PeerManager();
-    await guest.joinRoom('NOCPU1', 'Alice', 1);
+    await act(async () => {
+      await guest.joinRoom('NOCPU1', 'Alice', 1);
+    });
     await flush();
 
     const seatOf = (slot: number) =>
@@ -486,7 +502,9 @@ describe('Regression 3: disconnected players are reserved, never AI-controlled',
     expect(seatOf(1).isReady).toBe(true);
 
     // Alice drops out.
-    guest.cleanup();
+    act(() => {
+      guest.cleanup();
+    });
     await flush();
 
     // The seat must stay reserved for a HUMAN: no bot, no "(CPU)" label, and the
@@ -509,7 +527,9 @@ describe('Regression 3: disconnected players are reserved, never AI-controlled',
     await flush();
 
     const guest = new PeerManager();
-    await guest.joinRoom('LATE01', 'Alice', 1);
+    await act(async () => {
+      await guest.joinRoom('LATE01', 'Alice', 1);
+    });
     await flush();
 
     const seatOf = (slot: number) =>
@@ -524,7 +544,9 @@ describe('Regression 3: disconnected players are reserved, never AI-controlled',
     // The guest re-establishes a brand new connection (a new PeerJS id) and
     // successfully reclaims its seat. This normally happens ~1s after the drop.
     const returning = new PeerManager();
-    await returning.joinRoom('LATE01', 'Alice', 1, true, 1, readToken());
+    await act(async () => {
+      await returning.joinRoom('LATE01', 'Alice', 1, true, 1, readToken());
+    });
     await flush();
 
     expect(seatOf(1).isReady).toBe(true);
@@ -542,7 +564,9 @@ describe('Regression 3: disconnected players are reserved, never AI-controlled',
     expect(seatOf(1).peerId).not.toBe(stalePeerId);
     expect(seatOf(1).name).toBe('Alice');
 
-    returning.cleanup();
+    act(() => {
+      returning.cleanup();
+    });
   });
 
   it('propagates the correction to every other client in the room', async () => {
@@ -727,16 +751,22 @@ describe('Regression 3: disconnected players are reserved, never AI-controlled',
     await flush();
 
     const first = new PeerManager();
-    await first.joinRoom('NOCPU2', 'Alice', 1);
+    await act(async () => {
+      await first.joinRoom('NOCPU2', 'Alice', 1);
+    });
     await flush();
     const token = JSON.parse(
       localStorage.getItem('snkladr_active_session')!,
     ).slotTokens[0][1] as string;
-    first.cleanup();
+    act(() => {
+      first.cleanup();
+    });
     await flush();
 
     const returning = new PeerManager();
-    await returning.joinRoom('NOCPU2', 'Alice', 1, true, 1, token);
+    await act(async () => {
+      await returning.joinRoom('NOCPU2', 'Alice', 1, true, 1, token);
+    });
     await flush();
 
     const seat = result.current.players.find((p) => p.slotIndex === 1)!;
@@ -745,7 +775,9 @@ describe('Regression 3: disconnected players are reserved, never AI-controlled',
     expect(seat.name).toBe('Alice');
     expect(returning.getSlotIndex()).toBe(1);
 
-    returning.cleanup();
+    act(() => {
+      returning.cleanup();
+    });
   });
 
   it('does not convert reserved seats into CPU bots when the host re-hosts', async () => {
@@ -976,7 +1008,9 @@ describe('Regression 5: kicking a human player removes the seat', () => {
     const guest = new PeerManager();
     const statuses: string[] = [];
     guest.onStatus((s) => statuses.push(s));
-    await guest.joinRoom('KICK01', 'Alice', 1);
+    await act(async () => {
+      await guest.joinRoom('KICK01', 'Alice', 1);
+    });
     await flush();
 
     expect(result.current.players.map((p) => p.slotIndex)).toEqual([0, 1]);
@@ -1147,6 +1181,106 @@ describe('Regression 6: guest rejoin respects lobby vs live match', () => {
     expect(hook.result.current.gameStatus).toBe('playing');
     expect(onReconnected).toHaveBeenCalledTimes(1);
     expect(onReconnected.mock.calls[0][3]).toMatchObject({ pos: [40, 25] });
+
+    hook.unmount();
+  });
+});
+
+/* ------------------------------------------------------------------ */
+/* 7. Lobby host disconnect & session persistence for colors and rules */
+/* ------------------------------------------------------------------ */
+
+describe('Regression 7: guest lobby disconnect & session persistence', () => {
+  it('transitions a guest in the waiting room out of the lobby when the host disconnects', async () => {
+    const stub = new HostStub('snkladr-hdrop1');
+    peerRegistry.set('snkladr-hdrop1', stub);
+
+    const onPlayerDisconnected = vi.fn();
+    const hook = renderHook(() => useMultiplayer({ onPlayerDisconnected }));
+
+    let joinPromise: Promise<void>;
+    await act(async () => {
+      joinPromise = hook.result.current.joinRoom('HDROP1', 'Guest', 1);
+      await flush();
+    });
+
+    await act(async () => {
+      stub.conn!.send({
+        type: 'JOIN_ACCEPTED',
+        requestId: 'req_hd',
+        slotIndex: 1,
+        reconnectToken: 'secret_token_slot_1',
+        roomCode: 'HDROP1',
+        speed: 'normal',
+        winRule: 'exact',
+        players: [
+          hostPlayer(),
+          {
+            playerId: 'p_guest',
+            peerId: 'guest_peer',
+            name: 'Guest',
+            slotIndex: 1,
+            colorId: 1,
+            isHost: false,
+            isCpu: false,
+            isReady: true,
+          },
+        ],
+        stateVersion: 2,
+        turnId: 1,
+        maxPlayers: 4,
+        v: PROTOCOL_VERSION,
+      });
+      await flush();
+    });
+    await act(async () => {
+      await joinPromise;
+    });
+
+    expect(hook.result.current.isOnline).toBe(true);
+    expect(hook.result.current.gameStatus).toBe('lobby');
+
+    // Host abruptly closes the connection while still in the lobby.
+    await act(async () => {
+      stub.conn!.close();
+      await flush();
+    });
+
+    expect(onPlayerDisconnected).toHaveBeenCalledWith(0, 'Host');
+    expect(hook.result.current.isOnline).toBe(false);
+    expect(hook.result.current.status).toBe('error');
+    expect(hook.result.current.statusDetail).toContain('The host left before the match started.');
+
+    hook.unmount();
+  });
+
+  it('persists host changeColor and updateRoomRules to savedSession and notifies onPlayersUpdated', async () => {
+    const onPlayersUpdated = vi.fn();
+    const hook = renderHook(() => useMultiplayer({ onPlayersUpdated }));
+
+    await act(async () => {
+      await hook.result.current.createRoom('Host', 0, 4, 'normal', 'exact', 'PERS01');
+    });
+    await flush();
+
+    act(() => {
+      hook.result.current.changeColor(0, 3);
+    });
+    await flush();
+
+    expect(onPlayersUpdated).toHaveBeenCalled();
+    expect(getSavedSession()?.colorId).toBe(3);
+    expect(getSavedSession()?.players?.[0]?.colorId).toBe(3);
+
+    act(() => {
+      hook.result.current.updateRoomRules('fast', 'bounce');
+    });
+    await flush();
+
+    expect(hook.result.current.speed).toBe('fast');
+    expect(hook.result.current.winRule).toBe('bounce');
+    expect(getSavedSession()?.speed).toBe('fast');
+    expect(getSavedSession()?.winRule).toBe('bounce');
 
     hook.unmount();
   });

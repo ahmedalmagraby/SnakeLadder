@@ -73,6 +73,22 @@ export default function Die({
       }, rollMs);
       return () => window.clearTimeout(t);
     }
+
+    if (!rolling && value > 0) {
+      const targetFace = FACE_ROT[value] ?? FACE_ROT[1];
+      if (prevFace.current[0] !== targetFace[0] || prevFace.current[1] !== targetFace[1]) {
+        const diffX = targetFace[0] - prevFace.current[0];
+        const diffY = targetFace[1] - prevFace.current[1];
+        const nextX = currentRot.current.x + diffX;
+        const nextY = currentRot.current.y + diffY;
+        currentRot.current = { x: nextX, y: nextY };
+        prevFace.current = targetFace;
+        setTf(`rotateX(${nextX}deg) rotateY(${nextY}deg)`);
+      }
+      setIsLanded(true);
+    } else if (!rolling && value === 0) {
+      setIsLanded(false);
+    }
   }, [rolling, value, rollMs]);
 
   return (
