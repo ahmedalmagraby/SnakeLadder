@@ -15,7 +15,7 @@
     "test": "vitest run",
     "build": "vite build",
     "preview": "vite preview",
-    "verify": "npm run check:configs && npm run typecheck && npm run lint && npm test && npm run build"
+    "verify": "npm run audit && npm run check:configs && npm run typecheck && npm run lint && npm test && npm run build"
   },
   "dependencies": {
     "clsx": "2.1.1",
@@ -40,7 +40,7 @@
     "typescript": "5.9.3",
     "typescript-eslint": "^8.70.1",
     "vite": "^7.3.6",
-    "vite-plugin-singlefile": "2.3.0",
+    "vite-plugin-singlefile": "2.3.4",
     "vitest": "^5.0.1"
   }
 }

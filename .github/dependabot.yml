@@ -17,7 +17,7 @@ updates:
       # One PR for the whole dev toolchain instead of a dozen tiny ones.
       dev-dependencies:
         applies-to: version-updates
-        dependency-type: production
+        dependency-type: development
         patterns:
           - "*"
   - package-ecosystem: github-actions
