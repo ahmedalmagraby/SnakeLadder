@@ -1,281 +1,150 @@
-# 🎲 Snake & Ladder — Modern Cross-Device Web Game
+# 🎲 Snake & Ladder
 
-[![Live Demo](https://img.shields.io/badge/Live_Demo-Play_Now-emerald?style=for-the-badge&logo=googlechrome)](https://ahmedalmagraby.github.io/SnakeLadder/)
-[![Tests](https://img.shields.io/badge/Tests-185%20Passing-brightgreen?style=for-the-badge&logo=vitest&logoColor=white)](tests/)
-[![No known vulnerabilities](https://img.shields.io/badge/audit-0%20vulnerabilities-brightgreen?style=for-the-badge)](https://github.com/ahmedalmagraby/SnakeLadder/actions)
-[![React](https://img.shields.io/badge/React_19-20232A?style=for-the-badge&logo=react&logoColor=61DAFB)](https://react.dev/)
-[![TypeScript](https://img.shields.io/badge/TypeScript_5.9-3178C6?style=for-the-badge&logo=typescript&logoColor=white)](https://www.typescriptlang.org/)
-[![Vite](https://img.shields.io/badge/Vite_7-646CFF?style=for-the-badge&logo=vite&logoColor=FFD62E)](https://vitejs.dev/)
-[![Tailwind CSS](https://img.shields.io/badge/Tailwind_CSS_v4-38B2AC?style=for-the-badge&logo=tailwind-css&logoColor=white)](https://tailwindcss.com/)
+[![Live Demo](https://img.shields.io/badge/Play_Live-GitHub_Pages-10b981?style=for-the-badge&logo=googlechrome&logoColor=white)](https://ahmedalmagraby.github.io/SnakeLadder/)
+[![Tests](https://img.shields.io/badge/Tests-229_Passing-22c55e?style=for-the-badge&logo=vitest&logoColor=white)](tests/)
+[![Security Audit](https://img.shields.io/badge/Audit-0_Vulnerabilities-22c55e?style=for-the-badge)](https://github.com/ahmedalmagraby/SnakeLadder/actions)
+[![React 19](https://img.shields.io/badge/React_19-20232A?style=for-the-badge&logo=react&logoColor=61DAFB)](https://react.dev/)
+[![TypeScript 5.9](https://img.shields.io/badge/TypeScript_5.9-3178C6?style=for-the-badge&logo=typescript&logoColor=white)](https://www.typescriptlang.org/)
+[![Vite 7](https://img.shields.io/badge/Vite_7-646CFF?style=for-the-badge&logo=vite&logoColor=FFD62E)](https://vitejs.dev/)
 [![WebRTC](https://img.shields.io/badge/WebRTC-PeerJS-FF6B6B?style=for-the-badge&logo=webrtc&logoColor=white)](https://peerjs.com/)
 
-A modern, high-performance remake of the classic board game **Snake & Ladder** built from the ground up with **React 19**, **TypeScript**, **HTML5 Canvas**, and **WebRTC**. Features dynamic 3D dice physics, animated serpentine snakes, golden climbing ladders, procedural Web Audio sound effects, a hardened host-authoritative multiplayer protocol, full WCAG 2.1 AA accessibility, and cross-device real-time online play!
+A fast, single-bundle web remake of **Snake & Ladder** built with **React 19**, **TypeScript**, **HTML5 Canvas**, and **WebRTC**. Play solo against CPU bots, pass-and-play on one device, or host real-time online rooms across phones, tablets, and desktops—with zero backend servers or asset downloads.
+
+👉 **Play now in your browser:** **[https://ahmedalmagraby.github.io/SnakeLadder/](https://ahmedalmagraby.github.io/SnakeLadder/)**
 
 ---
 
-## 🎮 Play Live
-Play directly in your browser without any installation:  
-👉 **[https://ahmedalmagraby.github.io/SnakeLadder/](https://ahmedalmagraby.github.io/SnakeLadder/)**
+## ✨ What's Inside
+
+| Category | Highlights |
+| :--- | :--- |
+| **🎮 Game Modes** | **Solo vs CPU** (1–3 bots), **Pass & Play** (2–4 players on one screen), and **Online Multiplayer** (up to 4 players via 6-character room codes or invite links). |
+| **🌐 Online Play** | Host-authoritative P2P protocol over WebRTC DataChannels with **STUN + TURN relay fallback** (UDP, TCP, and TLS 443) for home Wi-Fi and 4G/5G mobile data. |
+| **🎨 5 Visual Themes** | *Jungle Safari*, *Cyber Neon*, *Desert Pharaoh*, *Cosmic Galaxy*, and *Candy Kingdom*—each with custom Canvas board art, animated snakes, and ladders. |
+| **🔊 Procedural Audio** | Real-time synthesized sound effects (dice rattle, tile hops, ladder chimes, snake slides, and victory fanfare) built on the Web Audio API with zero external audio files. |
+| **📱 Mobile-First UI** | Responsive portrait & zero-scroll landscape layouts, safe-area support, 44×44px touch targets, and tap-to-inspect board squares. |
+| **♿ Accessibility** | WCAG 2.1 AA compliant dialogs with focus trapping, `aria-live` turn announcements, and a full semantic 100-square screen-reader board table. |
 
 ---
 
-## ✨ Features
+## 🌐 Online Multiplayer Architecture
 
-### 🌐 Hardened Cross-Device Online Multiplayer
-- **Real-Time P2P WebRTC**: Connect directly between devices (PC, Mac, iPhone, Android, iPad) using low-latency WebRTC DataChannels via PeerJS with public STUN servers and TURN relay fallback (UDP, TCP, and TLS 443) for mobile data / CGNAT traversal. See [Connectivity & NAT Traversal](#-connectivity--nat-traversal-stun--turn-relay-fallback).
-- **Connection Admission State Machine**: Enforces a strict 4-stage lifecycle (`pending` ➔ `authenticated` ➔ `joined` ➔ `closed`) with 15-second unauthenticated timeouts and zero broadcast leakage to unadmitted peers.
-- **Host-Authoritative Dice Rolling**: Dice outcomes are calculated and broadcast authoritatively by the host (`ROLL_REQUEST` ➔ `ROLL_RESULT`) with turn-bound deduplication, eliminating client-side roll manipulation or duplicate rolls.
-- **Seat Reservation, Never AI Takeover**: If an opponent drops out, their seat is **reserved and held for that human** — no bot ever plays on their behalf, and the `(CPU)` badge is never applied to a real player. The match simply waits: the UI shows `WAITING FOR <NAME> TO RECONNECT...` and advances as soon as they return, restoring their exact square, score, and colour. The host may optionally fill a vacant lobby slot with a CPU bot, but bots are only ever created by an explicit host action in the waiting room — never automatically.
-- **Host Session Persistence & Room Rejoin**: If the host refreshes or leaves the game, the existing room code identity, game state, player roster, and guest reconnect tokens are preserved in session storage. When the host returns or inputs the room code, the original room is restored instead of spawning a new code. Reserved guest seats are restored as **waiting-for-reconnect**, so the match pauses on the absent player's turn rather than being played by an AI.
-- **Identity Survives Every Match**: Finishing a match only discards the *board* — the room claim (room code, seat and reconnect token) is kept. When the host launches the next match, `GAME_START` carries the authoritative opening board and every guest re-arms its session. Leaving a room also preserves the claim, so returning players are **re-admitted to their own reserved seat and colour** rather than being treated as a new guest in a different slot. The explicit ✕ in the lobby remains the "forget this room" action.
-- **Cryptographic Reconnection Tokens**: On joining, the host issues a 32-character cryptographically secure token stored in session storage. Reconnecting verifies the token directly, preventing impersonation or seat hijacking.
-- **Strict Runtime Validation & Sanitization**: Comprehensive validation engine protecting against prototype pollution attacks (`__proto__`, `constructor`, `prototype`), packet size flooding (>16KB), oversized fields, and invalid numeric/enum payloads.
-- **Role Permission Enforcement**: Guests are strictly confined to permitted actions (`JOIN_REQUEST`, `RECONNECT_REQUEST`, `COLOR_CHANGE_REQUEST`, `ROLL_REQUEST`, `EMOTE`, `PING`, `PONG`). Forged or unauthorized host-only packets immediately terminate the offending connection.
-- **Synchronized Victory Celebrations**: Authoritative game-over checkpoints trigger simultaneous victory fanfares, fireworks, confetti, and post-game summary overlays for both host and guest players. Non-host players on the victory screen wait for the host to restart.
-- **Floating Emoji Reactions**: Send rate-limited reaction emojis (`🐍`, `🪜`, `🎲`, `👑`, `😱`, `😂`, `🔥`, `🎯`) floating above your token.
-- **Smart Mobile Share Link & LAN Manual Entry**: When hosting locally, shareable links support replacing `localhost` with your device's LAN IP address so phones on the same Wi-Fi network can join seamlessly.
-- **Versioned Protocol**: A wire-protocol version is negotiated once at admission, so a player on a stale cached tab is told plainly to hard-refresh instead of failing later as an inscrutable desync.
-- **Authoritative Roll Negotiation**: Every `ROLL_REQUEST` is answered — served with a `ROLL_RESULT` or refused with a typed `ROLL_REJECTED` (`not-your-turn`, `stale-turn`, `already-rolled`, `rate-limited`, …). The guest also runs a local watchdog, so even a *lost* rejection cannot leave the roll button dead.
+Online rooms run directly between browsers using PeerJS and WebRTC DataChannels, backed by a hardened host-authoritative protocol:
 
-### 🌐 Connectivity & NAT Traversal (STUN + TURN Relay Fallback)
-
-Multiplayer uses **WebRTC DataChannels** configured with **both public STUN servers and TURN relay fallback (UDP, TCP, and TLS on port 443)**:
-
-| Network | Works? |
-|---|---|
-| Same Wi-Fi / LAN | ✅ Always — direct local P2P |
-| Home broadband (any router) | ✅ Almost always — direct STUN hole punching |
-| Mobile data (4G/5G CGNAT) | ✅ Supported — falls back to TURN relay when symmetric NAT blocks direct UDP |
-| Corporate / school / hotel Wi-Fi | ⚠️ Usually — TLS TURN over port 443 traverses most firewalls unless WebRTC is explicitly blocked |
-
-You can also supply your own dedicated TURN server credentials at build time via `VITE_TURN_URLS`, `VITE_TURN_USERNAME`, and `VITE_TURN_CREDENTIAL`, or at runtime via `localStorage.setItem('snkladr_turn_config', JSON.stringify({ urls, username, credential }))`.
-
-> [!NOTE]
-> **Host loss**: If the host disconnects, guests get a 20-second grace period with bounded automatic reconnect attempts (1s → 2s → 4s → 8s), then are told the match ended. The room claim is **kept**, so if the host re-hosts the same code, returning players are re-admitted to their own seat and colour. A dropped seat is never handed to an AI.
-
-> [!IMPORTANT]
-> **Dropped players are never replaced by AI.** A disconnected (or host-refreshed) seat stays bound to the original human: their `isCpu` flag remains `false`, their name keeps no `(CPU)` suffix, and their reconnect token is preserved so nobody else can claim the seat. The turn waits for them. If you *want* a bot in a vacant slot, add it yourself with **+ Add CPU** in the waiting room — that is the only path that creates a bot.
-
-### ♿ Accessibility & Screen Readers (WCAG 2.1 AA)
-- **Accessible Modal Dialogs**: All modals (Theme Picker, Online Lobby, Match Over, In-game Confirmation) use a reusable accessible `Dialog` featuring `aria-modal="true"`, dynamic `aria-labelledby`, focus trapping, initial focus targeting, focus restoration to previously active elements on close, Escape key dismissal, and background `#root` inertness (`inert` and `aria-hidden="true"`).
-- **AriaLiveAnnouncer**: Screen-reader live region (`aria-live="polite"` and `assertive`) announces turns, dice roll outcomes, ladder climbs, snake slides, and game finishes in real time.
-- **AccessibleBoardTable**: Fully semantic, screen-reader-accessible table detailing all 100 tiles, snake drops, ladder climbs, and current player positions (including the Start Bay).
-- **Target Touch Sizes**: Interactive buttons, color swatches, reaction triggers, and header controls strictly adhere to minimum 44x44px touch targets.
-- **Context-Aware Shortcuts**: Keyboard shortcuts are automatically suppressed whenever typing in inputs, textareas, selects, contenteditable elements, or when any modal dialog is open.
-
-### 🤖 Game Modes
-- **Solo vs CPU**: Challenge 1 to 3 AI bots with configurable speeds.
-- **Pass & Play**: Play locally with up to 4 players on a single screen.
-- **Online Multiplayer**: Host or join internet rooms across any device.
-  - Bots are opt-in: a CPU bot only joins an online room when the host explicitly taps **+ Add CPU** in the waiting room. Connected humans are never swapped for a bot, even if they drop out.
-
-### 🎨 Multiple Board Themes
-- **5 Distinct Visual Themes**:
-  - 🌴 **Jungle Safari**: Lush rainforest glow, golden bamboo ladders, emerald checkered tiles, and natural serpents.
-  - ⚡ **Cyber Neon**: Synthwave matrix, circuit board frame, holographic energy bridges, and cyber data-serpents.
-  - 🏛️ **Desert Pharaoh**: Ancient sandstone, royal lapis lazuli accents, golden cobras, and obelisk finish podium.
-  - 🌌 **Cosmic Galaxy**: Deep space nebulas, pulsar starlight beams, celestial star serpents, and astral finish line.
-  - 🍭 **Candy Kingdom**: Chocolate cookie frame, peppermint candy-cane ladders, and rainbow gummy worms.
-- **Full Palette & Sprite Customization**: Each theme features custom board frame gradients, corner embellishments, tile sheen, ladder styles, snake skins, and finish podiums.
-- **Theme Selector Modal**: Interactive modal with live color preview swatches, accessible via header button, start screen, or pressing `T`.
-- **Theme Persistence**: Chosen theme is automatically remembered across game sessions using `localStorage`.
-
-### 📱 Optimized Mobile Experience
-- **Maximized Board Real Estate**: Board canvas dynamically expands to fill 100% of available viewport space (`Math.min(width, height)`) with subpixel crispness.
-- **Ergonomic Portrait HUD**: Single-row player chip strip frees up maximum vertical space for the board, with a thumb-friendly roll deck pinned at the bottom.
-- **Zero-Scroll Landscape Mode**: Specialized compact landscape deck keeps all player cards, 3D die, and action buttons in view without vertical scrolling.
-- **Touch-to-Inspect**: Tap any square to instantly see snake drops, ladder climbs, or distance to cell 100, with auto-dismissing badges.
-- **Safe Area Aware**: Full compatibility with notches, dynamic islands, and home indicator bars via `env(safe-area-inset-*)`.
-
-### ⚙️ Rules & Quality of Life
-- **Win Rules**:
-  - **Exact 100**: You must roll the exact number required to hit square 100.
-  - **Bounce Back**: Overshooting square 100 bounces backward by the remaining count.
-- **Lucky 6 Rule**: Rolling a 6 grants an immediate extra roll! When on square 99 under the exact win rule, rolling a 6 preserves your turn and awards a bonus roll.
-- **Speed Presets**: Normal, Fast, and Turbo modes.
-- **Procedural Sound Engine**: Synthesized in real time using the **Web Audio API** (dice rattle, hop clatter, golden ladder chimes, snake hiss, and victory fanfares) with zero external audio assets.
-- **Keyboard Shortcuts**:
-  - `Space` / `Enter`: Roll dice (in-game) or Start match (menu)
-  - `T`: Open theme picker modal
-  - `M`: Toggle audio mute / unmute
-  - `S`: Cycle game animation speed (Normal ➔ Fast ➔ Turbo)
-  - `F`: Toggle fullscreen mode
-  - `R`: Restart active match (with confirmation dialog)
-  - `Esc`: Open in-game exit/menu confirmation modal
+- **Cross-Network Connectivity (STUN + TURN):**
+  - **Same Wi-Fi / LAN & Home Broadband:** Connects directly peer-to-peer via STUN hole punching.
+  - **Mobile Data (4G/5G CGNAT) & Strict Firewalls:** Automatically falls back to TURN relay servers over UDP, TCP, and TLS port `443` when symmetric NAT blocks direct UDP connections.
+  - **Custom TURN Support:** Override or add private TURN credentials at build time via `VITE_TURN_URLS`, `VITE_TURN_USERNAME`, and `VITE_TURN_CREDENTIAL`, or at runtime via `localStorage.setItem('snkladr_turn_config', JSON.stringify({ urls, username, credential }))`.
+- **Reserved Seats & Reconnection:**
+  - Joining guests receive a 32-character cryptographic reconnect token stored in `localStorage`.
+  - If a player briefly switches mobile apps (e.g., sharing the room code on WhatsApp) or drops connection, their seat is **held and reserved for them**—never handed over to an AI bot.
+  - If the host refreshes, the room code, board state, and all player seats are restored automatically.
+- **Host-Authoritative Security:**
+  - All dice rolls are generated authoritatively by the host (`ROLL_REQUEST` ➔ `ROLL_RESULT`) with per-turn deduplication and rate limiting.
+  - Every inbound packet is schema-validated on both host and guest (size limits, prototype-pollution guards, role permissions, and protocol version checks).
 
 ---
 
-## 🛠️ Tech Stack
+## 🎲 Game Rules & Controls
 
-| Technology | Purpose |
-|---|---|
-| **React 19** | Modern functional UI with state-of-the-art hooks & portals |
-| **TypeScript 5.9** | Strict type safety across game engine & network protocols |
-| **Vite 7** | Next-generation bundler with instant HMR and single-file inlining |
-| **Vitest** | Fast automated testing for protocol security, accessibility & game rules |
-| **Tailwind CSS v4** | Modern responsive glassmorphism UI styles |
-| **HTML5 Canvas 2D** | 60 FPS hardware-accelerated board & sprite rendering |
-| **WebRTC & PeerJS** | Peer-to-peer real-time cross-device networking |
-| **Web Audio API** | Procedural sound generation without audio files |
-| **GitHub Actions** | Automated CI validation (typecheck, lint, test) and CD deployment |
+### Match Rules
+- **Win Condition:** Choose between **Exact 100** (must roll the exact number needed to land on 100) or **Bounce Back** (overshooting 100 bounces backward by the remaining steps).
+- **Lucky 6:** Rolling a `6` grants an immediate bonus roll.
+- **Speed Presets:** Switch between **Normal**, **Fast**, and **Turbo** animation speeds at any time.
+
+### Keyboard Shortcuts
+
+| Key | Action |
+| :---: | :--- |
+| `Space` / `Enter` | Roll dice (in-game) or Start match (menu) |
+| `T` | Open visual theme picker |
+| `M` | Toggle audio mute / unmute |
+| `S` | Cycle animation speed (`Normal` ➔ `Fast` ➔ `Turbo`) |
+| `F` | Toggle fullscreen mode |
+| `R` | Restart active match (with confirmation) |
+| `Esc` | Open exit confirmation or close active modal |
 
 ---
 
-## 🚀 Getting Started
+## 🚀 Quick Start
 
 ### Prerequisites
-- [Node.js](https://nodejs.org/) (`^20.19.0` or `>=22.12.0`)
-- [npm](https://www.npmjs.com/) or `pnpm`
+- **Node.js** `^20.19.0` or `>=22.12.0`
+- **npm**
 
-### Installation
+### Setup & Development
 
-1. **Clone the repository**:
-   ```bash
-   git clone https://github.com/ahmedalmagraby/SnakeLadder.git
-   cd SnakeLadder
-   ```
+```bash
+# 1. Clone the repository
+git clone https://github.com/ahmedalmagraby/SnakeLadder.git
+cd SnakeLadder
 
-2. **Install dependencies**:
-   ```bash
-   npm install
-   ```
+# 2. Install dependencies
+npm install
 
-3. **Run code verification and automated tests**:
-   ```bash
-   npm run typecheck
-   npm run lint
-   npm test
-   ```
+# 3. Start local dev server (exposes LAN URL for mobile testing)
+npm run dev -- --host
+```
 
-4. **Start the local development server**:
-   ```bash
-   npm run dev -- --host
-   ```
-   - Open [http://localhost:5173](http://localhost:5173) on your computer.
-   - Open the displayed Network URL (e.g. `http://192.168.x.x:5173`) on your phone or tablet to test multiplayer!
+### Verification & Build Scripts
 
-5. **Build for production**:
-   ```bash
-   npm run build
-   ```
-   The bundled single-file app will be output to the `dist/` directory.
-
----
-
-## 🌐 Deploying to GitHub Pages
-
-This repository includes a pre-configured GitHub Actions workflow in [`.github/workflows/deploy.yml`](.github/workflows/deploy.yml) that executes automated typechecks, linting, tests, and builds the single-file bundle.
-
-To enable automatic deployment:
-1. Push your code to the `main` branch:
-   ```bash
-   git push origin main
-   ```
-2. On GitHub, navigate to your repository:
-   - Go to **Settings** ➔ **Pages**.
-   - Under **Build and deployment** ➔ **Source**, select **GitHub Actions**.
-3. GitHub Actions will automatically test, build, and publish your game to:
-   `https://ahmedalmagraby.github.io/SnakeLadder/`
+| Command | Description |
+| :--- | :--- |
+| `npm run dev` | Start Vite development server with HMR |
+| `npm test` | Run all 16 Vitest test suites (229 tests) |
+| `npm run typecheck` | Run TypeScript compiler checks (`tsc --noEmit`) |
+| `npm run lint` | Run ESLint across the codebase |
+| `npm run check:configs` | Verify `package.json` and `tsconfig.json` have no duplicate keys |
+| `npm run audit` | Check dependencies for high/critical security advisories |
+| `npm run build` | Bundle the app into a single self-contained `dist/index.html` |
+| `npm run verify` | Run the full CI gate (`audit` + `check:configs` + `typecheck` + `lint` + `test` + `build`) |
 
 ---
 
 ## 📁 Project Structure
 
-```
+```text
 SnakeLadder/
-├── .github/
-│   ├── dependabot.yml              # Automated dependency security updates
-│   └── workflows/
-│       └── deploy.yml              # GitHub Actions CI/CD (typecheck, lint, test, deploy)
-├── public/
-│   ├── favicon.svg                 # App icon (also the PWA icon)
-│   ├── manifest.webmanifest        # Installable home-screen metadata
-│   └── og-image.svg                # Social share card
-├── tests/
-│   ├── accessibility.test.tsx      # Dialog a11y, focus trap, inert background & shortcuts
-│   ├── canvasCorrectness.test.ts   # Wave spines, token anchoring & coordinate math
-│   ├── lifecycle.test.ts           # Heartbeat deadlines, re-hosting & recovery
-│   ├── multiplayer.test.ts         # Protocol validation, state machine & admission gate
-│   ├── multiplayerBugFixes.test.tsx# Regressions: re-host roster, roll authority, kick & seat reservation
-│   ├── productionReadiness.test.tsx# Regressions: P0 blockers (roll latch, phase watchdog, versioning)
-│   ├── rosterSlots.test.ts         # Slot allocation, player roster & reconnect tokens
-│   ├── rulesAndCoordinates.test.ts # Boustrophedon board math, portals & win rules
-│   ├── sessionAndInvite.test.ts    # Session persistence, IP replacement & dismissal
-│   ├── stateMachine.test.ts        # Turn transitions, dice mechanics & bonus rolls
-│   ├── twoClientIntegration.test.ts# End-to-end host/guest multiplayer lifecycle
-│   └── useGameRollFixes.test.tsx   # Regressions: slot-indexed rolls & guest roll-request gating
+├── .github/workflows/deploy.yml   # CI/CD pipeline (audit, lint, typecheck, test, single-file build & deploy)
+├── public/                        # Favicon, PWA manifest & OpenGraph social card
+├── scripts/                       # JSON config validator & self-tests
 ├── src/
 │   ├── components/
-│   │   ├── AccessibleBoardTable.tsx# Semantic screen reader board matrix (1-100)
-│   │   ├── AriaLiveAnnouncer.tsx   # Live region announcer for game events
-│   │   ├── Dialog.tsx              # Reusable accessible modal dialog with focus trap
-│   │   ├── Die.tsx                 # 3D animated CSS die
-│   │   ├── ErrorBoundary.tsx       # Top-level crash recovery (P3)
-│   │   ├── OnlineHudBar.tsx        # In-game multiplayer status bar & emoji bar
-│   │   ├── OnlineLobby.tsx         # Waiting room, swatches & invite link modal
-│   │   └── ThemeModal.tsx          # Visual board theme picker modal
+│   │   ├── AccessibleBoardTable.tsx # Screen-reader 100-tile matrix
+│   │   ├── AriaLiveAnnouncer.tsx    # Live region announcer for turns & events
+│   │   ├── Dialog.tsx               # Accessible modal dialog with focus trap
+│   │   ├── Die.tsx                  # 3D animated CSS die
+│   │   ├── ErrorBoundary.tsx        # Top-level crash recovery boundary
+│   │   ├── OnlineHudBar.tsx         # In-game multiplayer status & emoji bar
+│   │   ├── OnlineLobby.tsx          # Host/join lobby, room codes & invite links
+│   │   └── ThemeModal.tsx           # Board theme selector modal
 │   ├── game/
-│   │   ├── audio.ts                 # Procedural Web Audio sound synthesizer
-│   │   ├── constants.ts             # Board dimensions, ladders, snakes, colors
-│   │   ├── gameReducer.ts           # Pure game state reducer, roster + checkpoint actions
-│   │   ├── render.ts                # Canvas rendering engine for boards, snakes & themes
-│   │   ├── themes.ts                # 5 distinct visual theme definitions & palettes
-│   │   ├── useGame.ts               # Core 60fps board engine, turn state machine & roll authority
-│   │   └── network/
-│   │       ├── peerManager.ts      # Connection admission state machine & WebRTC transport
-│   │       ├── sessionStorage.ts   # Session persistence with cryptographic reconnect tokens
-│   │       ├── types.ts            # Network packet definitions, protocol version & size/rate limits
-│   │       ├── useMultiplayer.ts   # Host-authoritative multiplayer hook & state sync
-│   │       └── validation.ts       # Runtime packet validator & role permission engine
-│   ├── App.tsx                     # Main layout, menus, responsive HUD & aside
-│   ├── index.css                   # Theme CSS variables & custom animations
-│   └── main.tsx                    # React root mount, error boundary & global handlers
-├── index.html
-├── package.json
-├── tsconfig.json
-└── vite.config.ts                  # Vite + singlefile configuration
+│   │   ├── network/
+│   │   │   ├── peerManager.ts       # WebRTC transport, STUN/TURN config & admission state machine
+│   │   │   ├── sessionStorage.ts    # Session persistence & cryptographic reconnect tokens
+│   │   │   ├── types.ts             # Wire protocol types, limits & versioning
+│   │   │   ├── useMultiplayer.ts    # Host-authoritative multiplayer hook & state sync
+│   │   │   └── validation.ts        # Runtime packet schema & role validator
+│   │   ├── audio.ts                 # Procedural Web Audio synthesizer
+│   │   ├── constants.ts             # Board geometry, snakes, ladders & palettes
+│   │   ├── gameReducer.ts           # Pure game state reducer
+│   │   ├── render.ts                # 60 FPS HTML5 Canvas board & sprite renderer
+│   │   ├── themes.ts                # 5 visual board theme definitions
+│   │   └── useGame.ts               # Core game loop, animations & roll authority
+│   ├── utils/                       # Clipboard & class-name helpers
+│   ├── App.tsx                      # Main responsive layout, menus & HUD
+│   ├── index.css                    # Tailwind CSS v4 styles & animations
+│   └── main.tsx                     # Application entry point
+└── tests/                           # 16 unit, integration & accessibility test suites
 ```
 
 ---
 
+## 🤝 Contributing & Security
+
+- See [CONTRIBUTING.md](CONTRIBUTING.md) for architecture boundaries and development guidelines.
+- See [SECURITY.md](SECURITY.md) for the peer-to-peer threat model and vulnerability reporting instructions.
+
 ## 📜 License
-This project is open source and available under the [MIT License](LICENSE).
 
----
-
-## 🌐 Browser support
-
-Built against evergreen browsers with no transpiler-downlevel requirement
-beyond ES2020. Verified in CI logic (typecheck, lint, 185 tests) and manually in
-Chrome and Edge.
-
-| Browser | Status | Notes |
-|---|---|---|
-| Chrome / Edge (desktop + Android) | ✅ Supported | Primary target |
-| Firefox (desktop + Android) | ⚠️ Expected to work | Not manually verified |
-| Safari / iOS (16+) | ⚠️ Expected to work, **untested on device** | See caveats below |
-| Any browser without WebRTC | ❌ No online play | Solo and pass-and-play still work |
-
-Known caveats worth knowing about:
-
-- **Audio starts muted until first interaction.** Browsers block Web Audio
-  autoplay. Sound begins on the first tap or keypress, as required.
-- **`prefers-reduced-motion` is honoured.** Confetti showers, camera shake and
-  ambient drift are dropped; gameplay motion (hops, slides) is kept, because it
-  *is* the game.
-- **iOS Safari is the least-tested path.** The game is touch-first and uses only
-  broadly supported APIs, but it has not been verified on a physical device.
-  Treat any iOS-specific report as a genuine bug rather than an exotic edge case.
-- **Background tabs are throttled by the browser.** The heartbeat and the phase
-  watchdog both suspend while a tab is hidden and re-check on return, so a
-  backgrounded player is not falsely ejected — but a match genuinely progresses
-  only while the tab is focused.
-
----
-
-## 🤝 Contributing
-
-See [CONTRIBUTING.md](CONTRIBUTING.md) for the ground rules (the reducer is pure,
-`useGame` owns the clock, `useMultiplayer` owns the wire), and
-[SECURITY.md](SECURITY.md) for the threat model and how to report a
-vulnerability privately.
+Released under the [MIT License](LICENSE).
