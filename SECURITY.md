@@ -32,10 +32,11 @@ These are architectural, not bugs, and are documented rather than fixed:
 - **Signalling transits the public `0.peerjs.com` broker.** Room SDP and ICE
   candidates pass through a third party. There is no signalling server we
   operate, so we cannot offer end-to-end signalling privacy.
-- **Public STUN and TURN fallback.** When direct peer-to-peer STUN hole punching is
-  blocked by symmetric NAT / mobile CGNAT, encrypted WebRTC DTLS-SCTP packets
-  may be relayed through the configured TURN server (OpenRelay by default, or
-  custom TURN credentials via `VITE_TURN_*` / `snkladr_turn_config`).
+- **Automatic WebSocket relay & custom TURN fallback.** When direct peer-to-peer
+  STUN hole punching is blocked by symmetric NAT / 4G/5G mobile CGNAT,
+  `PeerManager` automatically falls back to relaying packets over the TLS-encrypted
+  `0.peerjs.com` WebSocket channel (or custom TURN servers configured via
+  `VITE_TURN_*` / `snkladr_turn_config`).
 - **Tokens are stored in plaintext `localStorage`.** Any script that executes in
   the page's origin can read them. This is inherent to a browser game with no
   backend; a token-holding server would be needed to do better.

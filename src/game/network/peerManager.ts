@@ -18,37 +18,146 @@ const PING_INTERVAL_MS = 3000;
 const HEARTBEAT_DEADLINE_MS = 9000;
 const CUSTOM_TURN_STORAGE_KEY = 'snkladr_turn_config';
 const ICE_CANDIDATE_POOL_SIZE = 4;
+const WS_RELAY_CONN_ID = 'snkladr_ws_relay';
+const WS_RELAY_SDP_MID = 'snkladr-pkt';
+const WS_RELAY_FALLBACK_MS = 2500;
+const WS_RELAY_SYN_RETRY_MS = 500;
+const WS_RELAY_MAX_SYN_RETRIES = 6;
 
 const DEFAULT_STUN_SERVERS: RTCIceServer[] = [
   { urls: 'stun:stun.l.google.com:19302' },
   { urls: 'stun:stun1.l.google.com:19302' },
   { urls: 'stun:global.stun.twilio.com:3478' },
   { urls: 'stun:stun.cloudflare.com:3478' },
-  { urls: 'stun:openrelay.metered.ca:80' },
 ];
 
-const DEFAULT_TURN_SERVERS: RTCIceServer[] = [
-  {
-    urls: 'turn:openrelay.metered.ca:80',
-    username: 'openrelayproject',
-    credential: 'openrelayproject',
-  },
-  {
-    urls: 'turn:openrelay.metered.ca:80?transport=tcp',
-    username: 'openrelayproject',
-    credential: 'openrelayproject',
-  },
-  {
-    urls: 'turn:openrelay.metered.ca:443',
-    username: 'openrelayproject',
-    credential: 'openrelayproject',
-  },
-  {
-    urls: 'turns:openrelay.metered.ca:443?transport=tcp',
-    username: 'openrelayproject',
-    credential: 'openrelayproject',
-  },
-];
+type WsRelayEnvelope =
+  | { t: 'SYN'; sid: string }
+  | { t: 'ACK'; sid: string }
+  | { t: 'DATA'; sid: string; d: unknown }
+  | { t: 'CLOSE'; sid: string };
+
+/**
+ * Virtual DataConnection backed by the PeerJS signaling WebSocket (`peer.socket`).
+ *
+ * When a player is on 5G/4G Mobile Data (Symmetric CGNAT) or behind a strict
+ * firewall and direct WebRTC UDP hole-punching cannot open a DataChannel within
+ * `WS_RELAY_FALLBACK_MS`, `PeerManager` seamlessly falls back to this WebSocket
+ * relay channel over `wss://0.peerjs.com:443`.
+ */
+export class WsRelayConnection {
+  public readonly peer: string;
+  public readonly sessionId: string;
+  public open = false;
+  public readonly isWsRelay = true;
+
+  private localPeer: Peer;
+  private callbacks: Record<string, ((...args: any[]) => void)[]> = {};
+  private closed = false;
+  private synTimer: ReturnType<typeof setInterval> | null = null;
+
+  constructor(remotePeerId: string, localPeer: Peer, sessionId: string, initiallyOpen = false) {
+    this.peer = remotePeerId;
+    this.localPeer = localPeer;
+    this.sessionId = sessionId;
+    this.open = initiallyOpen;
+  }
+
+  on(event: string, cb: (...args: any[]) => void) {
+    if (!this.callbacks[event]) this.callbacks[event] = [];
+    this.callbacks[event].push(cb);
+    return this;
+  }
+
+  private emit(event: string, ...args: any[]) {
+    const list = this.callbacks[event];
+    if (!list) return;
+    for (const cb of [...list]) {
+      cb(...args);
+    }
+  }
+
+  sendRawEnvelope(envelope: WsRelayEnvelope) {
+    const sock = (this.localPeer as any)?.socket;
+    if (!sock || typeof sock.send !== 'function') return;
+    try {
+      sock.send({
+        type: 'CANDIDATE',
+        dst: this.peer,
+        payload: {
+          connectionId: WS_RELAY_CONN_ID,
+          type: 'data',
+          candidate: {
+            candidate: JSON.stringify(envelope),
+            sdpMid: WS_RELAY_SDP_MID,
+            sdpMLineIndex: 0,
+          },
+        },
+      });
+    } catch {
+      // Ignore socket send error
+    }
+  }
+
+  startHandshake() {
+    if (this.closed || this.open) return;
+    let attempts = 0;
+    this.sendRawEnvelope({ t: 'SYN', sid: this.sessionId });
+    this.synTimer = setInterval(() => {
+      if (this.closed || this.open || attempts >= WS_RELAY_MAX_SYN_RETRIES) {
+        if (this.synTimer) {
+          clearInterval(this.synTimer);
+          this.synTimer = null;
+        }
+        return;
+      }
+      attempts += 1;
+      this.sendRawEnvelope({ t: 'SYN', sid: this.sessionId });
+    }, WS_RELAY_SYN_RETRY_MS);
+  }
+
+  _handleAck() {
+    if (this.closed) return;
+    if (this.synTimer) {
+      clearInterval(this.synTimer);
+      this.synTimer = null;
+    }
+    if (!this.open) {
+      this.open = true;
+      this.emit('open');
+    }
+  }
+
+  _handleData(data: unknown) {
+    if (this.closed || !this.open) return;
+    this.emit('data', data);
+  }
+
+  _handleRemoteClose() {
+    this.close(true);
+  }
+
+  send(data: any) {
+    if (this.closed || !this.open) {
+      throw new Error('WsRelayConnection is not open');
+    }
+    this.sendRawEnvelope({ t: 'DATA', sid: this.sessionId, d: data });
+  }
+
+  close(remoteInitiated = false) {
+    if (this.closed) return;
+    this.closed = true;
+    this.open = false;
+    if (this.synTimer) {
+      clearInterval(this.synTimer);
+      this.synTimer = null;
+    }
+    if (!remoteInitiated) {
+      this.sendRawEnvelope({ t: 'CLOSE', sid: this.sessionId });
+    }
+    this.emit('close');
+  }
+}
 
 function isValidIceServerEntry(entry: unknown): entry is RTCIceServer {
   if (!entry || typeof entry !== 'object') return false;
@@ -112,7 +221,7 @@ export function getIceServers(): RTCIceServer[] {
     // Ignore malformed localStorage TURN config
   }
 
-  return [...DEFAULT_STUN_SERVERS, ...customServers, ...DEFAULT_TURN_SERVERS];
+  return [...DEFAULT_STUN_SERVERS, ...customServers];
 }
 
 export function buildPeerConfig(): RTCConfiguration {
@@ -187,6 +296,7 @@ export class PeerManager {
   private pendingJoinResolve: (() => void) | null = null;
   private pendingJoinReject: ((err: Error) => void) | null = null;
   private pendingJoinTimer: ReturnType<typeof setTimeout> | null = null;
+  private wsFallbackTimer: ReturnType<typeof setTimeout> | null = null;
   private lastHostHeartbeat = 0;
 
   private onPacketListeners: Set<PacketHandler> = new Set();
@@ -339,6 +449,7 @@ export class PeerManager {
         });
 
         this.peer = peer;
+        this.installWsRelayInterceptor(peer, gen);
         this.attachLifecycleListeners();
 
         peer.on('open', () => {
@@ -355,6 +466,10 @@ export class PeerManager {
             } catch {
               // Ignore
             }
+            return;
+          }
+          const existing = this.connections.get(conn.peer);
+          if (existing && ((existing.conn as any).isWsRelay || existing.admissionState === 'joined')) {
             return;
           }
           this.handleIncomingConnection(conn);
@@ -448,6 +563,7 @@ export class PeerManager {
       });
 
       this.peer = peer;
+      this.installWsRelayInterceptor(peer, gen);
       this.attachLifecycleListeners();
 
       peer.on('open', () => {
@@ -456,121 +572,60 @@ export class PeerManager {
         const conn = peer.connect(hostPeerId, { reliable: true });
         this.hostConn = conn;
 
-        conn.on('open', () => {
+        const clearWsFallback = () => {
+          if (this.wsFallbackTimer) {
+            clearTimeout(this.wsFallbackTimer);
+            this.wsFallbackTimer = null;
+          }
+        };
+
+        const startWsRelayFallback = () => {
+          clearWsFallback();
           if (this.currentGeneration !== gen) return;
-          this.emitStatus('joining', 'Authenticating with host...');
-          const reqId = 'req_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 8);
+          if (!this.peer || this.hostConn !== conn || conn.open) return;
+          const sock = (this.peer as any).socket;
+          if (!sock || typeof sock.send !== 'function') return;
 
-          if (isReconnect) {
-            conn.send({
-              type: 'RECONNECT_REQUEST',
-              requestId: reqId,
-              roomCode: this.roomCode,
-              slotIndex: reconnectSlotIndex,
-              reconnectToken,
-              v: PROTOCOL_VERSION,
-            } as Packet);
-          } else {
-            conn.send({
-              type: 'JOIN_REQUEST',
-              requestId: reqId,
-              roomCode: this.roomCode,
-              name: this.myPlayerName,
-              colorId: this.myColorId,
-              v: PROTOCOL_VERSION,
-            } as Packet);
-          }
-          this.startPingMonitor();
-        });
+          const sid = 'ws_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 8);
+          const relayConn = new WsRelayConnection(hostPeerId, this.peer, sid, false);
+          this.hostConn = relayConn as unknown as DataConnection;
 
-        conn.on('data', (raw: any) => {
-          if (this.currentGeneration !== gen) return;
-          /* (P1) The guest validates what it receives.
-           *
-           * This handler used to forward the raw frame straight into the
-           * protocol layer, so *none* of the size, shape, enum or
-           * prototype-pollution guards applied to a guest: a hostile host (or
-           * anything that got itself onto the room's peer id) could push a
-           * multi-megabyte JSON blob, a 64 KB player name or a NaN-filled
-           * checkpoint into React state and the canvas renderer.
-           *
-           * (P0 FIX) Structural rejection is fatal, but a malformed *advisory*
-           * snapshot is not.
-           *
-           * The first version of this failed the whole packet on any
-           * validation error, which meant a single bad `gameState` field in a
-           * JOIN_ACCEPTED tore down the connection and left the guest staring
-           * at "Host sent an invalid packet: Invalid gameState snapshot" with
-           * no way to join. That is the wrong trade: `gameState` is only a
-           * convenience so a mid-match joiner can skip a few seconds of play -
-           * the authoritative board arrives on the next `SYNC_CHECKPOINT`
-           * regardless. So the snapshot is validated separately and, if it is
-           * bad, dropped while the rest of the packet is honoured. The guest
-           * joins, and resyncs one checkpoint later.
-           *
-           * Everything else (size cap, prototype pollution, enums, ranges on
-           * fields the engine dereferences) is still fail-closed.
-           */
-          const val = validatePacket(raw, { lenientGameState: true });
-          const droppedGameState = val.droppedGameStateField;
-          if (!val.valid || !val.packet) {
-            const reason = `Host sent an invalid packet: ${val.error}`;
-            this.emitStatus('error', reason);
-            this.abortPendingJoin(reason);
-            this.cleanup();
-            return;
-          }
-          if (!isHostAllowedPacket(val.packet.type)) {
-            // A host has no business sending client-shaped packets.
-            const reason = `Host sent a forbidden packet: ${val.packet.type}`;
-            this.emitStatus('error', reason);
-            this.abortPendingJoin(reason);
-            this.cleanup();
-            return;
+          try {
+            conn.close();
+          } catch {
+            // Ignore
           }
 
-          // The advisory snapshot was dropped by the validator; warn loudly
-          // with the offending field, then carry on without it.
-          if (droppedGameState) {
-            console.warn(
-              `[PeerManager] Host sent an unusable gameState snapshot (bad field: ${droppedGameState}); ` +
-                'joining without it - the board will resync on the next checkpoint.',
-            );
-          }
+          this.bindGuestConnection(
+            relayConn as unknown as DataConnection,
+            hostPeerId,
+            gen,
+            isReconnect,
+            reconnectSlotIndex,
+            reconnectToken,
+            clearWsFallback,
+          );
+          relayConn.startHandshake();
+        };
 
-          this.handlePacket(val.packet, hostPeerId);
-        });
-
-        conn.on('close', () => {
-          if (this.currentGeneration !== gen) return;
-          this.emitStatus('disconnected', 'Disconnected from host');
-          if (this.pendingJoinReject) {
-            if (this.pendingJoinTimer) {
-              clearTimeout(this.pendingJoinTimer);
-              this.pendingJoinTimer = null;
+        if ((peer as any).socket && typeof (peer as any).socket.send === 'function') {
+          this.wsFallbackTimer = setTimeout(startWsRelayFallback, WS_RELAY_FALLBACK_MS);
+          conn.on('iceStateChanged' as any, (state: string) => {
+            if (state === 'failed' || state === 'disconnected') {
+              startWsRelayFallback();
             }
-            const rej = this.pendingJoinReject;
-            this.pendingJoinResolve = null;
-            this.pendingJoinReject = null;
-            rej(new Error('Connection closed before admission'));
-          }
-          this.cleanup();
-        });
+          });
+        }
 
-        conn.on('error', (err) => {
-          if (this.currentGeneration !== gen) return;
-          this.emitStatus('error', err.message || 'Connection error to host');
-          if (this.pendingJoinReject) {
-            if (this.pendingJoinTimer) {
-              clearTimeout(this.pendingJoinTimer);
-              this.pendingJoinTimer = null;
-            }
-            const rej = this.pendingJoinReject;
-            this.pendingJoinResolve = null;
-            this.pendingJoinReject = null;
-            rej(err);
-          }
-        });
+        this.bindGuestConnection(
+          conn,
+          hostPeerId,
+          gen,
+          isReconnect,
+          reconnectSlotIndex,
+          reconnectToken,
+          clearWsFallback,
+        );
       });
 
       peer.on('disconnected', () => {
@@ -604,6 +659,173 @@ export class PeerManager {
         }
       });
     });
+  }
+
+  private bindGuestConnection(
+    conn: DataConnection,
+    hostPeerId: string,
+    gen: number,
+    isReconnect: boolean,
+    reconnectSlotIndex: number,
+    reconnectToken: string,
+    onOpenCallback?: () => void,
+  ) {
+    conn.on('open', () => {
+      if (this.currentGeneration !== gen || this.hostConn !== conn) return;
+      onOpenCallback?.();
+      this.emitStatus('joining', 'Authenticating with host...');
+      const reqId = 'req_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 8);
+
+      if (isReconnect) {
+        conn.send({
+          type: 'RECONNECT_REQUEST',
+          requestId: reqId,
+          roomCode: this.roomCode,
+          slotIndex: reconnectSlotIndex,
+          reconnectToken,
+          v: PROTOCOL_VERSION,
+        } as Packet);
+      } else {
+        conn.send({
+          type: 'JOIN_REQUEST',
+          requestId: reqId,
+          roomCode: this.roomCode,
+          name: this.myPlayerName,
+          colorId: this.myColorId,
+          v: PROTOCOL_VERSION,
+        } as Packet);
+      }
+      this.startPingMonitor();
+    });
+
+    conn.on('data', (raw: any) => {
+      if (this.currentGeneration !== gen || this.hostConn !== conn) return;
+      const val = validatePacket(raw, { lenientGameState: true });
+      const droppedGameState = val.droppedGameStateField;
+      if (!val.valid || !val.packet) {
+        const reason = `Host sent an invalid packet: ${val.error}`;
+        this.emitStatus('error', reason);
+        this.abortPendingJoin(reason);
+        this.cleanup();
+        return;
+      }
+      if (!isHostAllowedPacket(val.packet.type)) {
+        const reason = `Host sent a forbidden packet: ${val.packet.type}`;
+        this.emitStatus('error', reason);
+        this.abortPendingJoin(reason);
+        this.cleanup();
+        return;
+      }
+
+      if (droppedGameState) {
+        console.warn(
+          `[PeerManager] Host sent an unusable gameState snapshot (bad field: ${droppedGameState}); ` +
+            'joining without it - the board will resync on the next checkpoint.',
+        );
+      }
+
+      this.handlePacket(val.packet, hostPeerId);
+    });
+
+    conn.on('close', () => {
+      if (this.currentGeneration !== gen || this.hostConn !== conn) return;
+      this.emitStatus('disconnected', 'Disconnected from host');
+      if (this.pendingJoinReject) {
+        if (this.pendingJoinTimer) {
+          clearTimeout(this.pendingJoinTimer);
+          this.pendingJoinTimer = null;
+        }
+        const rej = this.pendingJoinReject;
+        this.pendingJoinResolve = null;
+        this.pendingJoinReject = null;
+        rej(new Error('Connection closed before admission'));
+      }
+      this.cleanup();
+    });
+
+    conn.on('error', (err) => {
+      if (this.currentGeneration !== gen || this.hostConn !== conn) return;
+      this.emitStatus('error', err.message || 'Connection error to host');
+      if (this.pendingJoinReject) {
+        if (this.pendingJoinTimer) {
+          clearTimeout(this.pendingJoinTimer);
+          this.pendingJoinTimer = null;
+        }
+        const rej = this.pendingJoinReject;
+        this.pendingJoinResolve = null;
+        this.pendingJoinReject = null;
+        rej(err);
+      }
+    });
+  }
+
+  private installWsRelayInterceptor(peer: Peer, gen: number) {
+    const rawPeer = peer as any;
+    if (typeof rawPeer._handleMessage !== 'function') return;
+    if (rawPeer.__snkladrRelayInstalled) return;
+    rawPeer.__snkladrRelayInstalled = true;
+
+    const origHandleMessage = rawPeer._handleMessage.bind(peer);
+    rawPeer._handleMessage = (message: any) => {
+      if (
+        message?.type === 'CANDIDATE' &&
+        message?.payload?.connectionId === WS_RELAY_CONN_ID
+      ) {
+        this.handleWsRelayMessage(message, gen);
+        return;
+      }
+      return origHandleMessage(message);
+    };
+  }
+
+  private handleWsRelayMessage(message: any, gen: number) {
+    if (this.currentGeneration !== gen || !this.peer) return;
+    const fromPeerId = message?.src;
+    const rawCandidate = message?.payload?.candidate?.candidate;
+    if (typeof fromPeerId !== 'string' || typeof rawCandidate !== 'string') return;
+
+    let env: WsRelayEnvelope;
+    try {
+      env = JSON.parse(rawCandidate) as WsRelayEnvelope;
+    } catch {
+      return;
+    }
+    if (!env || typeof env !== 'object' || typeof env.sid !== 'string') return;
+
+    if (this.isHost) {
+      if (env.t === 'SYN') {
+        const existing = this.connections.get(fromPeerId)?.conn as unknown as WsRelayConnection | undefined;
+        if (existing && existing.isWsRelay && existing.sessionId === env.sid) {
+          existing.sendRawEnvelope({ t: 'ACK', sid: env.sid });
+          return;
+        }
+        const relayConn = new WsRelayConnection(fromPeerId, this.peer, env.sid, true);
+        this.handleIncomingConnection(relayConn as unknown as DataConnection);
+        relayConn.sendRawEnvelope({ t: 'ACK', sid: env.sid });
+        return;
+      }
+
+      const active = this.connections.get(fromPeerId)?.conn as unknown as WsRelayConnection | undefined;
+      if (!active || !active.isWsRelay || active.sessionId !== env.sid) return;
+
+      if (env.t === 'DATA') {
+        active._handleData(env.d);
+      } else if (env.t === 'CLOSE') {
+        active._handleRemoteClose();
+      }
+    } else {
+      const active = this.hostConn as unknown as WsRelayConnection | null;
+      if (!active || !active.isWsRelay || active.peer !== fromPeerId || active.sessionId !== env.sid) {
+        return;
+      }
+      if (env.t === 'ACK') {
+        active._handleAck();
+      } else if (env.t === 'DATA') {
+        active._handleData(env.d);
+      } else if (env.t === 'CLOSE') {
+        active._handleRemoteClose();
+      }
+    }
   }
 
   /* ---------- Teardown ---------- */
@@ -654,7 +876,7 @@ export class PeerManager {
     const timer = setTimeout(() => {
       if (this.currentGeneration !== gen) return;
       const mc = this.connections.get(peerId);
-      if (mc && mc.admissionState === 'pending') {
+      if (mc && mc.conn === conn && mc.admissionState === 'pending') {
         this.closeConnection(peerId, 'Timed out in pending admission state');
       }
     }, PENDING_TIMEOUT_MS);
@@ -700,6 +922,7 @@ export class PeerManager {
 
     conn.on('data', (raw: any) => {
       if (this.currentGeneration !== gen) return;
+      if (this.connections.get(peerId)?.conn !== conn) return;
 
       // 1. Validate payload structure & schema
       const val = validatePacket(raw);
@@ -773,11 +996,13 @@ export class PeerManager {
 
     conn.on('close', () => {
       if (this.currentGeneration !== gen) return;
+      if (this.connections.get(peerId)?.conn !== conn) return;
       this.closeConnection(peerId, 'Peer closed connection');
     });
 
     conn.on('error', () => {
       if (this.currentGeneration !== gen) return;
+      if (this.connections.get(peerId)?.conn !== conn) return;
       this.closeConnection(peerId, 'Peer connection error');
     });
   }
@@ -1083,6 +1308,10 @@ export class PeerManager {
     if (this.pendingJoinTimer) {
       clearTimeout(this.pendingJoinTimer);
       this.pendingJoinTimer = null;
+    }
+    if (this.wsFallbackTimer) {
+      clearTimeout(this.wsFallbackTimer);
+      this.wsFallbackTimer = null;
     }
     if (this.pendingJoinReject) {
       const rej = this.pendingJoinReject;

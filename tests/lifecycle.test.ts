@@ -694,32 +694,16 @@ describe('Connection & Room Lifecycle Handling', () => {
   /* 11. Remote Mobile Data / TURN ICE Configuration & Tab Resume       */
   /* ------------------------------------------------------------------ */
   describe('11. Remote Mobile Data / TURN ICE Configuration & Tab Resume', () => {
-    it('configures both STUN and TURN relay servers (UDP, TCP, and TLS 443) for createRoom and joinRoom', () => {
+    it('configures clean STUN servers without dead blackholed openrelay.metered.ca URLs', () => {
       const iceServers = getIceServers();
       const urls = iceServers.flatMap((s) => (Array.isArray(s.urls) ? s.urls : [s.urls]));
 
       // Must include STUN servers
       expect(urls.some((u) => u.startsWith('stun:'))).toBe(true);
+      // Must NOT include the DNS-blackholed openrelay.metered.ca (192.0.2.1)
+      expect(urls.some((u) => u.includes('openrelay.metered.ca'))).toBe(false);
 
-      // Must include TURN relay servers (UDP, TCP, and TLS on 443) for mobile CGNAT traversal
-      expect(urls.some((u) => u.startsWith('turn:') && !u.includes('transport=tcp'))).toBe(true);
-      expect(urls.some((u) => u.startsWith('turn:') && u.includes('transport=tcp'))).toBe(true);
-      expect(urls.some((u) => u.startsWith('turns:') && u.includes('443'))).toBe(true);
-
-      const turnServers = iceServers.filter((s) =>
-        (Array.isArray(s.urls) ? s.urls : [s.urls]).some(
-          (u) => u.startsWith('turn:') || u.startsWith('turns:'),
-        ),
-      );
-      expect(turnServers.length).toBeGreaterThan(0);
-      for (const ts of turnServers) {
-        expect(typeof ts.username).toBe('string');
-        expect(ts.username!.length).toBeGreaterThan(0);
-        expect(typeof ts.credential).toBe('string');
-        expect(ts.credential!.length).toBeGreaterThan(0);
-      }
-
-      // Verify Peer instances receive the TURN config and iceCandidatePoolSize
+      // Verify Peer instances receive the config and iceCandidatePoolSize
       const hostPm = new PeerManager();
       hostPm.createRoom('MOBILE', 'Host', 0);
       const hostPeer = (hostPm as any).peer;
@@ -759,10 +743,99 @@ describe('Connection & Room Lifecycle Handling', () => {
 
       // Malformed JSON or invalid entry must gracefully fall back to defaults without throwing
       localStorage.setItem('snkladr_turn_config', '{broken-json');
-      expect(getIceServers().length).toBeGreaterThanOrEqual(9);
+      expect(getIceServers().length).toBeGreaterThanOrEqual(4);
 
       localStorage.setItem('snkladr_turn_config', JSON.stringify([{ urls: '' }, { invalid: true }]));
-      expect(getIceServers().length).toBeGreaterThanOrEqual(9);
+      expect(getIceServers().length).toBeGreaterThanOrEqual(4);
+    });
+
+    it('automatically falls back to PeerJS WebSocket relay when 5G CGNAT blocks WebRTC DataChannel', async () => {
+      const hostPm = new PeerManager();
+      const guestPm = new PeerManager();
+
+      // Wire a simulated PeerJS signaling WebSocket broker between hostPeer and guestPeer
+      const brokerPeers: Record<string, any> = {};
+      function attachBrokerSocket(peer: any) {
+        brokerPeers[peer.id] = peer;
+        peer._handleMessage = peer._handleMessage || (() => {});
+        peer.socket = {
+          send: (msg: any) => {
+            const target = brokerPeers[msg.dst];
+            if (target && typeof target._handleMessage === 'function') {
+              target._handleMessage({ ...msg, src: peer.id });
+            }
+          },
+        };
+      }
+
+      const createPromise2 = hostPm.createRoom('FIVEG1', 'HostPC', 0);
+      const hostPeer2 = (hostPm as any).peer;
+      attachBrokerSocket(hostPeer2);
+      // Re-install PeerManager's interceptor after attaching _handleMessage
+      (hostPm as any).installWsRelayInterceptor(hostPeer2, hostPm.getGeneration());
+      hostPeer2._trigger('open');
+      await createPromise2;
+
+      const hostReceivedPackets: Packet[] = [];
+      hostPm.onPacket((pkt, fromPeerId) => {
+        hostReceivedPackets.push(pkt);
+        if (pkt.type === 'JOIN_REQUEST' && fromPeerId) {
+          hostPm.setAdmissionState(fromPeerId, 'joined', 1);
+          hostPm.sendToPeer(fromPeerId, {
+            type: 'JOIN_ACCEPTED',
+            requestId: pkt.requestId,
+            slotIndex: 1,
+            reconnectToken: 'tok_5g_valid_reconnect_token_1234',
+            roomCode: 'FIVEG1',
+            speed: 'normal',
+            winRule: 'exact',
+            players: [
+              {
+                playerId: 'p_0',
+                peerId: 'host',
+                name: 'HostPC',
+                slotIndex: 0,
+                colorId: 0,
+                isHost: true,
+                isCpu: false,
+                isReady: true,
+              },
+              {
+                playerId: 'p_1',
+                peerId: fromPeerId,
+                name: 'Mobile5G',
+                slotIndex: 1,
+                colorId: 1,
+                isHost: false,
+                isCpu: false,
+                isReady: true,
+              },
+            ],
+            stateVersion: 1,
+            turnId: 1,
+            maxPlayers: 4,
+            v: PROTOCOL_VERSION,
+          });
+        }
+      });
+
+      // Guest attempts to join over 5G where WebRTC DataChannel NEVER opens
+      const joinPromise = guestPm.joinRoom('FIVEG1', 'Mobile5G', 1);
+      const guestPeer = (guestPm as any).peer;
+      attachBrokerSocket(guestPeer);
+      (guestPm as any).installWsRelayInterceptor(guestPeer, guestPm.getGeneration());
+      guestPeer._trigger('open');
+
+      // Note: we deliberately do NOT call _open() on the WebRTC MockDataConnection!
+      // Instead, advance timer by 2500ms so the WebSocket relay fallback triggers automatically.
+      vi.advanceTimersByTime(2600);
+
+      await expect(joinPromise).resolves.toBeUndefined();
+      expect(guestPm.getSlotIndex()).toBe(1);
+      expect(hostReceivedPackets.some((p) => p.type === 'JOIN_REQUEST')).toBe(true);
+
+      hostPm.cleanup();
+      guestPm.cleanup();
     });
 
     it('re-anchors heartbeat clocks, sends immediate PING, and reconnects signaling on tab resume or online', () => {

@@ -1,7 +1,7 @@
 # 🎲 Snake & Ladder
 
 [![Live Demo](https://img.shields.io/badge/Play_Live-GitHub_Pages-10b981?style=for-the-badge&logo=googlechrome&logoColor=white)](https://ahmedalmagraby.github.io/SnakeLadder/)
-[![Tests](https://img.shields.io/badge/Tests-229_Passing-22c55e?style=for-the-badge&logo=vitest&logoColor=white)](tests/)
+[![Tests](https://img.shields.io/badge/Tests-230_Passing-22c55e?style=for-the-badge&logo=vitest&logoColor=white)](tests/)
 [![Security Audit](https://img.shields.io/badge/Audit-0_Vulnerabilities-22c55e?style=for-the-badge)](https://github.com/ahmedalmagraby/SnakeLadder/actions)
 [![React 19](https://img.shields.io/badge/React_19-20232A?style=for-the-badge&logo=react&logoColor=61DAFB)](https://react.dev/)
 [![TypeScript 5.9](https://img.shields.io/badge/TypeScript_5.9-3178C6?style=for-the-badge&logo=typescript&logoColor=white)](https://www.typescriptlang.org/)
@@ -19,7 +19,7 @@ A fast, single-bundle web remake of **Snake & Ladder** built with **React 19**, 
 | Category | Highlights |
 | :--- | :--- |
 | **🎮 Game Modes** | **Solo vs CPU** (1–3 bots), **Pass & Play** (2–4 players on one screen), and **Online Multiplayer** (up to 4 players via 6-character room codes or invite links). |
-| **🌐 Online Play** | Host-authoritative P2P protocol over WebRTC DataChannels with **STUN + TURN relay fallback** (UDP, TCP, and TLS 443) for home Wi-Fi and 4G/5G mobile data. |
+| **🌐 Online Play** | Host-authoritative P2P protocol over WebRTC DataChannels with **automatic WebSocket relay fallback** (`wss://0.peerjs.com:443`) and custom TURN support so rooms work across Wi-Fi, 4G/5G mobile data (CGNAT), and strict firewalls. |
 | **🎨 5 Visual Themes** | *Jungle Safari*, *Cyber Neon*, *Desert Pharaoh*, *Cosmic Galaxy*, and *Candy Kingdom*—each with custom Canvas board art, animated snakes, and ladders. |
 | **🔊 Procedural Audio** | Real-time synthesized sound effects (dice rattle, tile hops, ladder chimes, snake slides, and victory fanfare) built on the Web Audio API with zero external audio files. |
 | **📱 Mobile-First UI** | Responsive portrait & zero-scroll landscape layouts, safe-area support, 44×44px touch targets, and tap-to-inspect board squares. |
@@ -31,10 +31,10 @@ A fast, single-bundle web remake of **Snake & Ladder** built with **React 19**, 
 
 Online rooms run directly between browsers using PeerJS and WebRTC DataChannels, backed by a hardened host-authoritative protocol:
 
-- **Cross-Network Connectivity (STUN + TURN):**
-  - **Same Wi-Fi / LAN & Home Broadband:** Connects directly peer-to-peer via STUN hole punching.
-  - **Mobile Data (4G/5G CGNAT) & Strict Firewalls:** Automatically falls back to TURN relay servers over UDP, TCP, and TLS port `443` when symmetric NAT blocks direct UDP connections.
-  - **Custom TURN Support:** Override or add private TURN credentials at build time via `VITE_TURN_URLS`, `VITE_TURN_USERNAME`, and `VITE_TURN_CREDENTIAL`, or at runtime via `localStorage.setItem('snkladr_turn_config', JSON.stringify({ urls, username, credential }))`.
+- **Cross-Network Connectivity (WebRTC P2P + Automatic WebSocket Relay Fallback):**
+  - **Same Wi-Fi / LAN & Home Broadband:** Connects directly peer-to-peer via WebRTC DataChannels and STUN hole punching.
+  - **Mobile Data (4G/5G CGNAT) & Strict Firewalls:** If symmetric NAT or carrier firewalls block direct UDP WebRTC DataChannels for 2.5 seconds, `PeerManager` automatically falls back to relaying packets over the encrypted PeerJS WebSocket channel (`wss://0.peerjs.com:443`)—requiring zero external accounts or API keys.
+  - **Custom TURN Support:** Optionally supply private TURN credentials at build time via `VITE_TURN_URLS`, `VITE_TURN_USERNAME`, and `VITE_TURN_CREDENTIAL`, or at runtime via `localStorage.setItem('snkladr_turn_config', JSON.stringify({ urls, username, credential }))`.
 - **Reserved Seats & Reconnection:**
   - Joining guests receive a 32-character cryptographic reconnect token stored in `localStorage`.
   - If a player briefly switches mobile apps (e.g., sharing the room code on WhatsApp) or drops connection, their seat is **held and reserved for them**—never handed over to an AI bot.
@@ -91,7 +91,7 @@ npm run dev -- --host
 | Command | Description |
 | :--- | :--- |
 | `npm run dev` | Start Vite development server with HMR |
-| `npm test` | Run all 16 Vitest test suites (229 tests) |
+| `npm test` | Run all 16 Vitest test suites (230 tests) |
 | `npm run typecheck` | Run TypeScript compiler checks (`tsc --noEmit`) |
 | `npm run lint` | Run ESLint across the codebase |
 | `npm run check:configs` | Verify `package.json` and `tsconfig.json` have no duplicate keys |
