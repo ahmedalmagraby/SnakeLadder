@@ -68,8 +68,17 @@ describe('Session Persistence & Invite URL', () => {
     speed: 'fast',
     winRule: 'exact',
     maxPlayers: 4,
-    roster: [
-      { id: 'p0', slotIndex: 0, name: 'Player 1', colorId: 0, isCpu: false, isHost: true },
+    players: [
+      {
+        playerId: 'p0',
+        peerId: 'host',
+        slotIndex: 0,
+        name: 'Player 1',
+        colorId: 0,
+        isCpu: false,
+        isHost: true,
+        isReady: true,
+      },
     ],
     updatedAt: Date.now(),
   });

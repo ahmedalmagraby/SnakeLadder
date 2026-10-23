@@ -1493,9 +1493,17 @@ export default function App() {
     game.backToMenu();
   }, [clearReconnectTimeout, multiplayer, game]);
 
+  const handleRequestMenu = useCallback(() => {
+    if (hud.mode === 'playing') {
+      game.requestMenu();
+    } else {
+      handleLeaveOnline();
+    }
+  }, [hud.mode, game, handleLeaveOnline]);
+
   const handleConfirm = useCallback(() => {
     clearReconnectTimeout();
-    if (game.confirmAction === 'menu' && multiplayer.isOnline) {
+    if (game.confirmAction === 'menu' && (multiplayer.isOnline || multiplayer.isOnlineMatch)) {
       multiplayer.leaveRoom();
     }
     game.confirmPending();
@@ -1807,7 +1815,7 @@ export default function App() {
                 <IconBtn onClick={handleRestart} label="Restart Match (R)" size="sm">
                   <RestartIcon className="w-3.5 h-3.5" />
                 </IconBtn>
-                <IconBtn onClick={game.requestMenu} label="Main Menu (Esc)" size="sm">
+                <IconBtn onClick={handleRequestMenu} label="Main Menu (Esc)" size="sm">
                   <HomeIcon className="w-3.5 h-3.5" />
                 </IconBtn>
               </div>
@@ -1848,10 +1856,19 @@ export default function App() {
                   roomCode={multiplayer.roomCode}
                   mySlot={multiplayer.mySlot}
                   currentTurn={hud.turn}
+                  isHost={multiplayer.isHost}
                   players={multiplayer.players}
                   ping={multiplayer.ping}
                   onSendEmote={multiplayer.broadcastEmote}
-                  onLeaveRoom={handleLeaveOnline}
+                  onLeaveRoom={handleRequestMenu}
+                  onCpuTakeover={(slotIdx) => {
+                    multiplayer.convertDisconnectedToCpu(slotIdx);
+                    game.showToast(
+                      'BOT TAKEOVER',
+                      'CPU bot is filling in until the player rejoins.',
+                      'cyan',
+                    );
+                  }}
                 />
               )}
 
@@ -2051,7 +2068,7 @@ export default function App() {
                     <IconBtn onClick={handleRestart} label="Restart Match (R)">
                       <RestartIcon className="w-4 h-4" />
                     </IconBtn>
-                    <IconBtn onClick={game.requestMenu} label="Main Menu (Esc)">
+                    <IconBtn onClick={handleRequestMenu} label="Main Menu (Esc)">
                       <HomeIcon className="w-4 h-4" />
                     </IconBtn>
                   </div>

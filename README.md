@@ -1,7 +1,7 @@
 # 🎲 Snake & Ladder
 
 [![Live Demo](https://img.shields.io/badge/Play_Live-GitHub_Pages-10b981?style=for-the-badge&logo=googlechrome&logoColor=white)](https://ahmedalmagraby.github.io/SnakeLadder/)
-[![Tests](https://img.shields.io/badge/Tests-230_Passing-22c55e?style=for-the-badge&logo=vitest&logoColor=white)](tests/)
+[![Tests](https://img.shields.io/badge/Tests-246_Passing-22c55e?style=for-the-badge&logo=vitest&logoColor=white)](tests/)
 [![Security Audit](https://img.shields.io/badge/Audit-0_Vulnerabilities-22c55e?style=for-the-badge)](https://github.com/ahmedalmagraby/SnakeLadder/actions)
 [![React 19](https://img.shields.io/badge/React_19-20232A?style=for-the-badge&logo=react&logoColor=61DAFB)](https://react.dev/)
 [![TypeScript 5.9](https://img.shields.io/badge/TypeScript_5.9-3178C6?style=for-the-badge&logo=typescript&logoColor=white)](https://www.typescriptlang.org/)
@@ -91,7 +91,7 @@ npm run dev -- --host
 | Command | Description |
 | :--- | :--- |
 | `npm run dev` | Start Vite development server with HMR |
-| `npm test` | Run all 16 Vitest test suites (230 tests) |
+| `npm test` | Run all 17 Vitest test suites (246 tests) |
 | `npm run typecheck` | Run TypeScript compiler checks (`tsc --noEmit`) |
 | `npm run lint` | Run ESLint across the codebase |
 | `npm run check:configs` | Verify `package.json` and `tsconfig.json` have no duplicate keys |
@@ -135,7 +135,7 @@ SnakeLadder/
 │   ├── App.tsx                      # Main responsive layout, menus & HUD
 │   ├── index.css                    # Tailwind CSS v4 styles & animations
 │   └── main.tsx                     # Application entry point
-└── tests/                           # 16 unit, integration & accessibility test suites
+└── tests/                           # 17 unit, integration & accessibility test suites
 ```
 
 ---

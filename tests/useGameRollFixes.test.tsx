@@ -67,7 +67,7 @@ describe('Regression 5: authoritative roll resolves the SLOT, not the dense inde
 });
 
 describe('Regression 6: guest does not spam the host with roll requests', () => {
-  function mountGuest(onLocalRoll: ReturnType<typeof vi.fn>) {
+  function mountGuest(onLocalRoll: (roll: number, player: number) => void) {
     return renderHook(() =>
       useGame({
         isOnline: true,

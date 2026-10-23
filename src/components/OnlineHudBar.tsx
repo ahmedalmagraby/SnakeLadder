@@ -7,10 +7,12 @@ interface OnlineHudBarProps {
   roomCode: string;
   mySlot: number;
   currentTurn: number;
+  isHost?: boolean;
   players: NetworkPlayer[];
   ping: number;
   onSendEmote: (emoji: string) => void;
   onLeaveRoom: () => void;
+  onCpuTakeover?: (slotIndex: number) => void;
 }
 
 const REACTION_EMOJIS = ['🐍', '🪜', '🎲', '👑', '😱', '😂', '🔥', '🎯'];
@@ -37,15 +39,22 @@ export default function OnlineHudBar({
   roomCode,
   mySlot,
   currentTurn,
+  isHost = false,
   players,
   ping,
   onSendEmote,
   onLeaveRoom,
+  onCpuTakeover,
 }: OnlineHudBarProps) {
   const [copied, setCopied] = useState(false);
   const copyTimerRef = useRef<number | null>(null);
   const activePlayer = players[currentTurn];
   const isMyTurn = activePlayer ? activePlayer.slotIndex === mySlot : currentTurn === mySlot;
+  const disconnectedGuest = isHost
+    ? activePlayer && !activePlayer.isHost && !activePlayer.isCpu && !activePlayer.isReady
+      ? activePlayer
+      : players.find((p) => !p.isHost && !p.isCpu && !p.isReady)
+    : undefined;
 
   useEffect(() => {
     return () => {
@@ -100,7 +109,7 @@ export default function OnlineHudBar({
       </div>
 
       {/* Center: Real-Time Turn Status */}
-      <div className="flex-1 min-w-0 flex items-center justify-center px-1">
+      <div className="flex-1 min-w-0 flex items-center justify-center gap-1.5 px-1">
         {isMyTurn ? (
           <div className="flex items-center gap-1 px-2.5 py-0.5 rounded-full bg-amber-400/20 border border-amber-400 text-amber-300 text-[11px] font-black animate-pulse truncate shadow-[0_0_12px_var(--theme-glow-strong)]">
             <span className="w-1.5 h-1.5 rounded-full bg-amber-400 shrink-0" aria-hidden="true" />
@@ -108,8 +117,21 @@ export default function OnlineHudBar({
           </div>
         ) : (
           <div className="text-[11px] font-bold text-emerald-200/80 truncate text-center">
-            {activePlayer?.name || `Player ${(activePlayer?.slotIndex ?? currentTurn) + 1}`}&apos;s turn...
+            {activePlayer && !activePlayer.isCpu && !activePlayer.isReady
+              ? `${activePlayer.name} disconnected...`
+              : `${activePlayer?.name || `Player ${(activePlayer?.slotIndex ?? currentTurn) + 1}`}'s turn...`}
           </div>
+        )}
+        {disconnectedGuest && onCpuTakeover && (
+          <button
+            type="button"
+            onClick={() => onCpuTakeover(disconnectedGuest.slotIndex)}
+            aria-label={`Let CPU play for ${disconnectedGuest.name}`}
+            title={`Let CPU bot take over for ${disconnectedGuest.name} (they can still rejoin later)`}
+            className="min-h-[30px] px-2 py-0.5 rounded-lg bg-amber-400 text-stone-950 hover:bg-amber-300 text-[10px] font-black tracking-wide transition-all cursor-pointer shrink-0 shadow"
+          >
+            🤖 Bot Takeover
+          </button>
         )}
       </div>
 

@@ -21,8 +21,8 @@ import {
   isValidGameStateSnapshot,
 } from '../src/game/network/validation';
 import { PROTOCOL_VERSION as PV } from '../src/game/network/types';
-import { gameReducer, initialGameState } from '../src/game/gameReducer';
-import type { CheckpointData, NetworkPlayer } from '../src/game/network/types';
+import { gameReducer, initialGameState, type CheckpointData } from '../src/game/gameReducer';
+import type { NetworkPlayer } from '../src/game/network/types';
 
 const goodSnapshot = {
   mode: 'playing' as const,

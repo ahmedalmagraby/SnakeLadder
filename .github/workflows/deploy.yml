@@ -71,7 +71,7 @@ jobs:
 
       - name: Verify build output is complete
         run: |
-          for f in dist/index.html dist/favicon.svg dist/manifest.webmanifest dist/og-image.svg; do
+          for f in dist/index.html dist/favicon.svg dist/manifest.webmanifest dist/og-image.svg dist/og-image.png dist/apple-touch-icon.png dist/icon-192.png dist/icon-512.png; do
             test -s "$f" || { echo "::error::missing or empty: $f"; exit 1; }
           done
           # The single-file plugin must have inlined the JS and CSS.

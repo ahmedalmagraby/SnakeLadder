@@ -20,7 +20,7 @@ import {
   squareFromPoint,
   getSnakeSlidePoint,
 } from './constants';
-import { sfx } from './audio';
+import { getSavedMuted, saveMuted, sfx } from './audio';
 import { THEMES, getSavedTheme, saveTheme, type BoardTheme, type ThemeId } from './themes';
 import {
   drawActivePlayerEdge,
@@ -225,7 +225,11 @@ export function useGame(options: UseGameOptions = {}) {
 
   const [toast, setToast] = useState<Toast | null>(null);
   const [log, setLog] = useState<LogEntry[]>([]);
-  const [muted, setMuted] = useState(false);
+  const [muted, setMuted] = useState<boolean>(() => {
+    const saved = getSavedMuted();
+    sfx.enabled = !saved;
+    return saved;
+  });
   // Guest-only: true between sending ROLL_REQUEST and receiving the host's
   // authoritative ROLL_RESULT. Prevents spamming the host with roll requests.
   const [awaitingRemoteRoll, setAwaitingRemoteRoll] = useState(false);
@@ -493,8 +497,10 @@ export function useGame(options: UseGameOptions = {}) {
 
   const toggleMute = useCallback(() => {
     setMuted((m) => {
-      sfx.enabled = m;
-      return !m;
+      const nextMuted = !m;
+      sfx.enabled = !nextMuted;
+      saveMuted(nextMuted);
+      return nextMuted;
     });
   }, []);
 

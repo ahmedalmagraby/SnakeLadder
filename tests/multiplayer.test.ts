@@ -251,6 +251,7 @@ describe('5. PeerManager Admission State Machine & Unauthenticated Listeners', (
       speed: 'normal',
       winRule: 'exact',
       stateVersion: 2,
+      maxPlayers: 4,
     };
 
     pm.broadcast(updatePacket);
@@ -270,6 +271,7 @@ describe('5. PeerManager Admission State Machine & Unauthenticated Listeners', (
       speed: 'normal',
       winRule: 'exact',
       stateVersion: 3,
+      maxPlayers: 4,
     };
 
     pm.broadcast(updatePacket);
@@ -550,9 +552,9 @@ describe('8. Player Disconnect/Reconnect & AI Mark Removal', () => {
         stateVersion: 10,
       };
 
-      const result = validatePacket(winCheckpoint, 'guest', false);
+      const result = validatePacket(winCheckpoint);
       expect(result.valid).toBe(true);
-      if (result.valid) {
+      if (result.valid && result.packet) {
         expect(result.packet.type).toBe('SYNC_CHECKPOINT');
         if (result.packet.type === 'SYNC_CHECKPOINT') {
           expect(result.packet.winner).toBe(0);
@@ -577,7 +579,7 @@ describe('8. Player Disconnect/Reconnect & AI Mark Removal', () => {
         turnId: 3,
         stateVersion: 8,
       };
-      const result = validatePacket(invalidCheckpoint, 'guest', false);
+      const result = validatePacket(invalidCheckpoint);
       expect(result.valid).toBe(false);
       expect(result.error).toMatch(/Invalid mode in SYNC_CHECKPOINT/);
     });
@@ -614,7 +616,7 @@ describe('8. Player Disconnect/Reconnect & AI Mark Removal', () => {
 
     it('passes turn when rolling a non-6 on square 99 with exact rule', () => {
       const pos = 99;
-      const v = 3;
+      const v: number = 3;
       const winRule = 'exact';
       let turn = 1;
       const sixesHit = [0, 0];
@@ -688,6 +690,7 @@ describe('8. Player Disconnect/Reconnect & AI Mark Removal', () => {
         turnId: 3,
         stateVersion: 7,
         gameState: {
+          mode: 'playing' as const,
           pos: [45, 30],
           turn: 1,
           phase: 'idle',

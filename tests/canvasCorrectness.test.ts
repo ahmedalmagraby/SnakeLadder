@@ -195,7 +195,7 @@ describe('Render Math & Helpers', () => {
     });
     expect(calls).toContain('fillText');
 
-    drawTargetHighlight(ctx, 14, 1.2, '#f59e0b');
+    drawTargetHighlight(ctx, 14, '#f59e0b', 1.2);
     drawHoverHighlight(ctx, 2, 1.5, THEMES.jungle); // ladder portal square
     drawHoverHighlight(ctx, 16, 1.5, THEMES.jungle); // snake portal square
     drawHoverHighlight(ctx, 5, 1.5, THEMES.jungle); // normal square

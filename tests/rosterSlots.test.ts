@@ -14,10 +14,14 @@ import {
 } from '../src/game/network/validation';
 import type {
   NetworkPlayer,
-  JoinAcceptedPacket,
-  ReconnectAcceptedPacket,
-  LobbyUpdatePacket,
+  Packet,
 } from '../src/game/network/types';
+
+type JoinAcceptedPacket = Omit<Extract<Packet, { type: 'JOIN_ACCEPTED' }>, 'v'> & { v?: number };
+type ReconnectAcceptedPacket = Omit<Extract<Packet, { type: 'RECONNECT_ACCEPTED' }>, 'v'> & {
+  v?: number;
+};
+type LobbyUpdatePacket = Extract<Packet, { type: 'LOBBY_UPDATE' }>;
 
 describe('Roster Identity & Sparse Slot Tests', () => {
   describe('1. Roster Validation & Identity Helpers', () => {

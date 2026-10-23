@@ -1,7 +1,34 @@
+export const MUTE_STORAGE_KEY = 'snkladr_muted';
+
+export function getSavedMuted(): boolean {
+  try {
+    if (typeof localStorage !== 'undefined' && typeof localStorage.getItem === 'function') {
+      return localStorage.getItem(MUTE_STORAGE_KEY) === '1';
+    }
+  } catch {
+    // Ignore storage access errors
+  }
+  return false;
+}
+
+export function saveMuted(muted: boolean): void {
+  try {
+    if (typeof localStorage !== 'undefined' && typeof localStorage.setItem === 'function') {
+      if (muted) {
+        localStorage.setItem(MUTE_STORAGE_KEY, '1');
+      } else {
+        localStorage.removeItem(MUTE_STORAGE_KEY);
+      }
+    }
+  } catch {
+    // Ignore storage access errors
+  }
+}
+
 class Sfx {
   private ctx: AudioContext | null = null;
   private noiseBuffer: AudioBuffer | null = null;
-  enabled = true;
+  enabled = !getSavedMuted();
   volume = 0.85;
 
   private ac(): AudioContext | null {

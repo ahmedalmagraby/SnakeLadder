@@ -9,8 +9,12 @@
  * "the game is broken and nobody knows why".
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { act, renderHook } from '@testing-library/react';
+import fs from 'fs';
+import path from 'path';
+import { act, renderHook, render, screen, fireEvent } from '@testing-library/react';
 import { useGame } from '../src/game/useGame';
+import { sfx } from '../src/game/audio';
+import OnlineHudBar from '../src/components/OnlineHudBar';
 import { gameReducer, initialGameState } from '../src/game/gameReducer';
 import {
   PROTOCOL_VERSION,
@@ -443,5 +447,190 @@ describe('P0: a failed re-host must not destroy the roster', () => {
     // With the fix, a failed create re-persists exactly this instead of
     // clearing it, so the assertion is that the data is *recoverable*.
     expect(JSON.parse(JSON.stringify(persisted)).slotTokens[0][1]).toHaveLength(32);
+  });
+});
+
+/* ------------------------------------------------------------------ */
+/* P1 - Audio mute persistence & OnlineHudBar disconnected takeover   */
+/* ------------------------------------------------------------------ */
+
+describe('P1: mute state persists across reloads', () => {
+  beforeEach(() => {
+    localStorage.removeItem('snkladr_muted');
+    sfx.enabled = true;
+  });
+
+  afterEach(() => {
+    localStorage.removeItem('snkladr_muted');
+    sfx.enabled = true;
+  });
+
+  it('saves mute preference to localStorage and restores it on a fresh hook mount', () => {
+    const first = renderHook(() => useGame());
+    expect(first.result.current.muted).toBe(false);
+    expect(sfx.enabled).toBe(true);
+
+    act(() => {
+      first.result.current.toggleMute();
+    });
+
+    expect(first.result.current.muted).toBe(true);
+    expect(sfx.enabled).toBe(false);
+    expect(localStorage.getItem('snkladr_muted')).toBe('1');
+    first.unmount();
+
+    // Simulate reload: fresh hook mount must restore muted = true and keep sfx disabled
+    const second = renderHook(() => useGame());
+    expect(second.result.current.muted).toBe(true);
+    expect(sfx.enabled).toBe(false);
+    second.unmount();
+  });
+});
+
+describe('P1: OnlineHudBar host CPU takeover for disconnected player', () => {
+  it('offers the host a CPU takeover button when a human guest is disconnected', () => {
+    const onCpuTakeover = vi.fn();
+    const onLeaveRoom = vi.fn();
+
+    render(
+      <OnlineHudBar
+        roomCode="ROOM42"
+        mySlot={0}
+        currentTurn={1}
+        isHost={true}
+        players={[
+          {
+            playerId: 'p0',
+            peerId: 'host',
+            name: 'Host',
+            slotIndex: 0,
+            colorId: 0,
+            isHost: true,
+            isCpu: false,
+            isReady: true,
+          },
+          {
+            playerId: 'p1',
+            peerId: 'offline-1',
+            name: 'Alice',
+            slotIndex: 1,
+            colorId: 1,
+            isHost: false,
+            isCpu: false,
+            isReady: false,
+          },
+        ]}
+        ping={35}
+        onSendEmote={() => {}}
+        onLeaveRoom={onLeaveRoom}
+        onCpuTakeover={onCpuTakeover}
+      />,
+    );
+
+    const takeoverBtn = screen.getByRole('button', { name: /Let CPU play for Alice/i });
+    expect(takeoverBtn).not.toBeNull();
+    fireEvent.click(takeoverBtn);
+    expect(onCpuTakeover).toHaveBeenCalledWith(1);
+  });
+
+  it('guards OnlineHudBar Exit with the menu confirmation modal during active play', () => {
+    const { result } = renderHook(() => useGame({ isOnline: true, isHost: true }));
+    act(() => result.current.startGame(twoHumans, 'normal', 'exact'));
+    expect(result.current.hud.mode).toBe('playing');
+    expect(result.current.confirmAction).toBeNull();
+
+    render(
+      <OnlineHudBar
+        roomCode="ROOM42"
+        mySlot={0}
+        currentTurn={0}
+        isHost={true}
+        players={[
+          {
+            playerId: 'p0',
+            peerId: 'host',
+            name: 'Host',
+            slotIndex: 0,
+            colorId: 0,
+            isHost: true,
+            isCpu: false,
+            isReady: true,
+          },
+          {
+            playerId: 'p1',
+            peerId: 'peer1',
+            name: 'Guest',
+            slotIndex: 1,
+            colorId: 1,
+            isHost: false,
+            isCpu: false,
+            isReady: true,
+          },
+        ]}
+        ping={24}
+        onSendEmote={() => {}}
+        onLeaveRoom={() => result.current.requestMenu()}
+      />,
+    );
+
+    const exitBtn = screen.getByRole('button', { name: /Exit room/i });
+    act(() => {
+      fireEvent.click(exitBtn);
+    });
+
+    // Must not drop straight to menu; must open confirmation first
+    expect(result.current.hud.mode).toBe('playing');
+    expect(result.current.confirmAction).toBe('menu');
+
+    // Cancelling keeps the match alive
+    act(() => result.current.cancelPending());
+    expect(result.current.confirmAction).toBeNull();
+    expect(result.current.hud.mode).toBe('playing');
+  });
+});
+
+describe('P1: social preview & PWA raster PNG assets', () => {
+  const rootDir = path.resolve(__dirname, '..');
+
+  function readPngDimensions(filePath: string): { width: number; height: number } {
+    const buf = fs.readFileSync(filePath);
+    // PNG magic signature: 89 50 4E 47 0D 0A 1A 0A
+    expect(buf.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))).toBe(true);
+    // IHDR width at offset 16 (uint32 BE), height at offset 20 (uint32 BE)
+    return {
+      width: buf.readUInt32BE(16),
+      height: buf.readUInt32BE(20),
+    };
+  }
+
+  it('ships valid raster PNGs for OpenGraph, Apple Touch Icon, and PWA manifest', () => {
+    expect(readPngDimensions(path.join(rootDir, 'public/og-image.png'))).toEqual({
+      width: 1200,
+      height: 630,
+    });
+    expect(readPngDimensions(path.join(rootDir, 'public/apple-touch-icon.png'))).toEqual({
+      width: 180,
+      height: 180,
+    });
+    expect(readPngDimensions(path.join(rootDir, 'public/icon-192.png'))).toEqual({
+      width: 192,
+      height: 192,
+    });
+    expect(readPngDimensions(path.join(rootDir, 'public/icon-512.png'))).toEqual({
+      width: 512,
+      height: 512,
+    });
+  });
+
+  it('references PNG og:image and apple-touch-icon in index.html and manifest.webmanifest', () => {
+    const html = fs.readFileSync(path.join(rootDir, 'index.html'), 'utf8');
+    expect(html).toContain('og-image.png');
+    expect(html).toContain('apple-touch-icon.png');
+
+    const manifest = JSON.parse(
+      fs.readFileSync(path.join(rootDir, 'public/manifest.webmanifest'), 'utf8'),
+    );
+    const pngIcons = manifest.icons.filter((ic: { type?: string }) => ic.type === 'image/png');
+    expect(pngIcons.length).toBeGreaterThanOrEqual(2);
   });
 });

@@ -505,16 +505,20 @@ export function useMultiplayer({
             const isMatchInProgress = currentSnap?.isPlaying ?? false;
 
             // Check if this join should reclaim an already-reserved disconnected human seat
-            // (e.g. a guest who left and rejoined via JOIN_REQUEST or lost their reconnectToken).
+            // (e.g. a guest who left and rejoined via JOIN_REQUEST or lost their reconnectToken),
+            // including a disconnected human seat temporarily handed over to a CPU bot.
             const cleanReqName = stripCpuSuffix(packet.name);
-            const disconnectedHumanSeats = roster.filter((p) => !p.isCpu && !p.isReady);
+            const disconnectedHumanSeats = roster.filter(
+              (p) => (!p.isCpu && !p.isReady) || (p.isCpu && slotTokensRef.current.has(p.slotIndex)),
+            );
             const humanCount = roster.filter((p) => !p.isCpu).length;
             const reclaimedSeat =
               disconnectedHumanSeats.find(
                 (p) => stripCpuSuffix(p.name).toLowerCase() === cleanReqName.toLowerCase(),
               ) ??
-              (isMatchInProgress || humanCount >= s.maxPlayers
-                ? disconnectedHumanSeats[0]
+              (isMatchInProgress || humanCount >= s.maxPlayers || roster.length >= s.maxPlayers
+                ? (disconnectedHumanSeats.find((p) => !p.isCpu && !p.isReady) ??
+                  disconnectedHumanSeats[0])
                 : undefined);
 
             if (reclaimedSeat) {
@@ -1861,6 +1865,75 @@ export function useMultiplayer({
     [commitPlayers, refreshSavedSession],
   );
 
+  /*
+   * Hand a disconnected human guest seat over to a CPU bot mid-match (Host only)
+   * while keeping their reconnect token intact so they can still reclaim the seat
+   * if they return later.
+   */
+  const convertDisconnectedToCpu = useCallback(
+    (slotIdx: number) => {
+      const s = stateRef.current;
+      if (!s.isHost) return;
+
+      const curr = playersRef.current;
+      const target = curr.find((p) => p.slotIndex === slotIdx);
+      if (!target || target.isHost || target.isCpu || target.isReady) return;
+
+      const cleanName = stripCpuSuffix(target.name);
+      const updated = commitPlayers(
+        curr.map((p) =>
+          p.slotIndex === slotIdx
+            ? {
+                ...p,
+                peerId: `cpu-${slotIdx}`,
+                name: cleanName,
+                isCpu: true,
+                isReady: true,
+              }
+            : p,
+        ),
+      );
+      stateVersionRef.current += 1;
+
+      peerManager.broadcast({
+        type: 'LOBBY_UPDATE',
+        players: updated,
+        speed: s.speed,
+        winRule: s.winRule,
+        stateVersion: stateVersionRef.current,
+        maxPlayers: s.maxPlayers,
+      });
+
+      const configs: PlayerConfig[] = updated.map((p) => ({
+        id: p.playerId || `p_${p.slotIndex}`,
+        slotIndex: p.slotIndex,
+        name: p.isCpu ? `${stripCpuSuffix(p.name)} (CPU)` : stripCpuSuffix(p.name),
+        isCpu: p.isCpu,
+        colorId: p.colorId,
+      }));
+      callbacksRef.current.onPlayersUpdated?.(configs);
+
+      saveSession({
+        roomCode: s.roomCode,
+        playerId: updated[0]?.playerId || getOrCreatePlayerId(),
+        playerName: updated[0]?.name || 'Host',
+        colorId: updated[0]?.colorId || 0,
+        slotIndex: 0,
+        isHost: true,
+        maxPlayers: s.maxPlayers,
+        speed: s.speed,
+        winRule: s.winRule,
+        players: updated,
+        slotTokens: Array.from(slotTokensRef.current.entries()),
+        gameState: callbacksRef.current.getGameStateSnapshot?.(),
+        turnId: turnIdRef.current,
+        stateVersion: stateVersionRef.current,
+      });
+      refreshSavedSession();
+    },
+    [commitPlayers, refreshSavedSession],
+  );
+
   /* Update room rules (Host only) */
   const updateRoomRules = useCallback(
     (newSpeed: GameSpeed, newRule: WinRule) => {
@@ -2156,6 +2229,7 @@ export function useMultiplayer({
     reconnectRoom,
     changeColor,
     toggleCpuSlot,
+    convertDisconnectedToCpu,
     updateRoomRules,
     startGame,
     broadcastRoll,

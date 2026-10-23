@@ -575,7 +575,7 @@ describe('Regression 3: disconnected players are reserved, never AI-controlled',
 
     const observerHook = renderHook(() => useMultiplayer());
 
-    let joinPromise: Promise<void>;
+    let joinPromise: Promise<string | void>;
     await act(async () => {
       joinPromise = observerHook.result.current.joinRoom('OBSRV1', 'Observer', 2);
       await flush();
@@ -875,7 +875,7 @@ describe('Regression 4: a new match re-arms the room session', () => {
     peerRegistry.set('snkladr-rstrt1', stub);
 
     const hook = renderHook(() => useMultiplayer());
-    let joinPromise: Promise<void>;
+    let joinPromise: Promise<string | void>;
     await act(async () => {
       joinPromise = hook.result.current.joinRoom('RSTRT1', 'Guest', 1);
       await flush();
@@ -1061,7 +1061,7 @@ describe('Regression 6: guest rejoin respects lobby vs live match', () => {
     const onReconnected = vi.fn();
     const hook = renderHook(() => useMultiplayer({ onReconnected }));
 
-    let joinPromise: Promise<void>;
+    let joinPromise: Promise<string | void>;
     await act(async () => {
       joinPromise = hook.result.current.joinRoom('LOBBY1', 'Guest', 1);
       await flush();
@@ -1128,7 +1128,7 @@ describe('Regression 6: guest rejoin respects lobby vs live match', () => {
     const onReconnected = vi.fn();
     const hook = renderHook(() => useMultiplayer({ onReconnected }));
 
-    let joinPromise: Promise<void>;
+    let joinPromise: Promise<string | void>;
     await act(async () => {
       joinPromise = hook.result.current.joinRoom('LIVE01', 'Guest', 1);
       await flush();
@@ -1198,7 +1198,7 @@ describe('Regression 7: guest lobby disconnect & session persistence', () => {
     const onPlayerDisconnected = vi.fn();
     const hook = renderHook(() => useMultiplayer({ onPlayerDisconnected }));
 
-    let joinPromise: Promise<void>;
+    let joinPromise: Promise<string | void>;
     await act(async () => {
       joinPromise = hook.result.current.joinRoom('HDROP1', 'Guest', 1);
       await flush();
@@ -1350,6 +1350,154 @@ describe('Regression 7: guest lobby disconnect & session persistence', () => {
 
     act(() => {
       guest1Returning.cleanup();
+    });
+    hostHook.unmount();
+  });
+
+  it('allows host to convert a disconnected human seat to CPU mid-match while preserving their reconnect token for later rejoin', async () => {
+    const onPlayersUpdated = vi.fn();
+    const hostHook = renderHook(() =>
+      useMultiplayer({
+        onPlayersUpdated,
+        getGameStateSnapshot: () => ({
+          mode: 'playing',
+          pos: [10, 15],
+          turn: 1,
+          phase: 'idle',
+          rolls: [2, 2],
+          laddersHit: [0, 0],
+          snakesHit: [0, 0],
+          sixesHit: [0, 0],
+          winner: -1,
+          isPlaying: true,
+        }),
+      }),
+    );
+
+    await act(async () => {
+      await hostHook.result.current.createRoom('Host', 0, 4, 'normal', 'exact', 'CPUTKO');
+    });
+    await flush();
+
+    const guest = new PeerManager();
+    await act(async () => {
+      await guest.joinRoom('CPUTKO', 'Alice', 1);
+    });
+    await flush();
+
+    const savedToken = JSON.parse(localStorage.getItem('snkladr_active_session')!)
+      .slotTokens[0][1] as string;
+    expect(savedToken).toBeTruthy();
+
+    // Start match, then Alice disconnects on her turn
+    act(() => {
+      hostHook.result.current.startGame();
+    });
+    await flush();
+
+    act(() => {
+      guest.cleanup();
+    });
+    await flush();
+
+    const disconnectedSeat = hostHook.result.current.players.find((p) => p.slotIndex === 1)!;
+    expect(disconnectedSeat.isReady).toBe(false);
+    expect(disconnectedSeat.isCpu).toBe(false);
+
+    // Host hands the disconnected seat over to a CPU bot so the match can continue
+    act(() => {
+      hostHook.result.current.convertDisconnectedToCpu(1);
+    });
+    await flush();
+
+    const botSeat = hostHook.result.current.players.find((p) => p.slotIndex === 1)!;
+    expect(botSeat.isCpu).toBe(true);
+    expect(botSeat.isReady).toBe(true);
+
+    const latestConfigs = onPlayersUpdated.mock.calls.at(-1)![0];
+    expect(latestConfigs.find((c: { slotIndex: number }) => c.slotIndex === 1)?.isCpu).toBe(true);
+
+    // Alice returns later with her reconnect token and reclaims her seat from the CPU bot
+    const returningGuest = new PeerManager();
+    await act(async () => {
+      await returningGuest.joinRoom('CPUTKO', 'Alice', 1, true, 1, savedToken);
+    });
+    await flush();
+
+    const reclaimedSeat = hostHook.result.current.players.find((p) => p.slotIndex === 1)!;
+    expect(reclaimedSeat.isCpu).toBe(false);
+    expect(reclaimedSeat.isReady).toBe(true);
+    expect(reclaimedSeat.name).toBe('Alice');
+
+    act(() => {
+      returningGuest.cleanup();
+    });
+    hostHook.unmount();
+  });
+
+  it('reclaims a CPU-taken-over human seat when the guest rejoins mid-match via JOIN_REQUEST with a default name', async () => {
+    const hostHook = renderHook(() =>
+      useMultiplayer({
+        getGameStateSnapshot: () => ({
+          mode: 'playing',
+          pos: [10, 15],
+          turn: 1,
+          phase: 'idle',
+          rolls: [2, 2],
+          laddersHit: [0, 0],
+          snakesHit: [0, 0],
+          sixesHit: [0, 0],
+          winner: -1,
+          isPlaying: true,
+        }),
+      }),
+    );
+
+    await act(async () => {
+      await hostHook.result.current.createRoom('Host', 0, 4, 'normal', 'exact', 'CPUJNR');
+    });
+    await flush();
+
+    const guest = new PeerManager();
+    await act(async () => {
+      await guest.joinRoom('CPUJNR', 'Alice', 1);
+    });
+    await flush();
+
+    act(() => {
+      hostHook.result.current.startGame();
+    });
+    await flush();
+
+    act(() => {
+      guest.cleanup();
+    });
+    await flush();
+
+    // Host converts disconnected Alice (slot 1) to CPU bot
+    act(() => {
+      hostHook.result.current.convertDisconnectedToCpu(1);
+    });
+    await flush();
+    expect(hostHook.result.current.players.find((p) => p.slotIndex === 1)?.isCpu).toBe(true);
+
+    // Alice opens the invite link in a new browser context (no saved token, default name "Friend")
+    const returningViaJoin = new PeerManager();
+    await act(async () => {
+      await returningViaJoin.joinRoom('CPUJNR', 'Friend', 1, false);
+    });
+    await flush();
+
+    // Must reclaim Slot 1 rather than allocating a new Slot 2 mid-match!
+    expect(returningViaJoin.getSlotIndex()).toBe(1);
+    expect(hostHook.result.current.players.map((p) => p.slotIndex)).toEqual([0, 1]);
+    const seat1 = hostHook.result.current.players.find((p) => p.slotIndex === 1)!;
+    expect(seat1.isCpu).toBe(false);
+    expect(seat1.isReady).toBe(true);
+    expect(seat1.name).toBe('Friend');
+
+    act(() => {
+      returningViaJoin.cleanup();
     });
     hostHook.unmount();
   });
