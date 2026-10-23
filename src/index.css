@@ -264,8 +264,8 @@ body {
   grid-template-rows: repeat(3, 1fr);
   padding: 8.5px;
   gap: 3px;
+  -webkit-backface-visibility: hidden;
   backface-visibility: hidden;
-  overflow: hidden;
 }
 .die-face::before {
   content: '';
@@ -299,22 +299,22 @@ body {
   height: 14px;
   border-radius: 50%;
   background: radial-gradient(ellipse, rgba(0, 0, 0, 0.65), transparent 75%);
-  transition: transform 0.3s ease, opacity 0.3s ease;
+  transition: transform 0.3s ease, opacity 0.3s ease, box-shadow 0.3s ease;
 }
 @keyframes dieShake {
   0%,
   100% {
-    transform: translateY(0) rotate(0deg);
+    transform: translate3d(0, 0, 0) rotate(0deg);
   }
   25% {
-    transform: translateY(-8px) rotate(-6deg);
+    transform: translate3d(0, -7px, 0) rotate(-5deg);
   }
   75% {
-    transform: translateY(-3px) rotate(5deg);
+    transform: translate3d(0, -3px, 0) rotate(4deg);
   }
 }
 .die-stage.rolling {
-  animation: dieShake 0.22s linear infinite;
+  animation: dieShake 0.25s ease-in-out infinite;
 }
 
 /* C1: Dice Landing Bounce & Impact */
@@ -342,23 +342,22 @@ body {
 }
 
 /* C2: Lucky 6 Golden Shimmer
-   (V5) These were hardcoded rgba(251, 191, 36, ...) — jungle gold in all five
-   themes — even though the die face and pips immediately above were thematised
-   by the J4 pass. They now derive from the theme accent via color-mix, which
-   Tailwind v4 already relies on for every `/opacity` utility in this project.
-   Jungle's accent is #fbbf24, so the default shimmer is unchanged. */
+   Animated on the 2D `.die-shadow` element using transform/opacity instead of
+   `filter: drop-shadow(...)` on `.die-stage`, so the 3D `preserve-3d` context
+   on `.die-cube` is never flattened by a CSS filter on mobile GPUs. */
 @keyframes luckySixGlow {
   0%,
   100% {
-    filter: drop-shadow(0 0 10px color-mix(in srgb, var(--theme-accent) 75%, transparent))
-      drop-shadow(0 0 22px color-mix(in srgb, var(--theme-accent) 45%, transparent));
+    transform: translateX(-50%) scale(1.05);
+    opacity: 0.85;
   }
   50% {
-    filter: drop-shadow(0 0 18px color-mix(in srgb, var(--theme-accent) 95%, transparent))
-      drop-shadow(0 0 32px color-mix(in srgb, var(--theme-accent) 70%, transparent));
+    transform: translateX(-50%) scale(1.3);
+    opacity: 1;
   }
 }
-.die-stage.lucky-six:not(.rolling) {
+.die-stage.lucky-six:not(.rolling) .die-shadow {
+  box-shadow: 0 0 22px 6px var(--theme-accent-glow);
   animation: luckySixGlow 1.2s ease-in-out infinite;
 }
 
@@ -381,7 +380,20 @@ body {
     transparent 100%
   ) !important;
   background-size: 250% 100% !important;
-  animation: pulseGlow 1.6s ease-in-out infinite, cardShimmer 3.5s ease-in-out infinite !important;
+  box-shadow: 0 0 18px 2px var(--theme-pulse-blur);
+  animation: cardShimmer 4.5s ease-in-out infinite !important;
+}
+
+@media (hover: none), (pointer: coarse) {
+  /* On touch/mobile GPUs, avoid continuous main-thread background-position and
+     box-shadow repaints while the canvas and 3D dice are animating. */
+  .active-shimmer {
+    animation: none !important;
+  }
+  .pulse-glow {
+    animation: none !important;
+    box-shadow: 0 0 16px 2px var(--theme-pulse-blur);
+  }
 }
 
 /* Custom dark scrollbar for sidebar (A3: was hardcoded to jungle amber) */
@@ -601,6 +613,7 @@ body {
   .board-glow,
   .die-stage.rolling,
   .die-stage.lucky-six,
+  .die-stage.lucky-six .die-shadow,
   .die-stage.landed .die-cube,
   .animate-pulse {
     animation: none !important;

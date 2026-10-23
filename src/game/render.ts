@@ -506,149 +506,204 @@ export function drawAnimatedSnake(
     Math.max(4, 24 * (1 - f * 0.65) + 5 + breathe * Math.sin(f * Math.PI));
 
   ctx.lineCap = 'round';
+  ctx.lineJoin = 'round';
 
-  const seg = (i: number, w: number, color: string) => {
-    ctx.strokeStyle = color;
-    ctx.lineWidth = w;
+  const TAPER_BANDS = 8;
+  const BODY_BANDS = 12;
+
+  // 1. Drop shadow under snake body (batched into tapered bands)
+  ctx.strokeStyle = tb.snakeDropShadow;
+  for (let b = 0; b < TAPER_BANDS; b++) {
+    const s0 = Math.floor((b * n) / TAPER_BANDS);
+    const s1 = Math.floor(((b + 1) * n) / TAPER_BANDS);
+    if (s1 <= s0) continue;
+    ctx.lineWidth = wAt((b + 0.5) / TAPER_BANDS) + 5;
     ctx.beginPath();
-    ctx.moveTo(pts[i].x, pts[i].y);
-    ctx.lineTo(pts[i + 1].x, pts[i + 1].y);
-    ctx.stroke();
-  };
-
-  // 1. Drop shadow under snake body
-  for (let i = 0; i < n; i++) {
-    ctx.strokeStyle = tb.snakeDropShadow;
-    ctx.lineWidth = wAt(i / n) + 5;
-    ctx.beginPath();
-    ctx.moveTo(pts[i].x + 2.5, pts[i].y + 3.5);
-    ctx.lineTo(pts[i + 1].x + 2.5, pts[i + 1].y + 3.5);
-    ctx.stroke();
-  }
-
-  // 2. Dark outer outline
-  for (let i = 0; i < n; i++) {
-    seg(i, wAt(i / n) + 4.5, tb.snakeOutline);
-  }
-
-  // 3. Colored body gradient with cached segment colors
-  const segColors = getSegmentColors(main, dark, n);
-  for (let i = 0; i < n; i++) {
-    seg(i, wAt(i / n), segColors[i] || main);
-  }
-
-  // (A3) Ventral belly plates / underbelly scale highlight
-  for (let i = 1; i < n; i++) {
-    const f = i / n;
-    const pt = pts[i];
-    const next = pts[i + 1] || pt;
-    const tdx = next.x - pt.x;
-    const tdy = next.y - pt.y;
-    const tlen = Math.hypot(tdx, tdy) || 1;
-    const nx = (-tdy / tlen);
-    const ny = (tdx / tlen);
-    const w = wAt(f);
-    ctx.strokeStyle = 'rgba(255, 255, 255, 0.15)';
-    ctx.lineWidth = Math.max(1.5, w * 0.28);
-    ctx.beginPath();
-    ctx.moveTo(pt.x + nx * (w * 0.18), pt.y + ny * (w * 0.18));
-    ctx.lineTo(next.x + nx * (w * 0.18), next.y + ny * (w * 0.18));
+    ctx.moveTo(pts[s0].x + 2.5, pts[s0].y + 3.5);
+    for (let i = s0 + 1; i <= s1; i++) {
+      ctx.lineTo(pts[i].x + 2.5, pts[i].y + 3.5);
+    }
     ctx.stroke();
   }
 
-  // 4. Style-specific spine patterns
-  if (tb.snakeStyle === 'cyber') {
-    // Cyber digital energy segments and neon pulses
-    for (let i = 1; i < n; i += 3) {
+  // 2. Dark outer outline (batched into tapered bands)
+  ctx.strokeStyle = tb.snakeOutline;
+  for (let b = 0; b < TAPER_BANDS; b++) {
+    const s0 = Math.floor((b * n) / TAPER_BANDS);
+    const s1 = Math.floor(((b + 1) * n) / TAPER_BANDS);
+    if (s1 <= s0) continue;
+    ctx.lineWidth = wAt((b + 0.5) / TAPER_BANDS) + 4.5;
+    ctx.beginPath();
+    ctx.moveTo(pts[s0].x, pts[s0].y);
+    for (let i = s0 + 1; i <= s1; i++) {
+      ctx.lineTo(pts[i].x, pts[i].y);
+    }
+    ctx.stroke();
+  }
+
+  // 3. Colored body gradient with cached band colors
+  const segColors = getSegmentColors(main, dark, BODY_BANDS);
+  for (let b = 0; b < BODY_BANDS; b++) {
+    const s0 = Math.floor((b * n) / BODY_BANDS);
+    const s1 = Math.floor(((b + 1) * n) / BODY_BANDS);
+    if (s1 <= s0) continue;
+    ctx.strokeStyle = segColors[b] || main;
+    ctx.lineWidth = wAt((b + 0.5) / BODY_BANDS);
+    ctx.beginPath();
+    ctx.moveTo(pts[s0].x, pts[s0].y);
+    for (let i = s0 + 1; i <= s1; i++) {
+      ctx.lineTo(pts[i].x, pts[i].y);
+    }
+    ctx.stroke();
+  }
+
+  // (A3) Ventral belly plates / underbelly scale highlight (batched into 4 bands)
+  const BELLY_BANDS = 4;
+  ctx.strokeStyle = 'rgba(255, 255, 255, 0.15)';
+  for (let b = 0; b < BELLY_BANDS; b++) {
+    const s0 = Math.max(1, Math.floor((b * n) / BELLY_BANDS));
+    const s1 = Math.floor(((b + 1) * n) / BELLY_BANDS);
+    if (s1 <= s0) continue;
+    const midW = wAt((b + 0.5) / BELLY_BANDS);
+    ctx.lineWidth = Math.max(1.5, midW * 0.28);
+    ctx.beginPath();
+    for (let i = s0; i <= s1; i++) {
       const f = i / n;
-      const pulse = Math.sin(f * 18 - time * 6 + phase) * 0.5 + 0.5;
       const pt = pts[i];
       const next = pts[i + 1] || pt;
       const tdx = next.x - pt.x;
       const tdy = next.y - pt.y;
       const tlen = Math.hypot(tdx, tdy) || 1;
-      const npx = (-tdy / tlen) * (wAt(f) * 0.46);
-      const npy = (tdx / tlen) * (wAt(f) * 0.46);
-      ctx.save();
-      ctx.strokeStyle = pulse > 0.6 ? tb.snakeDetailA : tb.snakeDetailB;
-      ctx.lineWidth = 2.4;
-      ctx.shadowColor = tb.snakeDetailGlow;
-      ctx.shadowBlur = 6;
+      const nx = -tdy / tlen;
+      const ny = tdx / tlen;
+      const w = wAt(f) * 0.18;
+      if (i === s0) ctx.moveTo(pt.x + nx * w, pt.y + ny * w);
+      else ctx.lineTo(pt.x + nx * w, pt.y + ny * w);
+    }
+    ctx.stroke();
+  }
+
+  // 4. Style-specific spine patterns (batched by colour, zero per-segment save/restore or shadowBlur)
+  if (tb.snakeStyle === 'cyber') {
+    // Cyber digital energy segments and neon pulses
+    ctx.lineWidth = 2.4;
+    for (const [isHigh, color] of [
+      [true, tb.snakeDetailA],
+      [false, tb.snakeDetailB],
+    ] as const) {
+      ctx.strokeStyle = color;
       ctx.beginPath();
-      ctx.moveTo(pt.x - npx, pt.y - npy);
-      ctx.lineTo(pt.x + npx, pt.y + npy);
-      ctx.stroke();
-      ctx.restore();
+      let hasSegs = false;
+      for (let i = 1; i < n; i += 3) {
+        const f = i / n;
+        const pulse = Math.sin(f * 18 - time * 6 + phase) * 0.5 + 0.5;
+        if ((pulse > 0.6) !== isHigh) continue;
+        const pt = pts[i];
+        const next = pts[i + 1] || pt;
+        const tdx = next.x - pt.x;
+        const tdy = next.y - pt.y;
+        const tlen = Math.hypot(tdx, tdy) || 1;
+        const npx = (-tdy / tlen) * (wAt(f) * 0.46);
+        const npy = (tdx / tlen) * (wAt(f) * 0.46);
+        ctx.moveTo(pt.x - npx, pt.y - npy);
+        ctx.lineTo(pt.x + npx, pt.y + npy);
+        hasSegs = true;
+      }
+      if (hasSegs) ctx.stroke();
     }
   } else if (tb.snakeStyle === 'cosmic') {
     // Celestial stardust particles & glowing astral nodes
-    for (let i = 1; i < n; i += 2) {
-      const f = i / n;
-      const starTwinkle = Math.sin(f * 20 + time * 4.5 + phase) * 0.5 + 0.5;
-      if (starTwinkle > 0.35) {
-        ctx.save();
-        ctx.fillStyle = starTwinkle > 0.75 ? tb.snakeDetailA : tb.snakeDetailB;
-        ctx.shadowColor = tb.snakeDetailGlow;
-        ctx.shadowBlur = 5;
+    for (const [isBright, color] of [
+      [true, tb.snakeDetailA],
+      [false, tb.snakeDetailB],
+    ] as const) {
+      ctx.fillStyle = color;
+      ctx.beginPath();
+      let hasNodes = false;
+      for (let i = 1; i < n; i += 2) {
+        const f = i / n;
+        const starTwinkle = Math.sin(f * 20 + time * 4.5 + phase) * 0.5 + 0.5;
+        if (starTwinkle <= 0.35 || (starTwinkle > 0.75) !== isBright) continue;
         const pt = pts[i];
-        ctx.beginPath();
-        ctx.arc(pt.x, pt.y, 2 * starTwinkle, 0, Math.PI * 2);
-        ctx.fill();
-        ctx.restore();
+        const r = 2 * starTwinkle;
+        ctx.moveTo(pt.x + r, pt.y);
+        ctx.arc(pt.x, pt.y, r, 0, Math.PI * 2);
+        hasNodes = true;
       }
+      if (hasNodes) ctx.fill();
     }
   } else if (tb.snakeStyle === 'gummy') {
     // Translucent gummy candy stripes & sweet sugar shine
-    for (let i = 1; i < n; i += 3) {
-      const f = i / n;
-      const pt = pts[i];
-      const next = pts[i + 1] || pt;
-      const tdx = next.x - pt.x;
-      const tdy = next.y - pt.y;
-      const tlen = Math.hypot(tdx, tdy) || 1;
-      const npx = (-tdy / tlen) * (wAt(f) * 0.42);
-      const npy = (tdx / tlen) * (wAt(f) * 0.42);
-      ctx.save();
-      ctx.strokeStyle = i % 2 === 0 ? tb.snakeDetailA : tb.snakeDetailB;
-      ctx.lineWidth = 2.5;
-      ctx.lineCap = 'round';
+    ctx.lineWidth = 2.5;
+    for (const [parity, color] of [
+      [0, tb.snakeDetailA],
+      [1, tb.snakeDetailB],
+    ] as const) {
+      ctx.strokeStyle = color;
       ctx.beginPath();
-      ctx.moveTo(pt.x - npx, pt.y - npy);
-      ctx.lineTo(pt.x + npx, pt.y + npy);
-      ctx.stroke();
-      ctx.restore();
+      let hasSegs = false;
+      for (let i = 1; i < n; i += 3) {
+        if (i % 2 !== parity) continue;
+        const f = i / n;
+        const pt = pts[i];
+        const next = pts[i + 1] || pt;
+        const tdx = next.x - pt.x;
+        const tdy = next.y - pt.y;
+        const tlen = Math.hypot(tdx, tdy) || 1;
+        const npx = (-tdy / tlen) * (wAt(f) * 0.42);
+        const npy = (tdx / tlen) * (wAt(f) * 0.42);
+        ctx.moveTo(pt.x - npx, pt.y - npy);
+        ctx.lineTo(pt.x + npx, pt.y + npy);
+        hasSegs = true;
+      }
+      if (hasSegs) ctx.stroke();
     }
   } else if (tb.snakeStyle === 'pharaoh') {
     // Royal golden cobra collar and lapis lazuli rings
-    for (let i = 1; i < n; i += 4) {
-      const f = i / n;
-      const pt = pts[i];
-      const next = pts[i + 1] || pt;
-      const tdx = next.x - pt.x;
-      const tdy = next.y - pt.y;
-      const tlen = Math.hypot(tdx, tdy) || 1;
-      const npx = (-tdy / tlen) * (wAt(f) * 0.48);
-      const npy = (tdx / tlen) * (wAt(f) * 0.48);
-      ctx.save();
-      ctx.strokeStyle = i % 2 === 0 ? tb.snakeDetailA : tb.snakeDetailB;
-      ctx.lineWidth = 2.4;
+    ctx.lineWidth = 2.4;
+    for (const [parity, color] of [
+      [0, tb.snakeDetailA],
+      [1, tb.snakeDetailB],
+    ] as const) {
+      ctx.strokeStyle = color;
       ctx.beginPath();
-      ctx.moveTo(pt.x - npx, pt.y - npy);
-      ctx.lineTo(pt.x + npx, pt.y + npy);
-      ctx.stroke();
-      ctx.restore();
+      let hasSegs = false;
+      for (let i = 1; i < n; i += 4) {
+        if (i % 2 !== parity) continue;
+        const f = i / n;
+        const pt = pts[i];
+        const next = pts[i + 1] || pt;
+        const tdx = next.x - pt.x;
+        const tdy = next.y - pt.y;
+        const tlen = Math.hypot(tdx, tdy) || 1;
+        const npx = (-tdy / tlen) * (wAt(f) * 0.48);
+        const npy = (tdx / tlen) * (wAt(f) * 0.48);
+        ctx.moveTo(pt.x - npx, pt.y - npy);
+        ctx.lineTo(pt.x + npx, pt.y + npy);
+        hasSegs = true;
+      }
+      if (hasSegs) ctx.stroke();
     }
   } else {
-    // Natural diamond specular scale shimmer
-    for (let i = 1; i < n; i++) {
-      const f = i / n;
+    // Natural diamond specular scale shimmer (batched into 6 bands)
+    const SHIMMER_BANDS = 6;
+    ctx.strokeStyle = tb.snakeSpecular;
+    for (let b = 0; b < SHIMMER_BANDS; b++) {
+      const s0 = Math.max(1, Math.floor((b * n) / SHIMMER_BANDS));
+      const s1 = Math.floor(((b + 1) * n) / SHIMMER_BANDS);
+      if (s1 <= s0) continue;
+      const f = (b + 0.5) / SHIMMER_BANDS;
       const shimmer = Math.sin(f * 14 - time * 3.8 + phase) * 0.5 + 0.5;
-      const alpha = 0.12 + shimmer * 0.42;
-      ctx.save();
-      ctx.globalAlpha = alpha;
-      seg(i, wAt(f) * 0.45, tb.snakeSpecular);
-      ctx.restore();
+      ctx.globalAlpha = 0.12 + shimmer * 0.42;
+      ctx.lineWidth = wAt(f) * 0.45;
+      ctx.beginPath();
+      ctx.moveTo(pts[s0].x, pts[s0].y);
+      for (let i = s0 + 1; i <= s1; i++) {
+        ctx.lineTo(pts[i].x, pts[i].y);
+      }
+      ctx.stroke();
     }
+    ctx.globalAlpha = 1;
   }
 
   // 5. Head calculation
@@ -702,18 +757,19 @@ export function drawAnimatedSnake(
   ctx.translate(h.x, h.y);
   ctx.rotate(ang);
 
-  // Active strike / venom aura
+  // Active strike / venom aura (layered soft ellipses instead of per-frame shadowBlur)
   if (isActive) {
     const auraPulse = 0.4 + 0.3 * Math.sin(time * 12);
-    ctx.shadowColor = tb.activeAuraColor;
-    ctx.shadowBlur = 18;
     ctx.fillStyle = tb.activeAuraColor;
+    ctx.globalAlpha = auraPulse * 0.42;
+    ctx.beginPath();
+    ctx.ellipse(8, 0, 35, 28, 0, 0, Math.PI * 2);
+    ctx.fill();
     ctx.globalAlpha = auraPulse;
     ctx.beginPath();
     ctx.ellipse(8, 0, 28, 22, 0, 0, Math.PI * 2);
     ctx.fill();
     ctx.globalAlpha = 1;
-    ctx.shadowBlur = 0;
   }
 
   // (A3) Deep Head shadow
@@ -1775,9 +1831,14 @@ export function drawToken(
   if (opts.badgeGlow) {
     // (D4) A coloured bloom behind the white disc lifts the active token out
     // of the board art without changing the token's shape or palette.
+    // Drawn as a soft concentric halo instead of per-frame shadowBlur.
     ctx.save();
-    ctx.shadowColor = opts.badgeGlow;
-    ctx.shadowBlur = r * 0.5;
+    ctx.fillStyle = opts.badgeGlow;
+    ctx.globalAlpha = 0.55;
+    ctx.beginPath();
+    ctx.arc(0, 1, r * 0.68, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.globalAlpha = 1;
     ctx.fillStyle = 'rgba(255, 255, 255, 0.95)';
     ctx.beginPath();
     ctx.arc(0, 1, r * 0.52, 0, Math.PI * 2);
@@ -1818,9 +1879,18 @@ export function drawToken(
     const ch = r * 0.42;
 
     ctx.save();
-    ctx.shadowColor = 'rgba(0, 0, 0, 0.65)';
-    ctx.shadowBlur = 4;
-    ctx.shadowOffsetY = 1.5;
+    // Crisp offset silhouette shadow instead of per-frame shadowBlur
+    ctx.fillStyle = 'rgba(0, 0, 0, 0.5)';
+    ctx.beginPath();
+    ctx.moveTo(-cw * 0.82, cy + 3.8);
+    ctx.lineTo(-cw, cy - ch * 0.75 + 1.8);
+    ctx.lineTo(-cw * 0.42, cy - ch * 0.22 + 1.8);
+    ctx.lineTo(0, cy - ch + 1.8);
+    ctx.lineTo(cw * 0.42, cy - ch * 0.22 + 1.8);
+    ctx.lineTo(cw, cy - ch * 0.75 + 1.8);
+    ctx.lineTo(cw * 0.82, cy + 3.8);
+    ctx.closePath();
+    ctx.fill();
 
     const cg = ctx.createLinearGradient(0, cy - ch, 0, cy + 2);
     cg.addColorStop(0, '#fef08a');
@@ -1839,7 +1909,6 @@ export function drawToken(
     ctx.closePath();
     ctx.fill();
 
-    ctx.shadowColor = 'transparent';
     ctx.strokeStyle = '#78350f';
     ctx.lineWidth = 1.2;
     ctx.stroke();
@@ -1873,11 +1942,12 @@ export function drawTargetHighlight(
   const pulse = 0.5 + 0.3 * Math.sin(time * 6);
   ctx.save();
   ctx.strokeStyle = color;
+  roundRectPath(ctx, c.x - CELL / 2 + 5, c.y - CELL / 2 + 5, CELL - 10, CELL - 10, 12);
+  ctx.globalAlpha = pulse * 0.32;
+  ctx.lineWidth = 10;
+  ctx.stroke();
   ctx.globalAlpha = pulse;
   ctx.lineWidth = 4;
-  ctx.shadowColor = color;
-  ctx.shadowBlur = 16;
-  roundRectPath(ctx, c.x - CELL / 2 + 5, c.y - CELL / 2 + 5, CELL - 10, CELL - 10, 12);
   ctx.stroke();
 
   // Inner converging reticle ring
@@ -1915,12 +1985,14 @@ export function drawHoverHighlight(
 
   ctx.save();
   const pulse = 0.55 + 0.25 * Math.sin(time * 7);
+  roundRectPath(ctx, x + 3, y + 3, CELL - 6, CELL - 6, 8);
+  ctx.strokeStyle = tb.hoverRingGlow;
+  ctx.globalAlpha = pulse * 0.45;
+  ctx.lineWidth = 7;
+  ctx.stroke();
   ctx.strokeStyle = tb.hoverRing;
   ctx.globalAlpha = pulse;
   ctx.lineWidth = 2.5;
-  ctx.shadowColor = tb.hoverRingGlow;
-  ctx.shadowBlur = 10;
-  roundRectPath(ctx, x + 3, y + 3, CELL - 6, CELL - 6, 8);
   ctx.stroke();
 
   const portal = PORTALS[square];
@@ -1933,8 +2005,6 @@ export function drawHoverHighlight(
     // Animated dashed trajectory line from hovered portal to its destination
     ctx.save();
     ctx.strokeStyle = portalColor;
-    ctx.shadowColor = portalColor;
-    ctx.shadowBlur = 8;
     ctx.globalAlpha = 0.65;
     ctx.lineWidth = 2.5;
     ctx.lineCap = 'round';
@@ -1947,12 +2017,13 @@ export function drawHoverHighlight(
     ctx.restore();
 
     // Destination square highlight ring & center marker
+    roundRectPath(ctx, dx + 4, dy + 4, CELL - 8, CELL - 8, 9);
     ctx.strokeStyle = portalColor;
-    ctx.shadowColor = portalColor;
-    ctx.shadowBlur = 12;
+    ctx.globalAlpha = pulse * 0.3;
+    ctx.lineWidth = 7;
+    ctx.stroke();
     ctx.globalAlpha = pulse * 0.9;
     ctx.lineWidth = 2.5;
-    roundRectPath(ctx, dx + 4, dy + 4, CELL - 8, CELL - 8, 9);
     ctx.stroke();
 
     ctx.fillStyle = portalColor;
@@ -1987,18 +2058,19 @@ export function drawLadderClimbGlow(
 
   ctx.save();
   ctx.lineCap = 'round';
-  ctx.strokeStyle = tb.ladderRungHighlight;
-  ctx.shadowColor = tb.ladderGlowColor;
-  ctx.shadowBlur = 14;
-  ctx.globalAlpha = 0.85;
-  ctx.lineWidth = 4;
   ctx.beginPath();
   ctx.moveTo(a.x + px, a.y + py);
   ctx.lineTo(c.x + px, c.y + py);
-  ctx.stroke();
-  ctx.beginPath();
   ctx.moveTo(a.x - px, a.y - py);
   ctx.lineTo(c.x - px, c.y - py);
+  ctx.strokeStyle = tb.ladderGlowColor;
+  ctx.globalAlpha = 0.35;
+  ctx.lineWidth = 11;
+  ctx.stroke();
+
+  ctx.strokeStyle = tb.ladderRungHighlight;
+  ctx.globalAlpha = 0.85;
+  ctx.lineWidth = 4;
   ctx.stroke();
 
   // Travelling spark at the climber's current position
@@ -2026,13 +2098,15 @@ export function drawTurnRing(
   ctx.translate(x, y);
   ctx.rotate(time * 0.9);
   ctx.strokeStyle = color;
-  ctx.globalAlpha = 0.55 + 0.25 * Math.sin(time * 4);
-  ctx.lineWidth = 2.4;
-  ctx.setLineDash([r * 0.42, r * 0.34]);
-  ctx.shadowColor = color;
-  ctx.shadowBlur = 10;
+  const alpha = 0.55 + 0.25 * Math.sin(time * 4);
   ctx.beginPath();
   ctx.arc(0, 0, r * 1.32, 0, Math.PI * 2);
+  ctx.globalAlpha = alpha * 0.28;
+  ctx.lineWidth = 6.5;
+  ctx.stroke();
+  ctx.globalAlpha = alpha;
+  ctx.lineWidth = 2.4;
+  ctx.setLineDash([r * 0.42, r * 0.34]);
   ctx.stroke();
   ctx.restore();
 }
@@ -2215,11 +2289,7 @@ export function drawFrameSweep(
   ctx.save();
   ctx.globalCompositeOperation = 'lighter';
   ctx.strokeStyle = accent;
-  ctx.lineWidth = 10;
   ctx.lineCap = 'round';
-  ctx.globalAlpha = 0.1;
-  ctx.shadowColor = accent;
-  ctx.shadowBlur = 18;
   ctx.beginPath();
   const steps = 10;
   for (let i = 0; i <= steps; i++) {
@@ -2227,6 +2297,11 @@ export function drawFrameSweep(
     if (i === 0) ctx.moveTo(pt.x, pt.y);
     else ctx.lineTo(pt.x, pt.y);
   }
+  ctx.globalAlpha = 0.05;
+  ctx.lineWidth = 22;
+  ctx.stroke();
+  ctx.globalAlpha = 0.1;
+  ctx.lineWidth = 10;
   ctx.stroke();
   ctx.restore();
 }
@@ -2238,10 +2313,7 @@ export function drawFrameSweep(
 export function drawActivePlayerEdge(ctx: CanvasRenderingContext2D, color: string, time: number) {
   ctx.save();
   ctx.strokeStyle = color;
-  ctx.globalAlpha = 0.3 + 0.2 * Math.sin(time * 2.4);
-  ctx.lineWidth = 3;
-  ctx.shadowColor = color;
-  ctx.shadowBlur = 12;
+  const alpha = 0.3 + 0.2 * Math.sin(time * 2.4);
   roundRectPath(
     ctx,
     ORIGIN - 8,
@@ -2250,6 +2322,11 @@ export function drawActivePlayerEdge(ctx: CanvasRenderingContext2D, color: strin
     LOGICAL - (ORIGIN - 8) * 2,
     10,
   );
+  ctx.globalAlpha = alpha * 0.28;
+  ctx.lineWidth = 8;
+  ctx.stroke();
+  ctx.globalAlpha = alpha;
+  ctx.lineWidth = 3;
   ctx.stroke();
   ctx.restore();
 }
@@ -2314,21 +2391,24 @@ export function drawCornerPulse(
 ) {
   if (!enabled) return;
   ctx.save();
-  ctx.globalAlpha = 0.25 + 0.2 * Math.sin(time * 3);
+  const alpha = 0.25 + 0.2 * Math.sin(time * 3);
   ctx.strokeStyle = color;
-  ctx.lineWidth = 2;
-  ctx.shadowColor = color;
-  ctx.shadowBlur = 14;
+  ctx.beginPath();
   for (const [cx, cy] of [
     [24, 24],
     [LOGICAL - 24, 24],
     [24, LOGICAL - 24],
     [LOGICAL - 24, LOGICAL - 24],
   ]) {
-    ctx.beginPath();
+    ctx.moveTo(cx + 15, cy);
     ctx.arc(cx, cy, 15, 0, Math.PI * 2);
-    ctx.stroke();
   }
+  ctx.globalAlpha = alpha * 0.28;
+  ctx.lineWidth = 6;
+  ctx.stroke();
+  ctx.globalAlpha = alpha;
+  ctx.lineWidth = 2;
+  ctx.stroke();
   ctx.restore();
 }
 

@@ -1611,7 +1611,8 @@ export function useGame(options: UseGameOptions = {}) {
       if (size < 20) return;
 
       const MAX_CANVAS_PIXELS = 2048 * 2048; // 4.19M pixels maximum canvas budget
-      let dpr = Math.min(2.5, window.devicePixelRatio || 1);
+      const maxDpr = size < 600 ? 2.0 : 2.5;
+      let dpr = Math.min(maxDpr, window.devicePixelRatio || 1);
       if (size * dpr * size * dpr > MAX_CANVAS_PIXELS) {
         dpr = Math.sqrt(MAX_CANVAS_PIXELS) / size;
       }
@@ -1952,11 +1953,12 @@ export function useGame(options: UseGameOptions = {}) {
           const pulse = 0.5 + 0.35 * Math.sin(g.time * 5);
           ctx.save();
           ctx.strokeStyle = pal.base;
+          roundRectPath(ctx, c.x - CELL / 2 + 5, c.y - CELL / 2 + 5, CELL - 10, CELL - 10, 12);
+          ctx.globalAlpha = pulse * 0.32;
+          ctx.lineWidth = 11;
+          ctx.stroke();
           ctx.globalAlpha = pulse;
           ctx.lineWidth = 5;
-          ctx.shadowColor = pal.base;
-          ctx.shadowBlur = 18;
-          roundRectPath(ctx, c.x - CELL / 2 + 5, c.y - CELL / 2 + 5, CELL - 10, CELL - 10, 12);
           ctx.stroke();
           ctx.restore();
         }
@@ -1979,11 +1981,12 @@ export function useGame(options: UseGameOptions = {}) {
         const pulse = 0.35 + 0.25 * Math.sin(g.time * 3.5);
         ctx.save();
         ctx.strokeStyle = beaconAccent;
+        roundRectPath(ctx, c100.x - CELL / 2 + 3, c100.y - CELL / 2 + 3, CELL - 6, CELL - 6, 8);
+        ctx.globalAlpha = pulse * 0.32;
+        ctx.lineWidth = 7;
+        ctx.stroke();
         ctx.globalAlpha = pulse;
         ctx.lineWidth = 2.5;
-        ctx.shadowColor = beaconAccent;
-        ctx.shadowBlur = 14;
-        roundRectPath(ctx, c100.x - CELL / 2 + 3, c100.y - CELL / 2 + 3, CELL - 6, CELL - 6, 8);
         ctx.stroke();
         ctx.restore();
 
@@ -2003,14 +2006,16 @@ export function useGame(options: UseGameOptions = {}) {
         const n = g.pos[p];
         const dockPos = START_POS[g.players[p]?.slotIndex ?? p] ?? START_POS[0];
         const ref = n > 0 ? squareCenter(n) : dockPos;
+        const rHalo = 26 + (1 - g.extraTurn) * 34;
         ctx.save();
-        ctx.globalAlpha = g.extraTurn * 0.8;
         ctx.strokeStyle = theme.ui.accent;
-        ctx.lineWidth = 3;
-        ctx.shadowColor = theme.ui.accent;
-        ctx.shadowBlur = 16;
         ctx.beginPath();
-        ctx.arc(ref.x, ref.y, 26 + (1 - g.extraTurn) * 34, 0, Math.PI * 2);
+        ctx.arc(ref.x, ref.y, rHalo, 0, Math.PI * 2);
+        ctx.globalAlpha = g.extraTurn * 0.28;
+        ctx.lineWidth = 9;
+        ctx.stroke();
+        ctx.globalAlpha = g.extraTurn * 0.8;
+        ctx.lineWidth = 3;
         ctx.stroke();
         ctx.restore();
       }
@@ -2058,18 +2063,21 @@ export function useGame(options: UseGameOptions = {}) {
         const emPal = playerPalette(em.player);
         const bubbleR = 24 * popScale;
         ctx.save();
+        ctx.globalAlpha = alpha * 0.4;
+        ctx.fillStyle = 'rgba(0, 0, 0, 0.7)';
+        ctx.beginPath();
+        ctx.arc(em.x, em.y + 2.5, bubbleR + 1, 0, Math.PI * 2);
+        ctx.fill();
+
         ctx.globalAlpha = alpha;
         ctx.fillStyle = 'rgba(15, 23, 42, 0.78)';
         ctx.strokeStyle = emPal.base;
         ctx.lineWidth = 2.2 * popScale;
-        ctx.shadowColor = 'rgba(0, 0, 0, 0.55)';
-        ctx.shadowBlur = 10;
         ctx.beginPath();
         ctx.arc(em.x, em.y, bubbleR, 0, Math.PI * 2);
         ctx.fill();
         ctx.stroke();
 
-        ctx.shadowBlur = 4;
         ctx.font = `${Math.round(30 * popScale)}px "Apple Color Emoji", "Segoe UI Emoji", "Noto Color Emoji", sans-serif`;
         ctx.textAlign = 'center';
         ctx.textBaseline = 'middle';

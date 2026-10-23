@@ -1,5 +1,6 @@
 class Sfx {
   private ctx: AudioContext | null = null;
+  private noiseBuffer: AudioBuffer | null = null;
   enabled = true;
   volume = 0.85;
 
@@ -11,11 +12,26 @@ class Sfx {
         (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
       if (!AC) return null;
       this.ctx = new AC();
+      this.noiseBuffer = null;
     }
     if (this.ctx.state === 'suspended') {
       void this.ctx.resume().catch(() => {});
     }
     return this.ctx;
+  }
+
+  private getNoiseBuffer(ctx: AudioContext): AudioBuffer {
+    if (!this.noiseBuffer || this.noiseBuffer.sampleRate !== ctx.sampleRate) {
+      // Shared 0.5s white-noise buffer reused across all dice rolls and snake hisses
+      const bufferSize = Math.max(256, Math.floor(ctx.sampleRate * 0.5));
+      const buffer = ctx.createBuffer(1, bufferSize, ctx.sampleRate);
+      const output = buffer.getChannelData(0);
+      for (let i = 0; i < bufferSize; i++) {
+        output[i] = Math.random() * 2 - 1;
+      }
+      this.noiseBuffer = buffer;
+    }
+    return this.noiseBuffer;
   }
 
   unlock() {
@@ -31,14 +47,10 @@ class Sfx {
     if (!ctx) return;
     try {
       const t0 = ctx.currentTime + delay;
-      const bufferSize = Math.max(256, Math.floor(ctx.sampleRate * dur));
-      const buffer = ctx.createBuffer(1, bufferSize, ctx.sampleRate);
-      const output = buffer.getChannelData(0);
-      for (let i = 0; i < bufferSize; i++) {
-        output[i] = Math.random() * 2 - 1;
-      }
+      const buffer = this.getNoiseBuffer(ctx);
       const whiteNoise = ctx.createBufferSource();
       whiteNoise.buffer = buffer;
+      whiteNoise.loop = true;
 
       const filter = ctx.createBiquadFilter();
       filter.type = 'bandpass';
@@ -51,7 +63,9 @@ class Sfx {
       gain.gain.exponentialRampToValueAtTime(0.0001, t0 + dur);
 
       whiteNoise.connect(filter).connect(gain).connect(ctx.destination);
-      whiteNoise.start(t0);
+      const maxOffset = Math.max(0, buffer.duration - dur - 0.02);
+      const offset = maxOffset > 0 ? Math.random() * maxOffset : 0;
+      whiteNoise.start(t0, offset);
       whiteNoise.stop(t0 + dur + 0.02);
     } catch {
       /* audio not available */

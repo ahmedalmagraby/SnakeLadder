@@ -558,33 +558,51 @@ function StartScreen({
   // (H1) Gentle pointer parallax for the floating background icons. The value
   // is damped toward the pointer each frame so the drift feels like inertia
   // rather than a cursor glued to the artwork.
+  // Only runs an animation loop while the pointer is actively moving/settling,
+  // avoiding a perpetual 60fps React re-render loop when idle or on touch devices.
   const [parallax, setParallax] = useState({ x: 0, y: 0 });
   const parallaxTarget = useRef({ x: 0, y: 0 });
+  const parallaxCurrent = useRef({ x: 0, y: 0 });
   useEffect(() => {
     let raf = 0;
+    const tick = () => {
+      raf = 0;
+      const cur = parallaxCurrent.current;
+      const tgt = parallaxTarget.current;
+      const dx = tgt.x - cur.x;
+      const dy = tgt.y - cur.y;
+      if (Math.abs(dx) < 0.001 && Math.abs(dy) < 0.001) {
+        cur.x = tgt.x;
+        cur.y = tgt.y;
+        setParallax({ x: tgt.x, y: tgt.y });
+        return;
+      }
+      cur.x += dx * 0.06;
+      cur.y += dy * 0.06;
+      setParallax({ x: cur.x, y: cur.y });
+      raf = requestAnimationFrame(tick);
+    };
+    const scheduleTick = () => {
+      if (!raf) raf = requestAnimationFrame(tick);
+    };
     const onMove = (e: PointerEvent) => {
+      if (e.pointerType === 'touch') return;
       parallaxTarget.current = {
         x: Math.max(-1, Math.min(1, (e.clientX / window.innerWidth - 0.5) * 2)),
         y: Math.max(-1, Math.min(1, (e.clientY / window.innerHeight - 0.5) * 2)),
       };
+      scheduleTick();
     };
     const onLeave = () => {
       parallaxTarget.current = { x: 0, y: 0 };
-    };
-    const tick = () => {
-      setParallax((prev) => ({
-        x: prev.x + (parallaxTarget.current.x - prev.x) * 0.06,
-        y: prev.y + (parallaxTarget.current.y - prev.y) * 0.06,
-      }));
-      raf = requestAnimationFrame(tick);
+      scheduleTick();
     };
     window.addEventListener('pointermove', onMove);
     window.addEventListener('pointerleave', onLeave);
-    raf = requestAnimationFrame(tick);
     return () => {
       window.removeEventListener('pointermove', onMove);
       window.removeEventListener('pointerleave', onLeave);
-      cancelAnimationFrame(raf);
+      if (raf) cancelAnimationFrame(raf);
     };
   }, []);
 
@@ -1851,7 +1869,7 @@ export default function App() {
                   aria-hidden="true"
                 />
                 <div ref={game.wrapRef} className="relative w-full h-full min-h-0 min-w-0 flex items-center justify-center overflow-hidden">
-                  <canvas ref={game.canvasRef} className="drop-shadow-[0_18px_44px_rgba(0,0,0,0.6)]" />
+                  <canvas ref={game.canvasRef} className="shadow-[0_18px_44px_rgba(0,0,0,0.6)]" />
                 </div>
                 <ToastView toast={game.toast} />
 
@@ -1867,7 +1885,7 @@ export default function App() {
                       label, which is off-screen on mobile and easy to miss. */}
                   {hud.mode === 'playing' && hud.phase !== 'over' && (
                     <div
-                      className="pointer-events-none flex items-center gap-2 px-3 py-1 rounded-full bg-slate-950/85 border backdrop-blur-md text-[11px] font-black tracking-wide shadow-lg max-w-full truncate"
+                      className="pointer-events-none flex items-center gap-2 px-3 py-1 rounded-full bg-slate-950/92 border text-[11px] font-black tracking-wide shadow-lg max-w-full truncate"
                       style={{
                         borderColor: `${activePal.base}66`,
                         color: activePal.light,
@@ -1899,7 +1917,7 @@ export default function App() {
                       Dropping `landscape:hidden` closes that gap - `lg:hidden`
                       still keeps it off desktop, where the real log is shown. */}
                   {game.log[0] && (
-                    <div className="lg:hidden pointer-events-none px-2.5 py-0.5 rounded-full bg-slate-950/85 border border-amber-400/30 backdrop-blur-md text-[10px] font-bold text-emerald-100 shadow-lg flex items-center gap-1.5 max-w-full truncate">
+                    <div className="lg:hidden pointer-events-none px-2.5 py-0.5 rounded-full bg-slate-950/92 border border-amber-400/30 text-[10px] font-bold text-emerald-100 shadow-lg flex items-center gap-1.5 max-w-full truncate">
                       <span className="w-1.5 h-1.5 rounded-full bg-amber-400 shrink-0" />
                       <span className="truncate">{game.log[0].text}</span>
                     </div>
@@ -1908,7 +1926,7 @@ export default function App() {
 
                 {/* Hover inspection badge */}
                 {game.hoveredSquare && (
-                  <div className="absolute bottom-2 left-1/2 -translate-x-1/2 z-20 pointer-events-none px-3 py-1 rounded-full bg-slate-950/92 border border-amber-400/40 backdrop-blur-md text-xs font-bold shadow-2xl flex items-center gap-1.5">
+                  <div className="absolute bottom-2 left-1/2 -translate-x-1/2 z-20 pointer-events-none px-3 py-1 rounded-full bg-slate-950/94 border border-amber-400/40 text-xs font-bold shadow-2xl flex items-center gap-1.5">
                     <span className="text-amber-300 font-display tracking-wide tnum">
                       Square {game.hoveredSquare}
                     </span>

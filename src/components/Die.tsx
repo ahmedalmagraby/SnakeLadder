@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useRef } from 'react';
 
 const PIPS: Record<number, number[]> = {
   1: [4],
@@ -45,51 +45,41 @@ export default function Die({
   activeColor?: string;
   compact?: boolean;
 }) {
-  const currentRot = useRef({ x: 0, y: 0 });
-  const prevFace = useRef<[number, number]>([0, 0]);
-  const [tf, setTf] = useState('rotateX(0deg) rotateY(0deg)');
-  const [isLanded, setIsLanded] = useState(false);
+  /* Compute 3D cube rotation synchronously during render so the CSS transition
+   * and target transform commit in the exact same frame with zero two-render hitch. */
+  const rotState = useRef({
+    x: 0,
+    y: 0,
+    faceX: 0,
+    faceY: 0,
+    wasRolling: false,
+  });
 
-  useEffect(() => {
-    if (rolling && value > 0) {
-      setIsLanded(false);
+  const s = rotState.current;
+  if (rolling && value > 0 && !s.wasRolling) {
+    const targetFace = FACE_ROT[value] ?? FACE_ROT[1];
+    const diffX = targetFace[0] - s.faceX;
+    const diffY = targetFace[1] - s.faceY;
+    s.x += 720 + diffX;
+    s.y += 1080 + diffY;
+    s.faceX = targetFace[0];
+    s.faceY = targetFace[1];
+    s.wasRolling = true;
+  } else if (!rolling) {
+    s.wasRolling = false;
+    if (value > 0) {
       const targetFace = FACE_ROT[value] ?? FACE_ROT[1];
-      const extraSpinsX = 720;
-      const extraSpinsY = 1080;
-
-      const diffX = targetFace[0] - prevFace.current[0];
-      const diffY = targetFace[1] - prevFace.current[1];
-
-      const nextX = currentRot.current.x + extraSpinsX + diffX;
-      const nextY = currentRot.current.y + extraSpinsY + diffY;
-
-      currentRot.current = { x: nextX, y: nextY };
-      prevFace.current = targetFace;
-
-      setTf(`rotateX(${nextX}deg) rotateY(${nextY}deg)`);
-
-      const t = window.setTimeout(() => {
-        setIsLanded(true);
-      }, rollMs);
-      return () => window.clearTimeout(t);
-    }
-
-    if (!rolling && value > 0) {
-      const targetFace = FACE_ROT[value] ?? FACE_ROT[1];
-      if (prevFace.current[0] !== targetFace[0] || prevFace.current[1] !== targetFace[1]) {
-        const diffX = targetFace[0] - prevFace.current[0];
-        const diffY = targetFace[1] - prevFace.current[1];
-        const nextX = currentRot.current.x + diffX;
-        const nextY = currentRot.current.y + diffY;
-        currentRot.current = { x: nextX, y: nextY };
-        prevFace.current = targetFace;
-        setTf(`rotateX(${nextX}deg) rotateY(${nextY}deg)`);
+      if (s.faceX !== targetFace[0] || s.faceY !== targetFace[1]) {
+        s.x += targetFace[0] - s.faceX;
+        s.y += targetFace[1] - s.faceY;
+        s.faceX = targetFace[0];
+        s.faceY = targetFace[1];
       }
-      setIsLanded(true);
-    } else if (!rolling && value === 0) {
-      setIsLanded(false);
     }
-  }, [rolling, value, rollMs]);
+  }
+
+  const tf = `rotateX(${s.x}deg) rotateY(${s.y}deg)`;
+  const isLanded = !rolling && value > 0;
 
   return (
     <div className={`flex flex-col items-center shrink-0 ${compact ? 'gap-0' : 'gap-1.5'}`}>
@@ -100,14 +90,18 @@ export default function Die({
         disabled={!canRoll}
         className={`die-stage select-none outline-none relative group ${
           compact ? 'scale-[0.72] origin-center -my-2' : ''
-        } ${rolling ? 'rolling' : ''} ${isLanded && !rolling ? 'landed' : ''} ${
-          isLanded && !rolling && value === 6 ? 'lucky-six' : ''
+        } ${rolling ? 'rolling' : ''} ${isLanded ? 'landed' : ''} ${
+          isLanded && value === 6 ? 'lucky-six' : ''
         } ${canRoll ? 'cursor-pointer hover:scale-105 active:scale-95' : 'cursor-default'}`}
-        style={{
-          filter: canRoll ? `drop-shadow(0 0 12px ${activeColor}55)` : 'none',
-        }}
       >
-        <div className={`die-shadow ${rolling ? 'scale-75 opacity-50' : 'scale-100 opacity-90'}`} />
+        <div
+          className={`die-shadow ${rolling ? 'scale-75 opacity-50' : 'scale-100 opacity-90'}`}
+          style={
+            canRoll && !(isLanded && value === 6)
+              ? { boxShadow: `0 0 18px 4px ${activeColor}66` }
+              : undefined
+          }
+        />
         <div
           className="die-cube"
           style={{
@@ -119,15 +113,15 @@ export default function Die({
         >
           {FACES.map((f) => (
             <div key={f.value} className="die-face" style={{ transform: f.transform }}>
-              {Array.from({ length: 9 }, (_, i) => (
+              {PIPS[f.value].map((pipIdx) => (
                 <span
-                  key={i}
-                  className={PIPS[f.value].includes(i) ? 'die-pip' : ''}
-                  style={
-                    PIPS[f.value].includes(i) && f.value === 1
-                      ? { transform: 'scale(1.25)' }
-                      : undefined
-                  }
+                  key={pipIdx}
+                  className="die-pip"
+                  style={{
+                    gridRow: Math.floor(pipIdx / 3) + 1,
+                    gridColumn: (pipIdx % 3) + 1,
+                    ...(f.value === 1 ? { transform: 'scale(1.25)' } : undefined),
+                  }}
                 />
               ))}
             </div>
