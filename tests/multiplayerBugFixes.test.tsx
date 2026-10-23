@@ -1284,4 +1284,73 @@ describe('Regression 7: guest lobby disconnect & session persistence', () => {
 
     hook.unmount();
   });
+
+  it('reclaims disconnected human slot on JOIN_REQUEST during a live match and keeps host isOnline true', async () => {
+    const liveState = {
+      mode: 'playing' as const,
+      pos: [14, 22],
+      turn: 0,
+      phase: 'idle',
+      rolls: [3, 3],
+      laddersHit: [1, 0],
+      snakesHit: [0, 0],
+      sixesHit: [0, 0],
+      winner: -1,
+      isPlaying: true,
+    };
+
+    const hostHook = renderHook(() =>
+      useMultiplayer({
+        getGameStateSnapshot: () => liveState,
+      }),
+    );
+
+    await act(async () => {
+      await hostHook.result.current.createRoom('PC', 0, 4, 'normal', 'exact', 'REJOIN');
+    });
+    await flush();
+
+    // Guest 1 joins Slot 1
+    const guest1 = new PeerManager();
+    await act(async () => {
+      await guest1.joinRoom('REJOIN', 'Friend', 1);
+    });
+    await flush();
+
+    expect(hostHook.result.current.players.map((p) => p.slotIndex)).toEqual([0, 1]);
+    expect(hostHook.result.current.players[1].isReady).toBe(true);
+
+    // Match starts
+    act(() => {
+      hostHook.result.current.startGame();
+    });
+    await flush();
+
+    // Guest 1 leaves mid-match
+    act(() => {
+      guest1.cleanup();
+    });
+    await flush();
+
+    expect(hostHook.result.current.players.find((p) => p.slotIndex === 1)?.isReady).toBe(false);
+    expect(hostHook.result.current.isOnline).toBe(true);
+
+    // Guest rejoins via fresh JOIN_REQUEST (e.g. token lost or clicked Join Room)
+    const guest1Returning = new PeerManager();
+    await act(async () => {
+      await guest1Returning.joinRoom('REJOIN', 'Friend', 1, false);
+    });
+    await flush();
+
+    // Must reclaim Slot 1 (NOT allocate a phantom Slot 2 while leaving Slot 1 disconnected!)
+    expect(guest1Returning.getSlotIndex()).toBe(1);
+    expect(hostHook.result.current.players.map((p) => p.slotIndex)).toEqual([0, 1]);
+    expect(hostHook.result.current.players.find((p) => p.slotIndex === 1)?.isReady).toBe(true);
+    expect(hostHook.result.current.isOnline).toBe(true);
+
+    act(() => {
+      guest1Returning.cleanup();
+    });
+    hostHook.unmount();
+  });
 });

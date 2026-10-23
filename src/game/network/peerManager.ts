@@ -350,8 +350,12 @@ export class PeerManager {
       mc.slotIndex = slotIndex;
     }
     if (state === 'joined' && slotIndex !== undefined) {
-      // This connection now owns the seat; any older connection for it is stale.
+      // This connection now owns the seat; retire any older connection that held it.
+      const prevOwner = this.slotOwners.get(slotIndex);
       this.slotOwners.set(slotIndex, peerId);
+      if (prevOwner && prevOwner !== peerId) {
+        this.closeConnection(prevOwner, 'Replaced by reconnected peer on same slot');
+      }
     }
 
     if (state === 'authenticated' || state === 'joined') {
@@ -451,9 +455,11 @@ export class PeerManager {
         this.peer = peer;
         this.installWsRelayInterceptor(peer, gen);
         this.attachLifecycleListeners();
+        let hasOpened = false;
 
         peer.on('open', () => {
           if (this.currentGeneration !== gen) return;
+          hasOpened = true;
           this.emitStatus('connected');
           this.startPingMonitor();
           resolve(this.roomCode);
@@ -477,6 +483,25 @@ export class PeerManager {
 
         peer.on('error', (err: any) => {
           if (this.currentGeneration !== gen) return;
+          // Non-fatal per-guest errors (such as a departed guest expiring on the
+          // signaling broker or a guest's WebRTC ICE failing after falling back
+          // to WsRelayConnection) must NEVER mark the host's room as errored/offline.
+          if (err?.type === 'peer-unavailable' || err?.type === 'webrtc') {
+            return;
+          }
+          if (hasOpened) {
+            // Once the room is live, transient signaling errors are handled by reconnect()
+            const p = peer as any;
+            if (!p.destroyed && p.disconnected && typeof peer.reconnect === 'function') {
+              this.emitStatus('reconnecting', 'Attempting to reconnect...');
+              try {
+                peer.reconnect();
+              } catch {
+                // Ignore
+              }
+            }
+            return;
+          }
           if (err.type === 'unavailable-id') {
             if (isRehost && retryCount < 2) {
               this.emitStatus(
@@ -642,6 +667,21 @@ export class PeerManager {
 
       peer.on('error', (err: any) => {
         if (this.currentGeneration !== gen) return;
+        // Ignore non-fatal WebRTC negotiation errors when WS relay fallback is available or active
+        if (err?.type === 'webrtc') {
+          return;
+        }
+        if (this.hostConn && this.hostConn.open && err?.type !== 'peer-unavailable') {
+          const p = peer as any;
+          if (!p.destroyed && p.disconnected && typeof peer.reconnect === 'function') {
+            try {
+              peer.reconnect();
+            } catch {
+              // Ignore
+            }
+          }
+          return;
+        }
         const msg =
           err.type === 'peer-unavailable'
             ? `Room ${this.roomCode} was not found. Check code.`
@@ -767,11 +807,28 @@ export class PeerManager {
 
     const origHandleMessage = rawPeer._handleMessage.bind(peer);
     rawPeer._handleMessage = (message: any) => {
+      if (this.currentGeneration !== gen) return;
       if (
         message?.type === 'CANDIDATE' &&
         message?.payload?.connectionId === WS_RELAY_CONN_ID
       ) {
         this.handleWsRelayMessage(message, gen);
+        return;
+      }
+      if (message?.type === 'LEAVE' && typeof message?.src === 'string') {
+        if (this.isHost && this.connections.has(message.src)) {
+          this.closeConnection(message.src, 'Remote peer left signaling server');
+        } else if (!this.isHost && this.hostConn?.peer === message.src && (this.hostConn as any).isWsRelay) {
+          (this.hostConn as unknown as WsRelayConnection)._handleRemoteClose();
+        }
+      }
+      if (message?.type === 'EXPIRE' && typeof message?.src === 'string' && this.isHost) {
+        // A departed guest peer expired on the signaling broker: close that guest's
+        // connection and suppress PeerJS's default handler so it does not emit a
+        // bogus 'peer-unavailable' error on the host peer.
+        if (this.connections.has(message.src)) {
+          this.closeConnection(message.src, 'Remote peer expired on signaling server');
+        }
         return;
       }
       return origHandleMessage(message);

@@ -904,5 +904,35 @@ describe('Connection & Room Lifecycle Handling', () => {
       vi.advanceTimersByTime(6001);
       await expect(reconnectPromise).rejects.toThrow('Join request timed out');
     });
+
+    it('does not mark host disconnected/error when a departed guest triggers peer-unavailable, webrtc, or EXPIRE/LEAVE', async () => {
+      const hostPm = new PeerManager();
+      const hostStatuses: ConnectionStatus[] = [];
+      hostPm.onStatus((s) => hostStatuses.push(s));
+
+      const createPromise = hostPm.createRoom('STAYUP', 'HostPC', 0);
+      const hostPeer = (hostPm as any).peer;
+      hostPeer._handleMessage = () => {};
+      (hostPm as any).installWsRelayInterceptor(hostPeer, hostPm.getGeneration());
+      hostPeer._trigger('open');
+      await createPromise;
+
+      const mockGuestConn = new MockDataConnection('guest-departed');
+      mockGuestConn.open = true;
+      (hostPm as any).handleIncomingConnection(mockGuestConn);
+      hostPm.setAdmissionState('guest-departed', 'joined', 1);
+
+      // Guest leaves: 0.peerjs.com sends EXPIRE / LEAVE and PeerJS emits peer-unavailable / webrtc on hostPeer
+      hostPeer._handleMessage({ type: 'EXPIRE', src: 'guest-departed' });
+      hostPeer._trigger('error', { type: 'peer-unavailable', message: 'Could not connect to peer guest-departed' });
+      hostPeer._trigger('error', { type: 'webrtc', message: 'ICE negotiation failed' });
+
+      // Departed guest connection must be closed, but host room status must NOT become 'error' or 'disconnected'
+      expect(hostPm.getAdmissionState('guest-departed')).toBeUndefined();
+      expect(hostStatuses).not.toContain('error');
+      expect(hostStatuses).not.toContain('disconnected');
+
+      hostPm.cleanup();
+    });
   });
 });

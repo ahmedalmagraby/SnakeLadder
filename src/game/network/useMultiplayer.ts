@@ -454,6 +454,12 @@ export function useMultiplayer({
 
       // Host packet handler
       if (s.isHost) {
+        if (packet.type !== 'PLAYER_DISCONNECTED') {
+          setIsOnline(true);
+          if (transportStatusRef.current !== 'connected') {
+            setTransportStatus('connected');
+          }
+        }
         // Enforce request deduplication
         if ('requestId' in packet && packet.requestId) {
           if (processedRequestIdsRef.current.has(packet.requestId)) {
@@ -495,8 +501,97 @@ export function useMultiplayer({
               return;
             }
 
-            // Check if room is full
+            const currentSnap = callbacksRef.current.getGameStateSnapshot?.();
+            const isMatchInProgress = currentSnap?.isPlaying ?? false;
+
+            // Check if this join should reclaim an already-reserved disconnected human seat
+            // (e.g. a guest who left and rejoined via JOIN_REQUEST or lost their reconnectToken).
+            const cleanReqName = stripCpuSuffix(packet.name);
+            const disconnectedHumanSeats = roster.filter((p) => !p.isCpu && !p.isReady);
             const humanCount = roster.filter((p) => !p.isCpu).length;
+            const reclaimedSeat =
+              disconnectedHumanSeats.find(
+                (p) => stripCpuSuffix(p.name).toLowerCase() === cleanReqName.toLowerCase(),
+              ) ??
+              (isMatchInProgress || humanCount >= s.maxPlayers
+                ? disconnectedHumanSeats[0]
+                : undefined);
+
+            if (reclaimedSeat) {
+              const assignedSlot = reclaimedSeat.slotIndex;
+              const reconnectToken = generateSecureToken();
+              slotTokensRef.current.set(assignedSlot, reconnectToken);
+              peerManager.setAdmissionState(peerId, 'joined', assignedSlot);
+
+              const restoredPlayer: NetworkPlayer = {
+                ...reclaimedSeat,
+                peerId,
+                name: cleanReqName,
+                isCpu: false,
+                isReady: true,
+              };
+
+              const updatedPlayers = commitPlayers(
+                roster.map((p) => (p.slotIndex === assignedSlot ? restoredPlayer : p)),
+              );
+              stateVersionRef.current += 1;
+
+              peerManager.sendToPeer(peerId, {
+                type: 'JOIN_ACCEPTED',
+                requestId: packet.requestId,
+                slotIndex: assignedSlot,
+                reconnectToken,
+                roomCode: s.roomCode,
+                speed: s.speed,
+                winRule: s.winRule,
+                players: updatedPlayers,
+                stateVersion: stateVersionRef.current,
+                turnId: turnIdRef.current,
+                maxPlayers: s.maxPlayers,
+                v: PROTOCOL_VERSION,
+                gameState: isMatchInProgress ? currentSnap : undefined,
+              });
+
+              peerManager.broadcast({
+                type: 'LOBBY_UPDATE',
+                players: updatedPlayers,
+                speed: s.speed,
+                winRule: s.winRule,
+                stateVersion: stateVersionRef.current,
+                maxPlayers: s.maxPlayers,
+              });
+
+              const updatedConfigs: PlayerConfig[] = updatedPlayers.map((p) => ({
+                id: p.playerId || `p_${p.slotIndex}`,
+                slotIndex: p.slotIndex,
+                name: stripCpuSuffix(p.name),
+                isCpu: p.isCpu,
+                colorId: p.colorId,
+              }));
+              callbacksRef.current.onPlayersUpdated?.(updatedConfigs);
+              callbacksRef.current.onPlayerReconnected?.(assignedSlot, cleanReqName);
+
+              saveSession({
+                roomCode: s.roomCode,
+                playerId: roster[0]?.playerId || getOrCreatePlayerId(),
+                playerName: roster[0]?.name || 'Host',
+                colorId: roster[0]?.colorId || 0,
+                slotIndex: 0,
+                isHost: true,
+                maxPlayers: s.maxPlayers,
+                speed: s.speed,
+                winRule: s.winRule,
+                players: updatedPlayers,
+                slotTokens: Array.from(slotTokensRef.current.entries()),
+                gameState: currentSnap,
+                turnId: turnIdRef.current,
+                stateVersion: stateVersionRef.current,
+              });
+              refreshSavedSession();
+              break;
+            }
+
+            // Check if room is full
             if (humanCount >= s.maxPlayers) {
               peerManager.sendToPeer(peerId, {
                 type: 'JOIN_REJECTED',
@@ -557,9 +652,6 @@ export function useMultiplayer({
             ));
 
             stateVersionRef.current += 1;
-
-            const currentSnap = callbacksRef.current.getGameStateSnapshot?.();
-            const isMatchInProgress = currentSnap?.isPlaying ?? false;
 
             // Send ACCEPTED to the joining guest with their private reconnect token and full gameState if in progress
             peerManager.sendToPeer(peerId, {
