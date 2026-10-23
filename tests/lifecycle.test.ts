@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { PeerManager } from '../src/game/network/peerManager';
+import { PeerManager, getIceServers } from '../src/game/network/peerManager';
 import {
   saveSession,
   getSavedSession,
@@ -23,15 +23,20 @@ vi.mock('peerjs', () => {
   return {
     default: class MockPeer {
       id: string;
+      options: any;
       callbacks: Record<string, ((...args: any[]) => void)[]> = {};
       connections: any[] = [];
       destroyed = false;
+      disconnected = false;
+      reconnectCalls = 0;
 
       constructor(idOrOptions?: any, _options?: any) {
         if (typeof idOrOptions === 'string') {
           this.id = idOrOptions;
+          this.options = _options;
         } else {
           this.id = 'peer_' + Math.random().toString(36).slice(2, 8);
+          this.options = idOrOptions;
         }
       }
 
@@ -51,7 +56,10 @@ vi.mock('peerjs', () => {
         this.destroyed = true;
       }
 
-      reconnect() {}
+      reconnect() {
+        this.reconnectCalls += 1;
+        this.disconnected = false;
+      }
 
       // Test helper to simulate peer events
       _trigger(event: string, ...args: any[]) {
@@ -104,9 +112,11 @@ class MockDataConnection {
 
 describe('Connection & Room Lifecycle Handling', () => {
   let mockStore: Record<string, string> = {};
+  let winListeners: Record<string, ((...args: any[]) => void)[]> = {};
 
   beforeEach(() => {
     mockStore = {};
+    winListeners = {};
     (globalThis as any).window = {
       location: {
         hash: '',
@@ -117,6 +127,14 @@ describe('Connection & Room Lifecycle Handling', () => {
       clearInterval: (id: any) => clearInterval(id),
       setTimeout: (fn: any, ms: any) => setTimeout(fn, ms),
       clearTimeout: (id: any) => clearTimeout(id),
+      addEventListener: (ev: string, fn: any) => {
+        if (!winListeners[ev]) winListeners[ev] = [];
+        winListeners[ev].push(fn);
+      },
+      removeEventListener: (ev: string, fn: any) => {
+        if (!winListeners[ev]) return;
+        winListeners[ev] = winListeners[ev].filter((cb) => cb !== fn);
+      },
     };
     (globalThis as any).localStorage = {
       getItem: (key: string) => mockStore[key] || null,
@@ -135,6 +153,7 @@ describe('Connection & Room Lifecycle Handling', () => {
   });
 
   afterEach(() => {
+    delete (globalThis as any).document;
     vi.clearAllTimers();
     vi.useRealTimers();
   });
@@ -668,6 +687,149 @@ describe('Connection & Room Lifecycle Handling', () => {
       vi.advanceTimersByTime(10000);
 
       expect(statuses).toContain('disconnected');
+    });
+  });
+
+  /* ------------------------------------------------------------------ */
+  /* 11. Remote Mobile Data / TURN ICE Configuration & Tab Resume       */
+  /* ------------------------------------------------------------------ */
+  describe('11. Remote Mobile Data / TURN ICE Configuration & Tab Resume', () => {
+    it('configures both STUN and TURN relay servers (UDP, TCP, and TLS 443) for createRoom and joinRoom', () => {
+      const iceServers = getIceServers();
+      const urls = iceServers.flatMap((s) => (Array.isArray(s.urls) ? s.urls : [s.urls]));
+
+      // Must include STUN servers
+      expect(urls.some((u) => u.startsWith('stun:'))).toBe(true);
+
+      // Must include TURN relay servers (UDP, TCP, and TLS on 443) for mobile CGNAT traversal
+      expect(urls.some((u) => u.startsWith('turn:') && !u.includes('transport=tcp'))).toBe(true);
+      expect(urls.some((u) => u.startsWith('turn:') && u.includes('transport=tcp'))).toBe(true);
+      expect(urls.some((u) => u.startsWith('turns:') && u.includes('443'))).toBe(true);
+
+      const turnServers = iceServers.filter((s) =>
+        (Array.isArray(s.urls) ? s.urls : [s.urls]).some(
+          (u) => u.startsWith('turn:') || u.startsWith('turns:'),
+        ),
+      );
+      expect(turnServers.length).toBeGreaterThan(0);
+      for (const ts of turnServers) {
+        expect(typeof ts.username).toBe('string');
+        expect(ts.username!.length).toBeGreaterThan(0);
+        expect(typeof ts.credential).toBe('string');
+        expect(ts.credential!.length).toBeGreaterThan(0);
+      }
+
+      // Verify Peer instances receive the TURN config and iceCandidatePoolSize
+      const hostPm = new PeerManager();
+      hostPm.createRoom('MOBILE', 'Host', 0);
+      const hostPeer = (hostPm as any).peer;
+      expect(hostPeer.options?.config?.iceServers).toEqual(iceServers);
+      expect(hostPeer.options?.config?.iceCandidatePoolSize).toBeGreaterThanOrEqual(4);
+      hostPm.cleanup();
+
+      const guestPm = new PeerManager();
+      guestPm.joinRoom('MOBILE', 'Guest', 1).catch(() => {});
+      const guestPeer = (guestPm as any).peer;
+      expect(guestPeer.options?.config?.iceServers).toEqual(iceServers);
+      expect(guestPeer.options?.config?.iceCandidatePoolSize).toBeGreaterThanOrEqual(4);
+      guestPm.cleanup();
+    });
+
+    it('supports custom TURN server overrides via localStorage snkladr_turn_config', () => {
+      localStorage.setItem(
+        'snkladr_turn_config',
+        JSON.stringify({
+          urls: ['turns:custom.turn.example.com:443?transport=tcp'],
+          username: 'custom_user',
+          credential: 'custom_pass',
+          extraUntrustedField: 'should_be_stripped',
+        }),
+      );
+
+      const iceServers = getIceServers();
+      const customEntry = iceServers.find(
+        (s) => Array.isArray(s.urls) && s.urls[0] === 'turns:custom.turn.example.com:443?transport=tcp',
+      );
+      expect(customEntry).toEqual({
+        urls: ['turns:custom.turn.example.com:443?transport=tcp'],
+        username: 'custom_user',
+        credential: 'custom_pass',
+      });
+      expect((customEntry as any)?.extraUntrustedField).toBeUndefined();
+
+      // Malformed JSON or invalid entry must gracefully fall back to defaults without throwing
+      localStorage.setItem('snkladr_turn_config', '{broken-json');
+      expect(getIceServers().length).toBeGreaterThanOrEqual(9);
+
+      localStorage.setItem('snkladr_turn_config', JSON.stringify([{ urls: '' }, { invalid: true }]));
+      expect(getIceServers().length).toBeGreaterThanOrEqual(9);
+    });
+
+    it('re-anchors heartbeat clocks, sends immediate PING, and reconnects signaling on tab resume or online', () => {
+      const docListeners: Record<string, ((...args: any[]) => void)[]> = {};
+      (globalThis as any).document = {
+        hidden: false,
+        addEventListener: (ev: string, fn: any) => {
+          if (!docListeners[ev]) docListeners[ev] = [];
+          docListeners[ev].push(fn);
+        },
+        removeEventListener: (ev: string, fn: any) => {
+          if (!docListeners[ev]) return;
+          docListeners[ev] = docListeners[ev].filter((cb) => cb !== fn);
+        },
+      };
+
+      const pm = new PeerManager();
+      pm.createRoom('RESUME', 'Host', 0);
+      const peerInstance = (pm as any).peer;
+      peerInstance._trigger('open');
+
+      const mockGuestConn = new MockDataConnection('guest-mobile');
+      mockGuestConn.open = true;
+      (pm as any).handleIncomingConnection(mockGuestConn);
+      pm.setAdmissionState('guest-mobile', 'joined', 1);
+
+      // Simulate mobile user switching to WhatsApp for 15s (timers frozen by OS, signaling dropped)
+      (globalThis as any).document.hidden = true;
+      peerInstance.disconnected = true;
+      vi.setSystemTime(Date.now() + 15000);
+
+      // User switches back to browser tab
+      (globalThis as any).document.hidden = false;
+      (docListeners['visibilitychange'] || []).forEach((fn) => fn());
+
+      // Signaling broker must automatically reconnect
+      expect(peerInstance.reconnectCalls).toBe(1);
+
+      // An immediate PING must be sent to connected peers upon resume so the remote side does not time out
+      expect(mockGuestConn.sentPackets.some((p) => p.type === 'PING')).toBe(true);
+
+      // Next ping interval tick must NOT falsely disconnect the guest after returning from background
+      vi.advanceTimersByTime(3000);
+      expect(mockGuestConn.closed).toBe(false);
+      expect(pm.getAdmissionState('guest-mobile')).toBe('joined');
+
+      // Simulate brief mobile data drop and window 'online' event recovery
+      peerInstance.disconnected = true;
+      (winListeners['online'] || []).forEach((fn) => fn());
+      expect(peerInstance.reconnectCalls).toBe(2);
+
+      pm.cleanup();
+    });
+
+    it('reconnects guest signaling on peer disconnected event and uses shorter timeout for reconnects', async () => {
+      const pm = new PeerManager();
+      const reconnectPromise = pm.joinRoom('ABCDEF', 'Guest', 1, true, 1, 'tok_1234567890');
+      const peerInstance = (pm as any).peer;
+
+      // Trigger signaling disconnect on guest peer
+      peerInstance.disconnected = true;
+      peerInstance._trigger('disconnected');
+      expect(peerInstance.reconnectCalls).toBe(1);
+
+      // Reconnect attempt (isReconnect = true) must time out within 6s so all 4 backoff retries fit in the 20s grace window
+      vi.advanceTimersByTime(6001);
+      await expect(reconnectPromise).rejects.toThrow('Join request timed out');
     });
   });
 });

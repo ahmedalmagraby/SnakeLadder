@@ -8,12 +8,119 @@ import {
 } from './validation';
 
 const PEER_PREFIX = 'snkladr-';
-const PENDING_TIMEOUT_MS = 10000; // 10s to authenticate/join before disconnection
+const PENDING_TIMEOUT_MS = 15000; // 15s to authenticate/join before disconnection
+const DEFAULT_JOIN_TIMEOUT_MS = 15000; // 15s to allow cellular ICE + TURN relay fallback
+const DEFAULT_RECONNECT_TIMEOUT_MS = 6000; // 6s per reconnect attempt so all 4 retries fit inside the 20s grace window
 const PING_INTERVAL_MS = 3000;
 /* (P1) Wall-clock heartbeat deadline. Must be >= 3x PING_INTERVAL_MS so a couple
  * of dropped pings are survivable, and it is only enforced while the tab is
  * visible - see `startPingMonitor`. */
 const HEARTBEAT_DEADLINE_MS = 9000;
+const CUSTOM_TURN_STORAGE_KEY = 'snkladr_turn_config';
+const ICE_CANDIDATE_POOL_SIZE = 4;
+
+const DEFAULT_STUN_SERVERS: RTCIceServer[] = [
+  { urls: 'stun:stun.l.google.com:19302' },
+  { urls: 'stun:stun1.l.google.com:19302' },
+  { urls: 'stun:global.stun.twilio.com:3478' },
+  { urls: 'stun:stun.cloudflare.com:3478' },
+  { urls: 'stun:openrelay.metered.ca:80' },
+];
+
+const DEFAULT_TURN_SERVERS: RTCIceServer[] = [
+  {
+    urls: 'turn:openrelay.metered.ca:80',
+    username: 'openrelayproject',
+    credential: 'openrelayproject',
+  },
+  {
+    urls: 'turn:openrelay.metered.ca:80?transport=tcp',
+    username: 'openrelayproject',
+    credential: 'openrelayproject',
+  },
+  {
+    urls: 'turn:openrelay.metered.ca:443',
+    username: 'openrelayproject',
+    credential: 'openrelayproject',
+  },
+  {
+    urls: 'turns:openrelay.metered.ca:443?transport=tcp',
+    username: 'openrelayproject',
+    credential: 'openrelayproject',
+  },
+];
+
+function isValidIceServerEntry(entry: unknown): entry is RTCIceServer {
+  if (!entry || typeof entry !== 'object') return false;
+  const candidate = entry as Record<string, unknown>;
+  const urls = candidate.urls;
+  const validUrls =
+    (typeof urls === 'string' && urls.trim().length > 0) ||
+    (Array.isArray(urls) &&
+      urls.length > 0 &&
+      urls.every((u) => typeof u === 'string' && u.trim().length > 0));
+  if (!validUrls) return false;
+  if (candidate.username !== undefined && typeof candidate.username !== 'string') return false;
+  if (candidate.credential !== undefined && typeof candidate.credential !== 'string') return false;
+  return true;
+}
+
+/**
+ * Returns the WebRTC ICE server list (STUN + TURN over UDP, TCP, and TLS 443)
+ * so peers behind mobile carrier CGNAT / Symmetric NAT can connect via relay
+ * when direct STUN hole-punching is blocked.
+ */
+export function getIceServers(): RTCIceServer[] {
+  const customServers: RTCIceServer[] = [];
+
+  try {
+    const env = (import.meta as any)?.env;
+    if (env?.VITE_TURN_URLS && typeof env.VITE_TURN_URLS === 'string') {
+      const urls = env.VITE_TURN_URLS.split(',')
+        .map((u: string) => u.trim())
+        .filter(Boolean);
+      if (urls.length > 0) {
+        customServers.push({
+          urls,
+          username: typeof env.VITE_TURN_USERNAME === 'string' ? env.VITE_TURN_USERNAME : undefined,
+          credential:
+            typeof env.VITE_TURN_CREDENTIAL === 'string' ? env.VITE_TURN_CREDENTIAL : undefined,
+        });
+      }
+    }
+  } catch {
+    // Ignore env read errors
+  }
+
+  try {
+    if (typeof localStorage !== 'undefined' && typeof localStorage.getItem === 'function') {
+      const raw = localStorage.getItem(CUSTOM_TURN_STORAGE_KEY);
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        const list = Array.isArray(parsed) ? parsed : [parsed];
+        for (const item of list) {
+          if (isValidIceServerEntry(item)) {
+            const sanitized: RTCIceServer = { urls: item.urls };
+            if (item.username !== undefined) sanitized.username = item.username;
+            if (item.credential !== undefined) sanitized.credential = item.credential;
+            customServers.push(sanitized);
+          }
+        }
+      }
+    }
+  } catch {
+    // Ignore malformed localStorage TURN config
+  }
+
+  return [...DEFAULT_STUN_SERVERS, ...customServers, ...DEFAULT_TURN_SERVERS];
+}
+
+export function buildPeerConfig(): RTCConfiguration {
+  return {
+    iceServers: getIceServers(),
+    iceCandidatePoolSize: ICE_CANDIDATE_POOL_SIZE,
+  };
+}
 
 /* Generate clean 6-character room code.
  *
@@ -86,6 +193,8 @@ export class PeerManager {
   private onStatusListeners: Set<StatusHandler> = new Set();
 
   private pingInterval: ReturnType<typeof setInterval> | null = null;
+  private visibilityListener: (() => void) | null = null;
+  private onlineListener: (() => void) | null = null;
   public currentPing = 0;
 
   constructor() {
@@ -226,16 +335,11 @@ export class PeerManager {
 
         const peerId = `${PEER_PREFIX}${this.roomCode.toLowerCase()}`;
         const peer = new Peer(peerId, {
-          config: {
-            iceServers: [
-              { urls: 'stun:stun.l.google.com:19302' },
-              { urls: 'stun:stun1.l.google.com:19302' },
-              { urls: 'stun:global.stun.twilio.com:3478' },
-            ],
-          },
+          config: buildPeerConfig(),
         });
 
         this.peer = peer;
+        this.attachLifecycleListeners();
 
         peer.on('open', () => {
           if (this.currentGeneration !== gen) return;
@@ -307,8 +411,10 @@ export class PeerManager {
     isReconnect = false,
     reconnectSlotIndex = 0,
     reconnectToken = '',
-    timeoutMs = 10000,
+    timeoutMs?: number,
   ): Promise<void> {
+    const effectiveTimeoutMs =
+      timeoutMs ?? (isReconnect ? DEFAULT_RECONNECT_TIMEOUT_MS : DEFAULT_JOIN_TIMEOUT_MS);
     this.cleanup();
     this.currentGeneration++;
     const gen = this.currentGeneration;
@@ -335,19 +441,14 @@ export class PeerManager {
         this.emitStatus('error', 'Join request timed out. Please try again.');
         this.cleanup();
         rej?.(new Error('Join request timed out'));
-      }, timeoutMs);
+      }, effectiveTimeoutMs);
 
       const peer = new Peer({
-        config: {
-          iceServers: [
-            { urls: 'stun:stun.l.google.com:19302' },
-            { urls: 'stun:stun1.l.google.com:19302' },
-            { urls: 'stun:global.stun.twilio.com:3478' },
-          ],
-        },
+        config: buildPeerConfig(),
       });
 
       this.peer = peer;
+      this.attachLifecycleListeners();
 
       peer.on('open', () => {
         if (this.currentGeneration !== gen) return;
@@ -472,6 +573,18 @@ export class PeerManager {
         });
       });
 
+      peer.on('disconnected', () => {
+        if (this.currentGeneration !== gen) return;
+        const p = peer as any;
+        if (!p.destroyed && typeof peer.reconnect === 'function') {
+          try {
+            peer.reconnect();
+          } catch {
+            // Ignore reconnect errors while network settles
+          }
+        }
+      });
+
       peer.on('error', (err: any) => {
         if (this.currentGeneration !== gen) return;
         const msg =
@@ -558,7 +671,7 @@ export class PeerManager {
 
     /* (P1) A reconnect legitimately reuses the peer id of the socket it is
        replacing. Previously `Map.set` silently orphaned the previous entry:
-       its 10s admission timer kept running, its DataChannel was never closed,
+       its 15s admission timer kept running, its DataChannel was never closed,
        and `closeConnection(peerId)` could only ever reach the new entry - so
        the old socket stayed half-open for the life of the room. Retire the
        outgoing entry explicitly first. The late `close` event it fires is
@@ -816,10 +929,89 @@ export class PeerManager {
    *  2. The deadline is anchored to wall-clock time, so it still means "9 real
    *     seconds" regardless of how many times the interval actually fired.
    */
+  private reanchorHeartbeats(now = Date.now()) {
+    this.lastHostHeartbeat = now;
+    this.connections.forEach((mc) => {
+      mc.lastHeartbeat = now;
+    });
+  }
+
+  private attachLifecycleListeners() {
+    this.detachLifecycleListeners();
+
+    const handleResumeOrOnline = () => {
+      const now = Date.now();
+      this.reanchorHeartbeats(now);
+
+      if (typeof document !== 'undefined' && document.hidden) {
+        return;
+      }
+
+      const p = this.peer as any;
+      if (p && p.disconnected && !p.destroyed && typeof p.reconnect === 'function') {
+        try {
+          p.reconnect();
+        } catch {
+          // Ignore reconnect errors while network settles
+        }
+      }
+
+      // Immediately transmit a PING to open peers upon returning to the foreground
+      // so the remote side's 9s heartbeat deadline does not expire before our next 3s tick.
+      if (this.isHost) {
+        this.connections.forEach((mc) => {
+          if (mc.conn.open && mc.admissionState === 'joined') {
+            try {
+              mc.conn.send({ type: 'PING', sentAt: now });
+            } catch {
+              // Ignore socket send error
+            }
+          }
+        });
+      } else if (this.hostConn && this.hostConn.open) {
+        try {
+          this.hostConn.send({ type: 'PING', sentAt: now });
+        } catch {
+          // Ignore socket send error
+        }
+      }
+    };
+
+    if (typeof document !== 'undefined' && typeof document.addEventListener === 'function') {
+      this.visibilityListener = handleResumeOrOnline;
+      document.addEventListener('visibilitychange', this.visibilityListener);
+    }
+
+    if (typeof window !== 'undefined' && typeof window.addEventListener === 'function') {
+      this.onlineListener = handleResumeOrOnline;
+      window.addEventListener('online', this.onlineListener);
+    }
+  }
+
+  private detachLifecycleListeners() {
+    if (
+      this.visibilityListener &&
+      typeof document !== 'undefined' &&
+      typeof document.removeEventListener === 'function'
+    ) {
+      document.removeEventListener('visibilitychange', this.visibilityListener);
+    }
+    this.visibilityListener = null;
+
+    if (
+      this.onlineListener &&
+      typeof window !== 'undefined' &&
+      typeof window.removeEventListener === 'function'
+    ) {
+      window.removeEventListener('online', this.onlineListener);
+    }
+    this.onlineListener = null;
+  }
+
   private startPingMonitor() {
     if (this.pingInterval) clearInterval(this.pingInterval);
     const gen = this.currentGeneration;
-    this.lastHostHeartbeat = Date.now();
+    this.reanchorHeartbeats(Date.now());
 
     this.pingInterval = (typeof window !== 'undefined' ? window.setInterval : setInterval)(() => {
       if (this.currentGeneration !== gen) return;
@@ -829,10 +1021,7 @@ export class PeerManager {
        * interval for minutes. Declaring anybody dead on that basis is wrong, so
        * suspend the deadline and just re-anchor the clocks on return. */
       if (typeof document !== 'undefined' && document.hidden) {
-        this.lastHostHeartbeat = now;
-        this.connections.forEach((mc) => {
-          mc.lastHeartbeat = now;
-        });
+        this.reanchorHeartbeats(now);
         return;
       }
 
@@ -905,6 +1094,7 @@ export class PeerManager {
       clearInterval(this.pingInterval);
       this.pingInterval = null;
     }
+    this.detachLifecycleListeners();
 
     /* (P1) Tear down *before* clearing the host flag.
      *

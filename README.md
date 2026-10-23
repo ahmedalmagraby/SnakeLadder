@@ -22,8 +22,8 @@ Play directly in your browser without any installation:
 ## ✨ Features
 
 ### 🌐 Hardened Cross-Device Online Multiplayer
-- **Real-Time P2P WebRTC**: Connect directly between devices (PC, Mac, iPhone, Android, iPad) using low-latency WebRTC DataChannels via PeerJS with public STUN servers. See the [connectivity ceiling](#-connectivity-ceiling-read-this-before-inviting-people-over-the-internet) before inviting players on restrictive networks.
-- **Connection Admission State Machine**: Enforces a strict 4-stage lifecycle (`pending` ➔ `authenticated` ➔ `joined` ➔ `closed`) with 10-second unauthenticated timeouts and zero broadcast leakage to unadmitted peers.
+- **Real-Time P2P WebRTC**: Connect directly between devices (PC, Mac, iPhone, Android, iPad) using low-latency WebRTC DataChannels via PeerJS with public STUN servers and TURN relay fallback (UDP, TCP, and TLS 443) for mobile data / CGNAT traversal. See [Connectivity & NAT Traversal](#-connectivity--nat-traversal-stun--turn-relay-fallback).
+- **Connection Admission State Machine**: Enforces a strict 4-stage lifecycle (`pending` ➔ `authenticated` ➔ `joined` ➔ `closed`) with 15-second unauthenticated timeouts and zero broadcast leakage to unadmitted peers.
 - **Host-Authoritative Dice Rolling**: Dice outcomes are calculated and broadcast authoritatively by the host (`ROLL_REQUEST` ➔ `ROLL_RESULT`) with turn-bound deduplication, eliminating client-side roll manipulation or duplicate rolls.
 - **Seat Reservation, Never AI Takeover**: If an opponent drops out, their seat is **reserved and held for that human** — no bot ever plays on their behalf, and the `(CPU)` badge is never applied to a real player. The match simply waits: the UI shows `WAITING FOR <NAME> TO RECONNECT...` and advances as soon as they return, restoring their exact square, score, and colour. The host may optionally fill a vacant lobby slot with a CPU bot, but bots are only ever created by an explicit host action in the waiting room — never automatically.
 - **Host Session Persistence & Room Rejoin**: If the host refreshes or leaves the game, the existing room code identity, game state, player roster, and guest reconnect tokens are preserved in session storage. When the host returns or inputs the room code, the original room is restored instead of spawning a new code. Reserved guest seats are restored as **waiting-for-reconnect**, so the match pauses on the absent player's turn rather than being played by an AI.
@@ -37,24 +37,18 @@ Play directly in your browser without any installation:
 - **Versioned Protocol**: A wire-protocol version is negotiated once at admission, so a player on a stale cached tab is told plainly to hard-refresh instead of failing later as an inscrutable desync.
 - **Authoritative Roll Negotiation**: Every `ROLL_REQUEST` is answered — served with a `ROLL_RESULT` or refused with a typed `ROLL_REJECTED` (`not-your-turn`, `stale-turn`, `already-rolled`, `rate-limited`, …). The guest also runs a local watchdog, so even a *lost* rejection cannot leave the roll button dead.
 
-### 🌐 Connectivity ceiling (read this before inviting people over the internet)
+### 🌐 Connectivity & NAT Traversal (STUN + TURN Relay Fallback)
 
-Multiplayer is **direct peer-to-peer WebRTC**, and it is configured with **STUN only — there is no TURN server.**
+Multiplayer uses **WebRTC DataChannels** configured with **both public STUN servers and TURN relay fallback (UDP, TCP, and TLS on port 443)**:
 
 | Network | Works? |
 |---|---|
-| Same Wi-Fi / LAN | ✅ Always — no NAT traversal needed |
-| Home broadband (any router) | ✅ Almost always — STUN hole punching succeeds |
-| Mobile hotspot, CGNAT | ⚠️ Usually |
-| Corporate / school / hotel Wi-Fi | ❌ Symmetric NAT or a stateful firewall blocks the connection |
-| Two players both behind strict symmetric NAT | ❌ Cannot connect at all |
+| Same Wi-Fi / LAN | ✅ Always — direct local P2P |
+| Home broadband (any router) | ✅ Almost always — direct STUN hole punching |
+| Mobile data (4G/5G CGNAT) | ✅ Supported — falls back to TURN relay when symmetric NAT blocks direct UDP |
+| Corporate / school / hotel Wi-Fi | ⚠️ Usually — TLS TURN over port 443 traverses most firewalls unless WebRTC is explicitly blocked |
 
-**This is a hard limit of the architecture, not a bug to report.** Adding TURN would fix it, but TURN means operating (or paying for) a relay server — a real infrastructure cost that this project deliberately does not take on.
-
-Practical guidance:
-- **Same room, same Wi-Fi** → works every time. This is the best experience.
-- **Different networks** → works on most home/mobile connections.
-- **Corporate or school networks** → use solo or pass-and-play, or run the board on a phone hotspot.
+You can also supply your own dedicated TURN server credentials at build time via `VITE_TURN_URLS`, `VITE_TURN_USERNAME`, and `VITE_TURN_CREDENTIAL`, or at runtime via `localStorage.setItem('snkladr_turn_config', JSON.stringify({ urls, username, credential }))`.
 
 > [!NOTE]
 > **Host loss**: If the host disconnects, guests get a 20-second grace period with bounded automatic reconnect attempts (1s → 2s → 4s → 8s), then are told the match ended. The room claim is **kept**, so if the host re-hosts the same code, returning players are re-admitted to their own seat and colour. A dropped seat is never handed to an AI.
